@@ -1,0 +1,134 @@
+name: Changelog to Discord
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - public/changelog.html
+  release:
+    types:
+      - published
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  notify:
+    if: github.event_name != 'push' || !contains(github.event.head_commit.message, '[release-changelog]')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Stabilen Release in den Changelog übernehmen
+        if: github.event_name == 'release'
+        uses: actions/github-script@v8
+        env:
+          RELEASE_BODY: ${{ github.event.release.body }}
+        with:
+          script: |
+            const fs = require("fs");
+            const { execFileSync } = require("child_process");
+            const release = context.payload.release;
+            const version = (release.tag_name || "").replace(/^v/, "");
+            if (release.draft || release.prerelease || !/^\d+\.\d+\.\d+$/.test(version)) {
+              core.info("Kein stabiler SemVer-Release; Changelog bleibt unverändert.");
+              return;
+            }
+            const path = "public/changelog.html";
+            const html = fs.readFileSync(path, "utf8");
+            const escapedVersion = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            if (new RegExp(`data-release-kind="stable" data-version="${escapedVersion}"`).test(html)) {
+              core.info(`VERSION ${version} ist bereits im Changelog vorhanden.`);
+              return;
+            }
+            const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character]));
+            const body = String(release.body || process.env.RELEASE_BODY || "").trim();
+            const lines = body.split(/\r?\n/).filter(line => line.trim());
+            const changes = lines.filter(line => /^[-*+]\s+/.test(line)).map(line => line.replace(/^[-*+]\s+/, "").trim());
+            const fallback = changes.length ? changes : [body || release.name || `Release ${version}`];
+            const date = new Date(release.published_at || Date.now());
+            const dateLabel = `${String(date.getUTCDate()).padStart(2, "0")}.${String(date.getUTCMonth() + 1).padStart(2, "0")}.${date.getUTCFullYear()}`;
+            const entry = `  <section class="entry" data-release-kind="stable" data-version="${escapeHtml(version)}"><div class="version"><span class="release-version">VERSION ${escapeHtml(version)}</span> · <time datetime="${date.toISOString().slice(0, 10)}">${dateLabel}</time></div><ul>\n${fallback.map(item => `    <li>${escapeHtml(item)}</li>`).join("\n")}\n  </ul></section>\n`;
+            const marker = '  <section class="entry"';
+            if (!html.includes(marker)) return core.setFailed("Kein Changelog-Eintragsbereich gefunden.");
+            fs.writeFileSync(path, html.replace(marker, entry + marker));
+            execFileSync("git", ["config", "user.name", "github-actions[bot]"]);
+            execFileSync("git", ["config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"]);
+            execFileSync("git", ["add", path]);
+            execFileSync("git", ["commit", "-m", `Add changelog entry for v${version} [release-changelog]`]);
+            execFileSync("git", ["push", "origin", "HEAD:main"], { stdio: "inherit" });
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: "docker-publish.yml",
+              ref: "main",
+              inputs: { release_version: version }
+            });
+            core.info(`VERSION ${version} wurde automatisch in den Changelog übernommen und gepusht.`);
+
+      - name: Changelog an Discord senden
+        uses: actions/github-script@v8
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_CHANGELOG_WEBHOOK }}
+          VERSELINK_APP_URL: ${{ secrets.VERSELINK_APP_URL }}
+        with:
+          script: |
+            const { execFileSync } = require("child_process");
+            const fs = require("fs");
+            const html = fs.readFileSync("public/changelog.html", "utf8");
+            let items = [];
+            let version = "unbekannt";
+            let releaseUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}`;
+            if (context.eventName === "release") {
+              const release = context.payload.release;
+              version = (release.tag_name || "").replace(/^v/, "");
+              if (release.draft || release.prerelease || !/^\d+\.\d+\.\d+$/.test(version)) return core.info("Kein stabiler SemVer-Release; keine Discord-Nachricht.");
+              const escapedVersion = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+              if (!new RegExp(`data-release-kind="stable" data-version="${escapedVersion}"`).test(html)) return core.setFailed(`Release v${version} fehlt im public/changelog.html.`);
+              items = String(release.body || "").split(/\r?\n/).filter(line => /^[-*+]\s+/.test(line)).map(line => line.replace(/^[-*+]\s+/, "").trim());
+              if (!items.length && release.body) items = [String(release.body).trim()];
+              releaseUrl = release.html_url || releaseUrl;
+            } else {
+              const pattern = /<section class="entry" data-release-kind="stable" data-version="([^"]+)">[\s\S]*?<\/section>/g;
+              const stableEntries = [...html.matchAll(pattern)].map(match => ({ version: match[1], html: match[0] }));
+              const latestStable = stableEntries[0];
+              if (!latestStable) return core.info("Kein stabiler Release im Changelog gefunden.");
+              version = latestStable.version;
+              items = [...latestStable.html.matchAll(/<li>([\s\S]*?)<\/li>/g)].map(match => match[1].replace(/<[^>]+>/g, "").trim());
+              if (context.eventName !== "workflow_dispatch") {
+                const before = context.payload.before && !/^0+$/.test(context.payload.before) ? context.payload.before : "HEAD^";
+                let beforeHtml = "";
+                try { beforeHtml = execFileSync("git", ["show", `${before}:public/changelog.html`], { encoding: "utf8" }); } catch {}
+                const previousStable = [...beforeHtml.matchAll(pattern)].map(match => ({ version: match[1], html: match[0] }));
+                if (previousStable.length && JSON.stringify(previousStable) === JSON.stringify(stableEntries)) return core.info("Keine Änderung an einem stabilen Release.");
+              }
+            }
+            if (!items.length) return core.info("Keine Changelog-Zeilen für Discord vorhanden.");
+            if (!process.env.DISCORD_WEBHOOK) return core.setFailed("Das Secret DISCORD_CHANGELOG_WEBHOOK ist nicht gesetzt.");
+            const appUrl = String(process.env.VERSELINK_APP_URL || "").replace(/\/+$/, "");
+            const fields = [
+              { name: "Changelog", value: version, inline: true },
+              { name: "GitHub Release", value: `[Release ansehen](${releaseUrl})`, inline: true }
+            ];
+            if (appUrl) fields.unshift({ name: "Applikation öffnen", value: `[VerseLink öffnen](${appUrl}/)`, inline: false });
+            const response = await fetch(process.env.DISCORD_WEBHOOK, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                embeds: [{
+                  title: `📢 VerseLink v${version} veröffentlicht`,
+                  description: items.map(item => `• ${item}`).join("\n").slice(0, 4000),
+                  color: 0x29b6f6,
+                  fields,
+                  footer: { text: "VerseLink · erstellt von compumark" }
+                }]
+              })
+            });
+            if (!response.ok) core.setFailed(`Discord-Webhook fehlgeschlagen: ${response.status}`);

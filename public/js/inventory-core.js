@@ -1,0 +1,10 @@
+export const normalizeSearch=value=>String(value??'').trim().toLowerCase();
+export const normalizeCategory=value=>String(value||'Other');
+export const matchesBlueprint=(blueprint,query)=>{const q=normalizeSearch(query);return !q||normalizeSearch(`${blueprint.product_name||''} ${blueprint.tag||''}`).includes(q)};
+export const collectCategories=blueprints=>[...new Set(blueprints.map(bp=>normalizeCategory(bp.category)))].sort((a,b)=>a.localeCompare(b));
+export const filterBlueprints=(blueprints,{query='',category=''}={})=>blueprints.filter(bp=>matchesBlueprint(bp,query)&&(!category||(category==='__new__'?bp.is_new:category==='__week__'?bp.is_week:normalizeCategory(bp.category)===category)));
+export const paginate=(items,page=1,pageSize=9)=>{const totalItems=items.length,totalPages=Math.max(1,Math.ceil(totalItems/pageSize)),currentPage=Math.min(totalPages,Math.max(1,Number.isFinite(Number(page))?Math.trunc(Number(page)):1)),startIndex=(currentPage-1)*pageSize,endIndex=Math.min(startIndex+pageSize,totalItems);return {items:items.slice(startIndex,endIndex),page:currentPage,pageSize,totalItems,totalPages,startIndex,endIndex}};
+export const splitOwners=value=>String(value||'').split(/\r?\n/).map(name=>name.trim()).filter(Boolean);
+export const scmdbFabUrl=tag=>`https://scmdb.net/?page=fab&fab=${encodeURIComponent(tag||'')}`;
+export const loadBlueprints=async()=>{const response=await fetch('/api/blueprints');if(!response.ok)throw Error(response.status===401?'login required':'Unable to load blueprint inventory');return (await response.json()).blueprints||[]};
+if(typeof window!=='undefined')window.InventoryCore={normalizeSearch,normalizeCategory,matchesBlueprint,collectCategories,filterBlueprints,paginate,splitOwners,scmdbFabUrl,loadBlueprints};

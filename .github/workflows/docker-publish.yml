@@ -1,0 +1,96 @@
+name: Publish Docker image
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: Stable version to publish after its Changelog entry was committed (for example 1.2.1)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ghcr.io/compumark/verselink
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Validate release tag
+        id: release
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$RELEASE_VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "stable=true" >> "$GITHUB_OUTPUT"
+            echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+            echo "major=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+            echo "minor=${BASH_REMATCH[1]}.${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "A manual stable image build requires a version in MAJOR.MINOR.PATCH format."
+            exit 1
+          fi
+
+          if [[ "$EVENT_NAME" != "push" ]]; then
+            echo "stable=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "stable=false" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=dev,enable=${{ github.event_name == 'push' }}
+            type=sha,prefix=sha-,format=short,enable=${{ github.event_name == 'push' }}
+            type=raw,value=${{ steps.release.outputs.version }},enable=${{ steps.release.outputs.stable == 'true' }}
+            type=raw,value=${{ steps.release.outputs.minor }},enable=${{ steps.release.outputs.stable == 'true' }}
+            type=raw,value=${{ steps.release.outputs.major }},enable=${{ steps.release.outputs.stable == 'true' }}
+            type=raw,value=latest,enable=${{ steps.release.outputs.stable == 'true' }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/compumark/verselink
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=AGPL-3.0-only
+
+      - name: Build and push Docker image
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSELINK_COMMIT=${{ github.sha }}
+            VERSELINK_ENVIRONMENT=${{ steps.release.outputs.stable == 'true' && 'Production' || 'DEV' }}
+            VERSELINK_VERSION=${{ steps.release.outputs.stable == 'true' && steps.release.outputs.version || 'dev' }}

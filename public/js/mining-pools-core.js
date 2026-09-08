@@ -1,0 +1,14 @@
+export const qualityRanges={1:[1,399],2:[400,599],3:[600,699],4:[700,799],5:[800,899],6:[900,949],7:[950,998],8:[999,1000]};
+export const getQualityBand=value=>{const q=Number(value);if(!Number.isInteger(q)||q<1||q>1000)return null;return Object.entries(qualityRanges).find(([,range])=>q>=range[0]&&q<=range[1])?.[0]??null};
+// UEX identifiers/codes are intentionally kept in one module; update from the verified UEX resource export.
+export const miningMaterials=[
+  {name:'Agricium',code:'AGRI'},{name:'Aluminum',code:'ALUM'},{name:'Aslarite',code:'ASLA'},{name:'Beryl',code:'BERY'},
+  {name:'Bexalite',code:'BEXA'},{name:'Borase',code:'BORA'},{name:'Copper',code:'COPP'},{name:'Corundum',code:'CORU'},
+  {name:'Gold',code:'GOLD'},{name:'Iron',code:'IRON'},{name:'Laranite',code:'LARA'},{name:'Stileron',code:'STIL'},
+  {name:'Taranite',code:'TARA'},{name:'Titanium',code:'TITA'},{name:'Tungsten',code:'TUNG'},{name:'Quantainium',code:'QUAN'}
+];
+export const normalizeLocation=location=>{const value=String(location||'').trim();const system=/^((?:Stanton|Pyro|Nyx))\s*\//i.exec(value)?.[1]||null;return {raw:value,system};};
+export const aggregateMaterials=rows=>{const map=new Map();for(const row of rows){const key=String(row.material_name||'').toLowerCase();if(!map.has(key))map.set(key,{material_name:row.material_name,uex_code:row.uex_code||'',total_scu:0,contributors:new Set(),locations:new Set(),pools:new Set(),systems:{},bands:{}});const item=map.get(key),qty=Number(row.quantity_scu)||0,loc=normalizeLocation(row.source_location);item.total_scu+=qty;if(row.user_id)item.contributors.add(row.user_id);if(loc.raw)item.locations.add(loc.raw);if(row.pool_id)item.pools.add(row.pool_id);if(loc.system){item.systems[loc.system]??={total_scu:0,bands:{}};item.systems[loc.system].total_scu+=qty;const band=String(row.quality_band||'');item.systems[loc.system].bands[band]=(item.systems[loc.system].bands[band]||0)+qty}item.bands[row.quality_band]=(item.bands[row.quality_band]||0)+qty}return [...map.values()].map(item=>({...item,contributors:item.contributors.size,locations:item.locations.size,pools:item.pools.size}))};
+export const loadGroups=async()=>{const r=await fetch('/api/groups');if(!r.ok)throw Error('Unable to load groups');return (await r.json()).groups||[]};
+export const loadMatrix=async(groupId,poolId='')=>{const query=new URLSearchParams({group_id:groupId});if(poolId)query.set('pool_id',poolId);const r=await fetch('/api/mining-pools/matrix?'+query);const body=await r.json();if(!r.ok)throw Error(body.error||'Unable to load mining matrix');return body};
+export const loadMaterialDetails=async(code,groupId,poolId='')=>{const query=new URLSearchParams({group_id:groupId});if(poolId)query.set('pool_id',poolId);const r=await fetch('/api/mining-pools/matrix/material/'+encodeURIComponent(code)+'?'+query);const body=await r.json();if(!r.ok)throw Error(body.error||'Unable to load material details');return body};

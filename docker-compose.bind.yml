@@ -1,0 +1,49 @@
+services:
+  app:
+    build: .
+    pull_policy: build
+    container_name: verselink-app
+    restart: unless-stopped
+    environment:
+      APP_PORT: 3000
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: blueprints
+      PGUSER: blueprints
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in Portainer}
+      SINK_TOKEN_PEPPER: ${SINK_TOKEN_PEPPER:?Set SINK_TOKEN_PEPPER in Portainer}
+      APP_ADMIN_USER_IDS: ${APP_ADMIN_USER_IDS:-}
+      SCMDB_SINK_BASE_URL: ${SCMDB_SINK_BASE_URL:-}
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+      DISCORD_ORDERS_WEBHOOKS: ${DISCORD_ORDERS_WEBHOOKS:-}
+      VERSELINK_APP_URL: ${VERSELINK_APP_URL:-http://localhost:3000}
+      UEX_API_TOKEN: ${UEX_API_TOKEN:-}
+      TZ: Europe/Vienna
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(response => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - ${APP_LOG_PATH:?Set APP_LOG_PATH for the existing bind-mount deployment}:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:16-alpine
+    container_name: verselink-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: blueprints
+      POSTGRES_USER: blueprints
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in Portainer}
+    volumes:
+      - ${POSTGRES_DATA_PATH:?Set POSTGRES_DATA_PATH for the existing bind-mount deployment}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blueprints -d blueprints"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

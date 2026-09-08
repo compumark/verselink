@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#16495a">
+<link rel="manifest" href="/manifest.webmanifest">
+<title>VerseLink · Login</title>
+<style>body{margin:0;min-height:100vh;background:radial-gradient(circle at top right,#173e4a,#101317 55%);color:#eef4f7;font:16px system-ui}main{width:min(760px,calc(100% - 32px));margin:40px auto}.eyebrow{color:#5ed9ff;letter-spacing:.14em;text-transform:uppercase;font-size:.8rem}h1{font-size:clamp(2.4rem,8vw,5rem);line-height:.98;margin:14px 0}h2{margin-top:0}p{color:#b7c7cd;line-height:1.55}.panel{margin-top:22px;padding:24px;border:1px solid #33454d;border-radius:16px;background:#181e23}input,button{box-sizing:border-box;padding:12px 14px;border-radius:9px;border:1px solid #33454d;background:#11181c;color:#eef4f7;font:inherit}input{width:100%;margin:8px 0}button{cursor:pointer;background:#16495a;border-color:#1e8cae}button:disabled{cursor:wait;opacity:.65}.token{font-family:ui-monospace,monospace;word-break:break-all;color:#72d9f6}.error{color:#ff9d9d}.hint{color:#b7c7cd;font-size:.92rem}</style>
+<main>
+  <div class="eyebrow">VerseLink · Star Citizen Companion</div>
+  <h1>WELCOME TO VERSELINK</h1>
+  <section class="panel">
+    <h2>VerseLink ID</h2>
+    <p class="hint">Use your independent VerseLink ID to access Mobiglass, Groups, Orders and Inventory.</p>
+    <form id="vlLogin"><input id="vlToken" name="token" type="password" placeholder="vl_…" autocomplete="off" required><button>CONNECT</button></form>
+    <p id="loginMessage" class="error"></p>
+    <p class="hint">Lost your VerseLink ID?</p>
+    <button id="recover" type="button">ACCOUNT RECOVERY</button>
+    <div id="recovery" hidden>
+      <p class="hint">Enter your Recovery Key to regain access to your VerseLink account.</p>
+      <input id="recoveryToken" type="password" placeholder="vlr_…" autocomplete="off">
+      <button id="recoverAccount" type="button">RECOVER ACCOUNT</button>
+      <button id="cancelRecovery" type="button">CANCEL</button>
+      <p id="recoveryMessage" class="error"></p>
+      <div id="recoveryCredentials" hidden>
+        <p><strong>NEW VERSELINK ID</strong></p><p id="newToken" class="token"></p><button id="copyNewId" type="button">COPY VERSELINK ID</button>
+        <p><strong>NEW RECOVERY KEY</strong></p><p id="newRecoveryKey" class="token"></p><button id="copyNewRecovery" type="button">COPY RECOVERY KEY</button>
+        <p class="hint">SAVE BOTH CREDENTIALS NOW. Your previous credentials are no longer valid.</p><button id="continueRecovery" type="button">CONTINUE TO LOGIN</button>
+      </div>
+    </div>
+  </section>
+  <section class="panel">
+    <h2>NEW TO VERSELINK?</h2>
+    <button id="create" type="button">CREATE NEW VERSELINK ID</button>
+    <div id="registration" hidden>
+      <p class="hint">Create your account, then save both credentials shown after registration.</p>
+      <input id="displayName" placeholder="Display name" maxlength="50" autocomplete="off">
+      <button id="register" type="button">CREATE ACCOUNT</button>
+      <div id="credentials" hidden>
+        <p><strong>YOUR VERSELINK ID</strong></p>
+        <p id="generated" class="token"></p>
+        <button id="copyId" type="button">COPY VERSELINK ID</button>
+        <p><strong>YOUR RECOVERY KEY</strong></p>
+        <p id="recoveryKey" class="token"></p>
+        <button id="copyRecovery" type="button">COPY RECOVERY KEY</button>
+        <p class="hint">SAVE BOTH CREDENTIALS NOW. Your Recovery Key will not be shown again. Use your VerseLink ID for normal login and your Recovery Key if you lose access to it.</p>
+        <button id="continue" type="button">CONTINUE TO VERSELINK</button>
+      </div>
+      <p id="registerMessage" class="error"></p>
+    </div>
+  </section>
+  <p><a href="/changelog">Changelog</a></p>
+</main>
+<script type="module">
+    import{copyText}from'/js/auth-core.js';
+  const $ = (id) => document.querySelector(id);
+  const create = $("#create");
+  const registration = $("#registration");
+  const register = $("#register");
+  const credentials = $("#credentials");
+  const recovery = $("#recovery");
+  create.onclick = () => { registration.hidden = false; create.hidden = true; $("#displayName").focus(); };
+  const copyCredential = async (button, element) => {
+    try { await copyText(element.textContent); const label = button.textContent; button.textContent = "COPIED"; setTimeout(() => { button.textContent = label; }, 1200); }
+    catch { $("#registerMessage").textContent = "Copy failed"; }
+  };
+  $("#copyId").onclick = () => copyCredential($("#copyId"), $("#generated"));
+  $("#copyRecovery").onclick = () => copyCredential($("#copyRecovery"), $("#recoveryKey"));
+  $("#recover").onclick = () => { recovery.hidden = false; $("#recover").hidden = true; $("#recoveryToken").focus(); };
+  $("#cancelRecovery").onclick = () => { recovery.hidden = true; $("#recover").hidden = false; $("#recoveryMessage").textContent = ""; };
+  const showRecoveryCopy = (button, element) => copyCredential(button, element);
+  $("#copyNewId").onclick = () => showRecoveryCopy($("#copyNewId"), $("#newToken"));
+  $("#copyNewRecovery").onclick = () => showRecoveryCopy($("#copyNewRecovery"), $("#newRecoveryKey"));
+  $("#recoverAccount").onclick = async () => {
+    const button = $("#recoverAccount"); button.disabled = true; $("#recoveryMessage").textContent = "";
+    try {
+      const response = await fetch("/auth/recover", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ recovery_key: $("#recoveryToken").value }) });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw Error(response.status === 429 ? "TOO MANY REQUESTS\nPlease try again later." : data.error || "Recovery failed");
+      if (!data.token?.startsWith("vl_") || !data.recovery_key?.startsWith("vlr_")) throw Error("Recovery succeeded but credentials were not returned.");
+      $("#newToken").textContent = data.token; $("#newRecoveryKey").textContent = data.recovery_key; $("#recoveryCredentials").hidden = false; button.hidden = true; $("#recoveryToken").disabled = true;
+      $("#continueRecovery").onclick = () => { recovery.hidden = false; $("#recoveryCredentials").hidden = true; $("#recoveryToken").disabled = false; $("#recoveryToken").value = ""; button.hidden = false; button.disabled = false; $("#recover").hidden = true; $("#vlToken").focus(); };
+    } catch (error) { $("#recoveryMessage").textContent = error.message || "Recovery failed"; button.disabled = false; }
+  };
+  register.onclick = async () => {
+    register.disabled = true;
+    $("#registerMessage").textContent = "";
+    try {
+      const response = await fetch("/auth/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ display_name: $("#displayName").value }) });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) { $("#registerMessage").textContent = data.error || "Registration failed"; register.disabled = false; return; }
+      if (typeof data.token !== "string" || !data.token.startsWith("vl_") || typeof data.recovery_key !== "string" || !data.recovery_key.startsWith("vlr_")) throw Error("Registration succeeded but credentials were not returned. Please contact the administrator before leaving this page.");
+      $("#generated").textContent = data.token;
+      $("#recoveryKey").textContent = data.recovery_key;
+      credentials.hidden = false;
+      $("#displayName").disabled = true;
+      register.hidden = true;
+      $("#continue").onclick = () => { location.href = "/mobiglass"; };
+    } catch (error) { $("#registerMessage").textContent = error.message || "Registration failed"; register.disabled = false; }
+  };
+  $("#vlLogin").onsubmit = async (event) => {
+    event.preventDefault();
+    const response = await fetch("/auth/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: $("#vlToken").value }) });
+    if (response.ok) location.href = "/mobiglass";
+    else { const data = await response.json().catch(() => ({})); $("#loginMessage").textContent = data.error || "Login failed"; }
+  };
+</script>
+</html>

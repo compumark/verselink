@@ -1,0 +1,54 @@
+{
+  "ScreenType": "REFINERY_COMPLETED_WORK_ORDER",
+  "Location": "Checkmate Station",
+  "Rows": [
+    {
+      "RawMaterialName": "STILERON",
+      "NormalizedMaterialName": "Stileron",
+      "RawQualityText": "330",
+      "Quality": 330,
+      "RawYieldText": "2SS",
+      "YieldCscu": 255,
+      "Confidence": 0.9,
+      "Warnings": [
+        "OCR_NUMERIC_CORRECTION"
+      ]
+    },
+    {
+      "RawMaterialName": "STILERON",
+      "NormalizedMaterialName": "Stileron",
+      "RawQualityText": "681",
+      "Quality": 681,
+      "RawYieldText": "34",
+      "YieldCscu": 34,
+      "Confidence": 0.9,
+      "Warnings": []
+    },
+    {
+      "RawMaterialName": "Gold",
+      "NormalizedMaterialName": "Gold",
+      "RawQualityText": "747",
+      "Quality": 747,
+      "RawYieldText": "19",
+      "YieldCscu": 19,
+      "Confidence": 0.9,
+      "Warnings": []
+    },
+    {
+      "RawMaterialName": "TARANITE",
+      "NormalizedMaterialName": "Taranite",
+      "RawQualityText": "525",
+      "Quality": 525,
+      "RawYieldText": "12",
+      "YieldCscu": 12,
+      "Confidence": 0.9,
+      "Warnings": []
+    }
+  ],
+  "Warnings": [],
+  "PlayerName": "COMPUMARK",
+  "LocationId": "pyro-checkmate",
+  "System": "Pyro",
+  "RawLocation": "// REFINERY SYSTEM C47.02 CHECKMATE",
+  "LocationMatchType": 1
+}

@@ -1,0 +1,70 @@
+name: Clean up old GHCR development images
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: List eligible versions without deleting them
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    env:
+      PACKAGE_NAME: verselink
+      RETAIN_SHA_VERSIONS: "20"
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+
+    steps:
+      - name: Clean up SHA-only development package versions
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const packageName = process.env.PACKAGE_NAME;
+            const retain = Number(process.env.RETAIN_SHA_VERSIONS);
+            const dryRun = process.env.DRY_RUN === "true";
+            const ownerRecord = await github.rest.users.getByUsername({ username: owner });
+            const ownerType = ownerRecord.data.type;
+            if (ownerType !== "User" && ownerType !== "Organization") throw new Error(`Unsupported package owner type: ${ownerType}`);
+            const routeBase = ownerType === "Organization"
+              ? `/orgs/${owner}/packages/container/${packageName}/versions`
+              : `/users/${owner}/packages/container/${packageName}/versions`;
+            const versions = await github.paginate("GET " + routeBase, { per_page: 100 });
+            const shaTag = /^sha-[0-9a-f]{7,}$/i;
+            const shaOnly = [];
+            for (const version of versions) {
+              const tags = version.metadata?.container?.tags;
+              if (!Array.isArray(tags) || tags.length === 0) {
+                core.info(`Keeping ambiguous version_id=${version.id}; tags=${Array.isArray(tags) ? "(none)" : "unavailable"}`);
+                continue;
+              }
+              if (!tags.every(tag => shaTag.test(tag))) {
+                core.info(`Protected version_id=${version.id}; tags=${tags.join(",")}`);
+                continue;
+              }
+              shaOnly.push(version);
+            }
+            shaOnly.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+            core.info(`Found ${shaOnly.length} SHA-only development versions; retaining newest ${retain}.`);
+            for (const version of shaOnly.slice(0, retain)) core.info(`Keeping development version_id=${version.id}; tags=${version.metadata.container.tags.join(",")}`);
+            const candidates = shaOnly.slice(retain);
+            for (const version of candidates) {
+              const tags = version.metadata.container.tags;
+              if (dryRun) {
+                core.info(`Dry run: would delete old development version_id=${version.id}; tags=${tags.join(",")}`);
+                continue;
+              }
+              core.info(`Deleting old development version_id=${version.id}; tags=${tags.join(",")}`);
+              await github.request("DELETE " + routeBase + "/{package_version_id}", { package_version_id: version.id });
+            }
+            core.info(dryRun ? `Dry run complete; ${candidates.length} versions would be deleted.` : `Cleanup complete; deleted ${candidates.length} versions.`);

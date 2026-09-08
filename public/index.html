@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Blueprint Inventory</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #101317; color: #eef4f7; }
+      body { margin: 0; min-height: 100vh; background: radial-gradient(circle at top right, #173e4a 0, #101317 45%); }
+      main { width: min(1100px, calc(100% - 40px)); margin: 0 auto; padding: 64px 0; }
+      .eyebrow { color: #5ed9ff; letter-spacing: .14em; text-transform: uppercase; font-size: .75rem; }
+      h1 { font-size: clamp(2.5rem, 7vw, 5.8rem); line-height: .95; margin: 14px 0 24px; max-width: 760px; }
+      p { color: #aebdc4; font-size: 1.1rem; max-width: 650px; line-height: 1.6; }
+      .card { margin-top: 44px; padding: 28px; border: 1px solid #26343b; border-radius: 18px; background: rgba(24, 30, 35, .82); box-shadow: 0 18px 70px rgba(0,0,0,.25); }
+      .status { display: inline-flex; gap: 8px; align-items: center; color: #8df0b8; font-size: .9rem; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: #49d88b; box-shadow: 0 0 16px #49d88b; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="eyebrow">SCMDB · Personal inventory</div>
+      <h1>Blueprints, owned by your crew.</h1>
+      <p>Ein ruhiges Inventar für deine SCMDB-Blueprints und die deiner Freunde. Suche, filtere und finde den Besitzer eines Blueprints innerhalb deiner Gruppe.</p>
+      <section class="card">
+        <div class="status"><span class="dot"></span> Webcontainer bereit</div>
+        <p>Der erste technische Schnitt ist aktiv. Als Nächstes folgen Datenbankpersistenz, Sink-Verarbeitung und die eigentliche Inventaransicht.</p>
+      </section>
+    </main>
+  </body>
+</html>
+

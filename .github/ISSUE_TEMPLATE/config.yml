@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerabilities
+    url: https://github.com/compumark/verselink/security/policy
+    about: Please use the repository security policy and private reporting when available. Do not open a public issue.

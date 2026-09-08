@@ -1,0 +1,53 @@
+name: Feature request
+description: Suggest an improvement or new idea for VerseLink.
+title: "[Feature]: "
+labels:
+  - enhancement
+  - status:needs-triage
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What problem would this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Desired functionality
+      description: Describe the idea without assuming it is committed to the roadmap.
+    validations:
+      required: true
+  - type: textarea
+    id: benefit
+    attributes:
+      label: Potential benefit
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: VerseLink area
+      options:
+        - Authentication
+        - Mobiglass UI
+        - Material Inventory
+        - Blueprint Inventory
+        - Orders
+        - Groups
+        - Notifications
+        - SCMDB Integration
+        - Admin
+        - Docker / Deployment
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Possible alternatives
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context

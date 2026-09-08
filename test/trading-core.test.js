@@ -1,0 +1,11 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { age, buildTradingQuery, cacheCountdown, loadLabel, money, summary } from '../public/js/trading-core.js';
+import { readFile } from 'node:fs/promises';
+
+test('builds an explicit execute trading query',()=>{const q=buildTradingQuery({system:'stanton',ship:'railen',capital:'100000',sort:'roi',fullLoadOnly:true,hideOutdated:false},{execute:true});assert.equal(q.get('execute'),'true');assert.equal(q.get('capital'),'100000');assert.equal(q.get('fullLoadOnly'),'true')});
+test('formats trade view values',()=>{assert.equal(money(182400),'182.4K aUEC');assert.equal(age(3720),'1h 2m');assert.equal(loadLabel('partial'),'PARTIAL LOAD')});
+test('derives summaries from server routes without recalculating trade values',()=>{const routes=[{netProfit:40,roi:4,loadStatus:'full',investment:200},{netProfit:80,roi:2,loadStatus:'full',investment:300},{netProfit:20,roi:8,loadStatus:'partial',investment:20}],s=summary(routes);assert.equal(s.bestProfit.netProfit,80);assert.equal(s.bestRoi.roi,8);assert.equal(s.cheapest.investment,200);assert.equal(s.count,3)});
+test('formats cache countdown from server expiry',()=>{assert.equal(cacheCountdown(new Date(Date.now()-1).toISOString()),'0:00')});
+test('server serves all shared trading modules',async()=>{const source=await readFile(new URL('../src/server.js',import.meta.url),'utf8');for(const file of ['trading-core.js','trading-classic.js','trading-mobiglass.js'])assert.match(source,new RegExp(file))});
+test('Mobiglass TradeMax uses the shared unfiltered logo asset',async()=>{const [classic,mobiglass,server]=await Promise.all([readFile(new URL('../public/trading.html',import.meta.url),'utf8'),readFile(new URL('../public/js/trading-mobiglass.js',import.meta.url),'utf8'),readFile(new URL('../src/server.js',import.meta.url),'utf8')]);assert.match(classic,/<img src="\/trading-logo\.png"/);assert.match(mobiglass,/<img class="tm-logo" src="\/trading-logo\.png" alt="TradeMax">/);assert.match(mobiglass,/\.tm-logo\{[^}]*object-fit:contain/);assert.doesNotMatch(mobiglass,/\.tm-logo\{[^}]*\b(?:filter|opacity|mix-blend-mode)\s*:/);assert.match(mobiglass,/ROUTES_PER_PAGE=20/);assert.match(mobiglass,/SHOWING .* OF .* ROUTES/);assert.match(server,/"\/trading-logo\.png"/)});

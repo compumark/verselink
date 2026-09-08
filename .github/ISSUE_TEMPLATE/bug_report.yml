@@ -1,0 +1,87 @@
+name: Bug report
+description: Report a reproducible problem in VerseLink.
+title: "[Bug]: "
+labels:
+  - bug
+  - status:needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not paste passwords, tokens, session IDs, Discord webhooks, database credentials, or other secrets.
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What went wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: List the smallest reliable set of steps.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: VerseLink area
+      options:
+        - Authentication
+        - Mobiglass UI
+        - Material Inventory
+        - Blueprint Inventory
+        - Orders
+        - Groups
+        - Notifications
+        - SCMDB Integration
+        - Admin
+        - Docker / Deployment
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: VerseLink version / commit
+      placeholder: "For example: main at abc1234"
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment type
+      options:
+        - Docker Compose
+        - Portainer
+        - Other / Unknown
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser (if relevant)
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / error messages
+      description: Remove secrets and personal data before posting.
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context

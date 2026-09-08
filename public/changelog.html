@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Changelog · VerseLink</title>
+  <style>body{margin:0;padding:30px;background:#101317;color:#eef4f7;font:16px system-ui}main{max-width:800px;margin:auto}.entry{margin:18px 0;padding:20px;border:1px solid #33454d;border-radius:14px;background:#181e23}.version{color:#5ed9ff;font-size:1.25rem}li{color:#b7c7cd;margin:8px 0}a{color:#72d9f6}.footer{margin-top:30px;color:#71858d;font-size:.8rem}</style>
+</head>
+<body><main>
+  <a href="/">← Inventory</a><h1>Changelog</h1><p>The latest VerseLink changes, explained briefly and clearly.</p>
+  <section class="entry" data-release-kind="stable" data-version="1.2.1"><div class="version"><span class="release-version">VERSION 1.2.1</span> · <time datetime="2026-09-07">07.09.2026</time></div><ul>
+    <li>Fixed duplicate location errors when a UEX terminal shares a name with an existing inventory location.</li>
+    <li>UEX location imports now reconcile both terminal names and external IDs safely.</li>
+    <li>Prevented overlapping UEX sync operations.</li>
+    <li>Improved UEX sync error handling in the MobiGlass Admin Center.</li>
+    <li>Invalid HTML or proxy responses are now shown as clear server errors instead of JSON parsing failures.</li>
+    <li>Stable GitHub releases now automatically create the matching MobiGlass Changelog entry.</li>
+    <li>The generated Changelog entry is committed to main before Discord is notified.</li>
+    <li>Drafts, pre-releases and existing release versions are ignored.</li>
+  </ul></section>
+  <section class="entry" data-release-kind="stable" data-version="1.2.0"><div class="version"><span class="release-version">VERSION 1.2.0</span> · <time datetime="2026-09-07">07.09.2026</time></div><ul>
+    <li><strong>Blueprint image resolution:</strong> Improved Star Citizen Wiki matching, safer image selection and linked fallback images for blueprints without a usable preview.</li>
+    <li><strong>MobiGlass changelog:</strong> Added stable release versions, GitHub release notes and a separate view for historical pre-release entries.</li>
+    <li><strong>Discord notifications:</strong> Changelog notifications now target actual stable releases and ignore pre-release changes.</li>
+    <li><strong>Quality:</strong> Improved Wiki resolver coverage and UI tests; all 98 automated tests pass.</li>
+  </ul></section>
+  <section class="entry" data-release-kind="stable" data-version="1.1.0"><div class="version"><span class="release-version">VERSION 1.1.0</span> · <time datetime="2026-09-07">07.09.2026</time></div><ul>
+    <li><strong>Blueprint images:</strong> Added a dedicated fallback image for blueprints without a verified Star Citizen Wiki preview.</li>
+    <li><strong>Wiki image matching:</strong> Improved exact Wiki-page matching and safe image selection for blueprint names and SCMDB identifiers.</li>
+    <li><strong>Wiki links:</strong> Fallback images now remain linked to the matching Star Citizen Wiki page when one exists.</li>
+  </ul></section>
+  <section class="entry" data-release-kind="stable" data-version="1.0.0"><div class="version"><span class="release-version">VERSION 1.0.0</span> · <time datetime="2026-09-06">06.09.2026</time></div><ul>
+    <li><strong>VerseLink Accounts &amp; Authentication:</strong> VerseLink now provides independent VerseLink IDs, account registration, Recovery Keys, account recovery, credential rotation and integrated authentication dialogs with additional security protections.</li>
+    <li><strong>SCMDB Connected Services:</strong> SCMDB is now managed as a connected service from the MobiGlass profile, with pending and connected states, disconnect/reconnect support, revoked-connection protection and multiple connections per account.</li>
+    <li><strong>Material Inventory:</strong> Added shared Group Material Inventory with warehouse locations, quality tracking, contributions, withdrawals, moves, notes, My Contributions filtering, persistent history, UEX-aligned data and home locations.</li>
+    <li><strong>Orders:</strong> Added Discord notifications and group webhooks, claim notifications, shareable MobiGlass links, material-based Order IDs, clearer quality display and improved filtering and toolbar presentation.</li>
+    <li><strong>Notifications:</strong> Improved polling with visibility/offline pausing, automatic resume, connection backoff and more reliable cached-script handling.</li>
+    <li><strong>Blueprint Inventory:</strong> Blueprint data now uses active SCMDB Connected Services, supports multiple connections and Personal Blueprint filtering, with themed filters, restored tooltips, standardized icons and updated image references.</li>
+    <li><strong>Groups &amp; Profiles:</strong> Redesigned group and profile dialogs, improved RSI profile synchronization, Account Security, Recovery Key management and SCMDB Connected Services in the profile.</li>
+    <li><strong>MobiGlass UI &amp; Themes:</strong> Improved authentication, credential feedback, navigation, inventory identities, VerseLink branding, theme selection and Stanton, Pyro and Nyx backgrounds. The static home connection panel was removed and public and MobiGlass interfaces were standardized to English.</li>
+    <li><strong>About &amp; Changelog:</strong> About and Admin navigation was improved, deployed-commit information remains available, and MobiGlass now loads the Changelog through a dedicated endpoint.</li>
+    <li><strong>Admin:</strong> Administration now uses VerseLink identities and sessions and includes UEX reference-data synchronization without legacy SCMDB authentication.</li>
+  </ul></section>
+  <section class="entry" data-release-kind="pre-release"><div class="version">30.08.2026</div><ul>
+    <li>Saving an RSI profile URL now starts the public RSI profile sync automatically; manual sync remains available.</li>
+    <li>New orders can optionally be published to Discord through the configured group webhook.</li>
+    <li>Order creators no longer receive their own creation notification, but receive a VerseLink notification when another user claims the order.</li>
+  </ul></section>
+  <section class="entry" data-release-kind="pre-release"><div class="version">29.08.2026</div><ul>
+    <li>Public VerseLink profiles can now be opened directly from Blueprint Inventory and Orders in an embedded mobiGlas view.</li>
+    <li>The profile view stays open so RSI and Discord information, as well as the external RSI link, remain accessible.</li>
+    <li>Public profile names are now linked for blueprint owners, order creators, assignees and contributors.</li>
+    <li>RSI profile information such as avatar, handle, Citizen Record, enlistment date and fluency is displayed; missing Discord details are clearly marked as “Not provided”.</li>
+    <li>Material orders support multiple suppliers with color-coded contribution shares, unique order numbers and mobiGlas/browser notifications.</li>
+    <li>TradeMax routes are limited to 20 entries per page and can be browsed with pagination.</li>
+    <li>Readability and usability were improved across themes, administration, profiles, orders and SCMDB synchronization.</li>
+  </ul></section>
+  <section class="entry" data-release-kind="pre-release"><div class="version">25.08.2026</div><ul>
+    <li>Added an internal VerseLink About view in Mobiglass with product details, available modules, connected services and a legal notice.</li>
+    <li>Integrated the VerseLink logo into the About header to match the other Mobiglass application views.</li>
+    <li>Personal Inventory is marked as in development and visually inactive on the About page.</li>
+    <li>Restored the VerseLink logo as the browser favicon and PWA icon.</li>
+    <li>The existing info icon next to Logout now opens the About view directly; the Changelog remains accessible from there.</li>
+    <li>The About view supports direct hash navigation, browser back/forward navigation and responsive module layout.</li>
+  </ul></section>
+  <section class="entry" data-release-kind="pre-release"><div class="version">21.08.2026</div><ul>
+    <li>Added TradeMax – Cargo Profit Optimizer to calculate profitable routes for ships and star systems using UEX prices, buy stock and sell demand.</li>
+    <li>Routes can be sorted by profit, ROI, SCU, stock, demand, location and data age.</li>
+    <li>UEX data is cached server-side for 30 minutes and can be refreshed manually with “Refresh UEX Data”.</li>
+  </ul></section>
+  <section class="entry" data-release-kind="pre-release"><div class="version">17.08.2026</div><ul>
+    <li>Added a secure, read-only public blueprint search for each group.</li>
+    <li>Group owners can create, copy, regenerate and revoke public links.</li>
+    <li>The public view shows blueprint data only and never exposes owners, user IDs, sink tokens or private account data.</li>
+    <li>Added public search filters for category, subcategory and manufacturer, including SCMDB references.</li>
+    <li>Added the Material Orders page for collaboratively recording and managing required resources.</li>
+    <li>Material orders support claiming, reporting deliveries, quality levels, progress tracking, completion, cancellation and hiding.</li>
+    <li>Partial deliveries are accumulated; delivered and open quantities and the current status are shown automatically.</li>
+    <li>Added an order overview with status filters, material search, active-order prioritization and responsive cards.</li>
+    <li>Added Orders navigation next to Groups in the inventory.</li>
+  </ul></section>
+  <section class="entry" data-release-kind="pre-release"><div class="version">24.07.2026</div><ul>
+    <li>The news ticker and time filters now use the immutable initial import time instead of the latest synchronization time.</li>
+    <li>The news ticker now shows each new blueprint only once per run.</li>
+    <li>The ticker animation now starts at the right edge and travels through the full visible area.</li>
+    <li>The ticker travel distance was corrected to span the full window width.</li>
+    <li>News ticker entries now run one after another without duplicates or a centered starting position.</li>
+  </ul></section>
+  <section class="entry" data-release-kind="pre-release"><div class="version">22.07.2026</div><ul>
+    <li>After token creation, the complete sink URL is displayed automatically and can be copied directly.</li>
+    <li>Global administrators can delete users completely, including sessions, connections, profiles, blueprints and group memberships.</li>
+    <li>Group owners can change their group name directly in Group Management.</li>
+    <li>Changelog updates can be published automatically as formatted Discord webhook messages.</li>
+    <li>Group invitations are valid for seven days and can be configured for one-time or reusable use.</li>
+    <li>The “Newly added (24h)” filter shows the newest blueprints from the last 24 hours.</li>
+    <li>These new blueprints are also displayed in an animated ticker with image and name.</li>
+    <li>Added a “Last 7 days” filter for recently added blueprints; the ticker remains limited to 24 hours.</li>
+    <li>Optimized the mobile header with Groups and Logout buttons for narrow screens.</li>
+    <li>Discord changelog notifications now contain only the lines changed in the respective commit.</li>
+  </ul></section>
+  <section class="entry" data-release-kind="pre-release"><div class="version">21.07.2026</div><ul>
+    <li>Added role and permission logic for members, group owners and global app administrators.</li>
+    <li>Group owners can remove members, transfer ownership and create or revoke invitations.</li>
+    <li>Global administrators can view all groups, manage invitations, remove members, change owners and start material synchronization.</li>
+    <li>Users can be blocked or disabled globally; active sessions are terminated.</li>
+    <li>Invitation codes are shown per group, remain available after a refresh and can be copied.</li>
+    <li>Added a browser favicon for Inventory, Groups, Login and Changelog.</li>
+    <li>The “Armour” category is now consistently displayed as “Armor”.</li>
+    <li>Required materials now link directly to the matching SCMDB mining pages.</li>
+  </ul></section>
+  <section class="entry" data-release-kind="pre-release"><div class="version">19.07.2026</div><ul>
+    <li>Multi-user groups with invitations and owner display</li><li>Blueprint search, categories, materials and SCMDB deep links</li><li>Mobile layout and installable PWA support</li><li>Discord notifications for newly received blueprints</li>
+  </ul></section>
+  <div class="footer"><a href="/changelog">VerseLink · built by compumark</a></div>
+</main></body></html>
