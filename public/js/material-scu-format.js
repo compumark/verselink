@@ -12,4 +12,4 @@ const observe = () => {
   new MutationObserver(apply).observe(content, { childList: true, subtree: true, characterData: true });
   apply();
 };
-window.addEventListener('load', observe);
+if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', observe, { once: true }); else observe();
