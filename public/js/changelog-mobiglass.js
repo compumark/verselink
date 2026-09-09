@@ -17,6 +17,15 @@
     return `<p>${lines.map(escapeHtml).join("<br>")}</p>`;
   }).join("");
 
+  const releaseChanges = (body) => String(body || "").split(/\r?\n/)
+    .filter((line) => /^[-*+]\s+/.test(line))
+    .map((line) => line.replace(/^[-*+]\s+/, "").trim());
+
+  const hasEmbeddedReleaseNotes = (entry, release) => {
+    const notes = releaseChanges(release?.body);
+    return notes.length > 0 && notes.every((note) => entry.changes.includes(note));
+  };
+
   const loadGithubRelease = async (version) => {
     try {
       const response = await fetch(`https://api.github.com/repos/${repository}/releases/tags/v${encodeURIComponent(version)}`, {
@@ -57,7 +66,7 @@
         <p class="changelog-intro">${preRelease ? "Development history before the first public release." : "Official releases and their deployed changes."}</p>
         ${selected.map((entry, index) => {
           const release = githubReleases.get(entry.version);
-          const githubNotes = release?.body ? `<section class="github-release"><strong>GITHUB RELEASE NOTES</strong>${releaseBody(release.body)}<a href="${escapeHtml(release.html_url)}" target="_blank" rel="noopener noreferrer">VIEW GITHUB RELEASE ↗</a></section>` : "";
+          const githubNotes = release?.body && !hasEmbeddedReleaseNotes(entry, release) ? `<section class="github-release"><strong>GITHUB RELEASE NOTES</strong>${releaseBody(release.body)}<a href="${escapeHtml(release.html_url)}" target="_blank" rel="noopener noreferrer">VIEW GITHUB RELEASE ↗</a></section>` : "";
           return `<article class="changelog-entry"><div class="changelog-release"><strong>${entry.version ? `VERSION ${escapeHtml(entry.version)}` : "PRE-RELEASE"}</strong><small>${escapeHtml(entry.date)}</small>${!preRelease && index === 0 ? '<span class="changelog-current">CURRENT RELEASE</span>' : ""}</div><ul>${entry.changes.map((change) => `<li>${escapeHtml(change)}</li>`).join("")}</ul>${githubNotes}</article>`;
         }).join("")}
         <div class="changelog-actions"><button type="button" id="changelog-toggle">${preRelease ? "BACK TO RELEASES" : "VIEW PRE-RELEASE HISTORY"}</button></div>

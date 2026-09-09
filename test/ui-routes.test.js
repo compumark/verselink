@@ -100,6 +100,8 @@ test("Mobiglass separates releases from pre-release history and shows GitHub rel
   assert.match(changelogMobiglassSource, /VIEW PRE-RELEASE HISTORY/);
   assert.match(changelogMobiglassSource, /GITHUB RELEASE NOTES/);
   assert.match(changelogMobiglassSource, /api\.github\.com\/repos/);
+  assert.match(changelogMobiglassSource, /hasEmbeddedReleaseNotes/);
+  assert.match(changelogMobiglassSource, /!hasEmbeddedReleaseNotes\(entry, release\)/);
 });
 
 test("material inventory navigation is blocked before session verification", () => {
