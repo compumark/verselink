@@ -6,7 +6,7 @@ const formatTextNodes = root => {
   nodes.forEach(node => { const next = formatScuText(node.nodeValue); if (next !== node.nodeValue) node.nodeValue = next; });
 };
 const observe = () => {
-  const content = document.querySelector('#content');
+  const content = document.body;
   if (!content) return;
   const apply = () => { if (location.hash === '#material') formatTextNodes(content); };
   new MutationObserver(apply).observe(content, { childList: true, subtree: true, characterData: true });
