@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-VerseLink has not released a stable v1.0.0 yet. Until the first stable release, only the current `main` branch is actively maintained for security fixes.
+The currently published stable release is v1.2.3. The current `main` branch is actively maintained for security fixes.
 
 ## Reporting a Vulnerability
 

@@ -64,8 +64,10 @@ The repository also publishes Docker images through GitHub Container Registry. T
 Stable releases use fixed version tags, for example:
 
 ```text
-ghcr.io/compumark/verselink:1.0.0
+ghcr.io/compumark/verselink:1.2.3
 ```
+
+For the current stable release, `1.2.3` is the exact version and the recommended Production pin. `1.2` follows the latest stable patch in the 1.2 series, `1` follows the latest stable major version, and `latest` follows the newest published stable release.
 
 The convenience tag follows the most recently published stable release:
 

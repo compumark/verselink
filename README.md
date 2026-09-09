@@ -101,13 +101,13 @@ Implemented capabilities include SCMDB ingestion, PostgreSQL persistence, sessio
 VerseLink supports both version-pinned GHCR deployments and builds directly from this repository. For production, use an explicit stable image version:
 
 ```yaml
-image: ghcr.io/compumark/verselink:1.0.0
+image: ghcr.io/compumark/verselink:1.2.3
 ```
 
 Image tags:
 
-- `1.0.0`: exact stable version (recommended for production)
-- `1.0`: latest stable patch in the `1.0` series
+- `1.2.3`: exact stable version (recommended for production)
+- `1.2`: latest stable patch in the `1.2` series
 - `1`: latest stable release in major version `1`
 - `latest`: latest published stable VerseLink release
 - `dev`: current development build from `main`; do not use for normal production
@@ -119,7 +119,7 @@ The following is a portable example using Docker named volumes. Replace every pl
 ```yaml
 services:
   app:
-    image: ghcr.io/compumark/verselink:1.0.0
+    image: ghcr.io/compumark/verselink:1.2.3
     restart: unless-stopped
     environment:
       APP_PORT: 3000

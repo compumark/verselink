@@ -4,8 +4,8 @@
 
 `docker-compose.yml` startet:
 
-- `blueprint-inventory-app`: selbst gebautes Node.js-Image, Port 3000
-- `blueprint-inventory-db`: `postgres:16-alpine`, intern Port 5432
+- `verselink-app`: selbst gebautes Node.js-Image, Port 3000
+- `verselink-db`: `postgres:16-alpine`, intern Port 5432
 
 Der App-Service wartet auf den PostgreSQL-Healthcheck.
 
