@@ -9,6 +9,8 @@ const materialInventorySource = await readFile(new URL("../public/js/material-in
 const changelogSource = await readFile(new URL("../public/changelog.html", import.meta.url), "utf8");
 const changelogMobiglassSource = await readFile(new URL("../public/js/changelog-mobiglass.js", import.meta.url), "utf8");
 const uiPreviewSource = await readFile(new URL("../public/ui-preview.html", import.meta.url), "utf8");
+const aliasMobiglassSource = await readFile(new URL("../public/js/alias-mobiglass.js", import.meta.url), "utf8");
+const materialScuFormatSource = await readFile(new URL("../public/js/material-scu-format.js", import.meta.url), "utf8");
 
 test("Mobiglass is the productive default UI", () => {
   assert.match(serverSource, /location: "\/mobiglass"/);
@@ -112,4 +114,17 @@ test("material loading overlay clears after the material view is ready", () => {
   assert.match(uiPreviewSource, /!materialReady&&!loadingMaterial/);
   assert.match(uiPreviewSource, /materialReady=true/);
   assert.match(uiPreviewSource, /body\.classList\.remove\('session-pending'\)/);
+});
+
+test("Mobiglass logout clears the shared authenticated header state", () => {
+  assert.match(aliasMobiglassSource, /const updateAuthenticatedUserState = user =>/);
+  assert.match(aliasMobiglassSource, /updateAuthenticatedUserState\(response\.ok \? body\.user : null\)/);
+  assert.match(aliasMobiglassSource, /event\.target\.closest\('#logout'\).*updateAuthenticatedUserState\(null\)/);
+  assert.match(aliasMobiglassSource, /#notificationCenter, #notificationButton/);
+  assert.match(aliasMobiglassSource, /NOT AUTHENTICATED/);
+});
+
+test("material inventory displays SCU values with two decimals", () => {
+  assert.match(materialScuFormatSource, /Number\(number\)\.toFixed\(2\)/);
+  assert.match(materialScuFormatSource, /location\.hash === '#material'/);
 });
