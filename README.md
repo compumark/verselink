@@ -85,6 +85,14 @@ Authorized administrators can use the protected VerseLink Admin Center for user 
 
 **Receive a blueprint → check stock → share it with the group → organize materials as an order → track progress → acquire missing resources.**
 
+## 100% Vibe Coded
+
+VerseLink is a 100% vibe-coded project.
+
+The application has been designed and developed with ChatGPT and OpenAI Codex — from the initial ideas and architecture to implementation, testing, documentation, and ongoing development.
+
+**Human ideas and decisions. AI-assisted implementation.**
+
 ## Development status
 
 Implemented capabilities include SCMDB ingestion, PostgreSQL persistence, session authentication, groups and roles, invitations, administration, filters, reference data, external images, material links, PWA foundations, and optional Discord notifications. Automated Node.js tests and UI contract tests are available; browser end-to-end coverage is still limited.
