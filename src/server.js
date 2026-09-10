@@ -17,9 +17,9 @@ const publicDir = join(root, "public");
 const logDirectory = process.env.LOG_DIR || "/app/logs";
 const logDirectoryReady = mkdir(logDirectory, { recursive: true });
 const port = Number(process.env.APP_PORT || 3000);
-const inviteExpiryDate = (now = new Date()) => {
+const inviteExpiryDate = (days = 14, now = new Date()) => {
   const expiry = new Date(now);
-  expiry.setDate(expiry.getDate() + 14);
+  expiry.setDate(expiry.getDate() + days);
   expiry.setHours(0, 0, 0, 0);
   expiry.setDate(expiry.getDate() + 1);
   return expiry;
@@ -1695,9 +1695,11 @@ const server = createServer(async (req, res) => {
       if (!group.rowCount) return json(res, 403, { error: "group owner required" });
       const invite = randomBytes(24).toString("base64url");
       const reusable = inviteParams.get("reusable") === "1";
-      const expiresAt = inviteExpiryDate();
+      const expiryDays = Number(inviteParams.get("expires_in_days") || 14);
+      if (!Number.isInteger(expiryDays) || expiryDays < 1 || expiryDays > 365) return json(res, 400, { error: "expiry must be between 1 and 365 days" });
+      const expiresAt = inviteExpiryDate(expiryDays);
       await pool.query("INSERT INTO group_invites (group_id, invite_hash, invite_code, expires_at, max_uses) VALUES ($1, $2, $3, $4, $5)", [group.rows[0].id, hashSession(`invite:${invite}`), invite, expiresAt, reusable ? null : 1]);
-      return json(res, 201, { invite, expires_at: expiresAt.toISOString(), expires_in_days: 14, reusable });
+      return json(res, 201, { invite, expires_at: expiresAt.toISOString(), expires_in_days: expiryDays, reusable });
     }
 
     if (req.method === "POST" && url.pathname === "/api/invites/join") {
