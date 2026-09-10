@@ -947,8 +947,7 @@ const accessibleBlueprintQuery = `
   SELECT m.tag, coalesce(r.product_name, min(m.product_name)) AS product_name,
          CASE WHEN lower(coalesce(r.category, 'Other')) = 'armour' THEN 'Armor' ELSE coalesce(r.category, 'Other') END AS category, r.subcategory, r.manufacturer,
          r.image_url, r.source_url, r.materials_json, max(m.owned_at) AS owned_at,
-         (row_number() OVER (ORDER BY max(m.first_seen_at) DESC, m.tag) <= 5
-          AND max(m.first_seen_at) >= CASE WHEN max(m.first_seen_at) > 100000000000
+         (max(m.first_seen_at) >= CASE WHEN max(m.first_seen_at) > 100000000000
             THEN floor(extract(epoch FROM now() - interval '24 hours') * 1000)
             ELSE floor(extract(epoch FROM now() - interval '24 hours')) END) AS is_new,
          (max(m.first_seen_at) >= CASE WHEN max(m.first_seen_at) > 100000000000
@@ -1047,7 +1046,7 @@ const categoryMedia = (category = "") => {
 let dashboardHtml = (blueprints) => {
   blueprints = blueprints.map((bp) => { const materials = Array.isArray(bp.materials_json) ? bp.materials_json : []; const materialText = materials.length ? `\n\nBenötigte Materialien:\n${materials.map((m) => `• ${m.name ?? m.label ?? m.item ?? "Material"}${m.quantity != null ? ` × ${m.quantity}` : ""}`).join("\n")}` : ""; return { ...bp, product_name: `${bp.product_name || "Unbenannter Blueprint"}${bp.owner_name ? `\n\nBesitzer:\n${bp.owner_name.split("\n").map((name) => `• ${name}`).join("\n")}` : ""}` }; });
   const categories = [...new Set(blueprints.map((bp) => bp.category || "Other"))].sort((a, b) => a.localeCompare(b));
-  const latest = blueprints.filter((bp) => bp.is_new).slice(0, 5);
+  const latest = blueprints.filter((bp) => bp.is_new);
   const tickerItems = latest.map((bp) => { const media = bp.image_url ? { image: bp.image_url, source: bp.source_url } : categoryMedia(bp.category); const name = String(bp.product_name || "Unbenannter Blueprint").split("\n\nBesitzer:")[0]; return `<a class="ticker-item" href="https://scmdb.net/?page=fab&fab=${encodeURIComponent(bp.tag)}" title="${htmlEscape(name)}"><img src="${htmlEscape(media?.image || "/favicon.png")}" alt=""><span>${htmlEscape(name)}</span></a>`; }).join("");
   const tickerMarkup = latest.length ? `<section class="news-ticker" aria-label="In den letzten 24 Stunden hinzugefügte Blueprints"><strong>Neu (24h)</strong><div class="ticker-window"><div class="ticker-track">${tickerItems}</div></div></section>` : "";
   const tickerScript = latest.length ? `<script>(()=>{const viewport=document.querySelector('.ticker-window'),track=document.querySelector('.ticker-track');if(!viewport||!track)return;let x=0,last=performance.now(),paused=false,waitUntil=0;const speed=42;const frame=(now)=>{const distance=Math.max(0,track.scrollWidth-viewport.clientWidth);if(!paused){const dt=Math.min(100,now-last);last=now;if(waitUntil){if(now>=waitUntil){x=0;waitUntil=0}else{x=distance}}else if(distance>0){x+=speed*dt/1000;if(x>=distance){x=distance;waitUntil=now+2000}}track.style.transform='translate3d('+(-x)+'px,0,0)'}requestAnimationFrame(frame)};viewport.addEventListener('mouseenter',()=>{paused=true});viewport.addEventListener('mouseleave',()=>{paused=false;last=performance.now()});requestAnimationFrame(frame)})()</script>` : "";
