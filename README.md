@@ -114,7 +114,7 @@ Image tags:
 
 ### Production deployment with GHCR
 
-The following is a portable example using Docker named volumes. Replace every placeholder before deployment; do not commit the resulting values.
+The following is a self-contained Portainer Web Editor example using Docker named volumes. Replace every placeholder before deployment; do not commit the resulting values.
 
 ```yaml
 services:
@@ -127,15 +127,15 @@ services:
       PGPORT: 5432
       PGDATABASE: blueprints
       PGUSER: blueprints
-      PGPASSWORD: ${POSTGRES_PASSWORD}
-      SINK_TOKEN_PEPPER: ${SINK_TOKEN_PEPPER}
-      APP_ADMIN_USER_IDS: ${APP_ADMIN_USER_IDS:-}
-      SCMDB_SINK_BASE_URL: ${SCMDB_SINK_BASE_URL:-}
-      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
-      DISCORD_ORDERS_WEBHOOKS: ${DISCORD_ORDERS_WEBHOOKS:-}
-      VERSELINK_APP_URL: ${VERSELINK_APP_URL}
-      UEX_API_TOKEN: ${UEX_API_TOKEN:-}
-      TZ: ${TZ:-Europe/Vienna}
+      PGPASSWORD: 'CHANGE_ME'
+      SINK_TOKEN_PEPPER: 'CHANGE_ME'
+      APP_ADMIN_USER_IDS: ''
+      SCMDB_SINK_BASE_URL: 'https://verselink.example.org/v1/scmdb'
+      DISCORD_WEBHOOK_URL: ''
+      DISCORD_ORDERS_WEBHOOKS: ''
+      VERSELINK_APP_URL: 'https://verselink.example.org'
+      UEX_API_TOKEN: ''
+      TZ: 'Europe/Vienna'
     ports:
       - "3000:3000"
     volumes:
@@ -155,7 +155,7 @@ services:
     environment:
       POSTGRES_DB: blueprints
       POSTGRES_USER: blueprints
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: 'CHANGE_ME'
     volumes:
       - verselink-postgres:/var/lib/postgresql/data
     healthcheck:
@@ -168,6 +168,8 @@ volumes:
   verselink-postgres:
   verselink-logs:
 ```
+
+`PGPASSWORD` and `POSTGRES_PASSWORD` must contain exactly the same strong random password. `CHANGE_ME` is only a placeholder and must be replaced before deployment. `SINK_TOKEN_PEPPER` must be a long random secret and must remain stable for an existing installation. `APP_ADMIN_USER_IDS` is optional and accepts comma-separated immutable VerseLink `app_users.id` UUIDs. `SCMDB_SINK_BASE_URL` is optional unless SCMDB synchronization is used; there is no automatic fallback. `VERSELINK_APP_URL` is the public URL of this VerseLink instance. Discord webhook variables and `UEX_API_TOKEN` are optional and may remain empty. Never commit real secrets.
 
 Required and optional values:
 
@@ -200,7 +202,9 @@ The first registered user does not automatically become an administrator.
 
 ### Portainer Web Editor
 
-For a GHCR-based stack, use **Stacks → Add stack → Web editor**, paste the Compose example, replace the placeholders, and select **Deploy the stack**.
+For a GHCR-based stack, use **Stacks → Add stack → Web editor**, paste the self-contained example above, replace the placeholders, and select **Deploy the stack**. The Web Editor example uses direct quoted values so it does not require external variables to be defined first.
+
+The Web Editor example and the repository Compose files use different configuration models. For Docker Compose or `.env`-based deployments, `${VARIABLE}` interpolation remains valid and `.env.example` is the template; do not replace that syntax with the Web Editor placeholders.
 
 ### Portainer Git Repository
 

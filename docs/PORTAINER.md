@@ -61,6 +61,10 @@ No data copy, move, export/import migration, or volume migration is required. Co
 
 The repository also publishes Docker images through GitHub Container Registry. This is an additional distribution option; the existing Git/build deployment remains supported.
 
+For a Portainer **Web editor** deployment, use the self-contained GHCR example in the README. It uses direct quoted placeholders such as `'CHANGE_ME'`, `''`, and `https://verselink.example.org`, so it can be pasted and edited directly in Portainer. `PGPASSWORD` and `POSTGRES_PASSWORD` must be the same strong random password, and `SINK_TOKEN_PEPPER` must be a long random value that remains stable for an existing installation. Never commit real secrets.
+
+The Web editor example is intentionally different from Docker Compose or `.env`-based deployment. Compose deployments may continue using `${VARIABLE}` interpolation with `.env.example` as their template; the environment variable names and meanings are unchanged.
+
 Stable releases use fixed version tags, for example:
 
 ```text
