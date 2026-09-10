@@ -4,7 +4,9 @@
 
 This optional GitHub Actions integration uses the **VerseLink Courier** Discord bot to mirror each VerseLink GitHub Issue into one post in the `verselink-feedback` Discord forum. GitHub remains the source of truth. The workflow runs on issue open, edit, label changes, close, and reopen; it never copies Discord discussion back to GitHub.
 
-The action stores the Discord thread ID in one bot-created Issue comment. Later deliveries use that marker to update only the post title, its bot starter message, and its forum tags. Community messages are never edited or deleted. If the marker is absent, the action recovers exactly one active forum post whose title starts `[#issue-number]`; ambiguity fails safely.
+The action stores the Discord thread ID in one bot-created Issue comment. Later deliveries use that marker to update only the post title, its bot starter message, and its forum tags. Community messages are never edited or deleted. If the marker is absent, the normal path creates a forum post directly; it does not enumerate forum threads first. Workflow concurrency queues deliveries for the same repository Issue, preventing `opened` and `labeled` from racing before the mapping comment exists.
+
+Discord REST calls are limited to `GET /channels/{forum-id}` (validate the type and read `available_tags`), `POST /channels/{forum-id}/threads` (create the post and starter message), `GET /channels/{thread-id}`, `PATCH /channels/{thread-id}`, and `PATCH /channels/{thread-id}/messages/{thread-id}`. Forum thread creation returns a nested starter message, and Discord assigns that starter message the same ID as the thread; therefore the mapping's thread ID safely identifies the bot starter message. The invalid `GET /channels/{forum-id}/threads/active` route is not used.
 
 ## Setup
 

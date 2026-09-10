@@ -8,6 +8,11 @@ permissions:
   contents: read
   issues: write
 
+# Events for the same issue are queued rather than racing to create two posts.
+concurrency:
+  group: discord-issue-${{ github.repository }}-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
 jobs:
   sync:
     # Never expose Discord credentials to pull-request workflows. Issue events

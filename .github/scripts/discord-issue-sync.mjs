@@ -67,8 +67,8 @@ async function github(path, options = {}) {
   if (!response.ok) throw new Error(`GitHub ${options.method || "GET"} ${path} failed (${response.status}): ${body?.message || "unknown error"}`);
   return body;
 }
-async function findMapping(ownerRepo, issueNumber) {
-  const comments = await github(`/repos/${ownerRepo}/issues/${issueNumber}/comments?per_page=100`);
+async function findMapping(ownerRepo, issueNumber, githubRequest) {
+  const comments = await githubRequest(`/repos/${ownerRepo}/issues/${issueNumber}/comments?per_page=100`);
   if (comments.some(comment => String(comment.body || "").includes("verselink-discord-thread:") && !parseThreadMarker(comment.body))) {
     throw new Error("Malformed Discord mapping comment found; refusing to create a duplicate post.");
   }
@@ -76,53 +76,44 @@ async function findMapping(ownerRepo, issueNumber) {
   if (matches.length > 1) throw new Error("Multiple Discord mapping comments found; refusing to choose a thread.");
   return matches[0] || null;
 }
-async function tagsForForum(channelId, issue) {
-  const forum = await discord(`/channels/${channelId}`);
+async function tagsForForum(channelId, issue, discordRequest) {
+  const forum = await discordRequest(`/channels/${channelId}`);
   if (forum.type !== 15) throw new Error("DISCORD_FORUM_CHANNEL_ID does not refer to a Discord forum channel.");
   const available = new Map((forum.available_tags || []).map(tag => [normalizeLabel(tag.name), tag.id]));
   const ids = [];
   for (const name of desiredTagNames(issue)) { const id = available.get(name); if (id) ids.push(id); else log(`Warning: Discord forum tag '${name}' was not found.`); }
   return { forum, availableTags: forum.available_tags || [], tagIds: [...new Set(ids)].slice(0, 5) };
 }
-async function recoverThread(channelId, issueNumber) {
-  const active = await discord(`/channels/${channelId}/threads/active`);
-  const matching = (active.threads || []).filter(thread => thread.name?.startsWith(`[#${issueNumber}]`));
-  if (matching.length === 1) return matching[0];
-  if (matching.length > 1) throw new Error(`Found ${matching.length} matching forum posts for issue #${issueNumber}; refusing to create a duplicate.`);
-  return null;
-}
-async function addMapping(ownerRepo, issue, thread) {
+async function addMapping(ownerRepo, issue, thread, githubRequest) {
   const guildId = thread.guild_id;
   const url = guildId ? `https://discord.com/channels/${guildId}/${thread.id}` : `https://discord.com/channels/@me/${thread.id}`;
-  await github(`/repos/${ownerRepo}/issues/${issue.number}/comments`, { method: "POST", body: JSON.stringify({ body: `Discord discussion:\n${url}\n\n<!-- verselink-discord-thread:${thread.id} -->` }) });
+  await githubRequest(`/repos/${ownerRepo}/issues/${issue.number}/comments`, { method: "POST", body: JSON.stringify({ body: `Discord discussion:\n${url}\n\n<!-- verselink-discord-thread:${thread.id} -->` }) });
 }
-async function run() {
-  required("DISCORD_FORUM_CHANNEL_ID");
-  const payload = JSON.parse(await fs.readFile(required("GITHUB_EVENT_PATH"), "utf8"));
-  const issue = payload.issue;
-  if (!issue) throw new Error("Workflow payload does not contain an issue.");
-  const ownerRepo = required("GITHUB_REPOSITORY");
-  const { forum, availableTags, tagIds } = await tagsForForum(process.env.DISCORD_FORUM_CHANNEL_ID, issue);
-  let mapping = await findMapping(ownerRepo, issue.number);
+export async function synchronizeIssue({ issue, ownerRepo, forumChannelId, discordRequest = discord, githubRequest = github }) {
+  const { forum, availableTags, tagIds } = await tagsForForum(forumChannelId, issue, discordRequest);
+  const mapping = await findMapping(ownerRepo, issue.number, githubRequest);
   let thread;
   if (mapping) {
-    try { thread = await discord(`/channels/${mapping.id}`); } catch (error) { if (!String(error.message).includes("(404)")) throw error; throw new Error(`Mapped Discord thread ${mapping.id} no longer exists; leaving the mapping intact to avoid duplicates.`); }
+    try { thread = await discordRequest(`/channels/${mapping.id}`); } catch (error) { if (!String(error.message).includes("(404)")) throw error; throw new Error(`Mapped Discord thread ${mapping.id} no longer exists; leaving the mapping intact to avoid duplicates.`); }
   } else {
-    thread = await recoverThread(forum.id, issue.number);
-    if (thread) { await addMapping(ownerRepo, issue, thread); log(`Recovered forum post ${thread.id} for issue #${issue.number}.`); }
-    else {
-      const created = await discord(`/channels/${forum.id}/threads`, { method: "POST", body: JSON.stringify({ name: truncateTitle(issue.number, issue.title), applied_tags: tagIds, message: { content: buildMessage(issue), allowed_mentions: { parse: [] } } }) });
-      thread = created;
-      await addMapping(ownerRepo, issue, thread);
-      log(`Created forum post ${thread.id} for issue #${issue.number}.`);
-      return;
-    }
+    const created = await discordRequest(`/channels/${forum.id}/threads`, { method: "POST", body: JSON.stringify({ name: truncateTitle(issue.number, issue.title), applied_tags: tagIds, message: { content: buildMessage(issue), allowed_mentions: { parse: [] } } }) });
+    await addMapping(ownerRepo, issue, created, githubRequest);
+    log(`Created forum post ${created.id} for issue #${issue.number}.`);
+    return { action: "created", threadId: created.id };
   }
   const appliedTags = mergeAppliedTags(thread.applied_tags || [], availableTags, desiredTagNames(issue));
-  await discord(`/channels/${thread.id}`, { method: "PATCH", body: JSON.stringify({ name: truncateTitle(issue.number, issue.title), applied_tags: appliedTags }) });
-  try { await discord(`/channels/${thread.id}/messages/${thread.id}`, { method: "PATCH", body: JSON.stringify({ content: buildMessage(issue), allowed_mentions: { parse: [] } }) }); }
+  await discordRequest(`/channels/${thread.id}`, { method: "PATCH", body: JSON.stringify({ name: truncateTitle(issue.number, issue.title), applied_tags: appliedTags }) });
+  // A forum post's initial message shares the thread ID (Discord thread API).
+  try { await discordRequest(`/channels/${thread.id}/messages/${thread.id}`, { method: "PATCH", body: JSON.stringify({ content: buildMessage(issue), allowed_mentions: { parse: [] } }) }); }
   catch (error) { log(`Warning: could not update starter message for thread ${thread.id}: ${error.message}`); }
   log(`Updated forum post ${thread.id} for issue #${issue.number}.`);
+  return { action: "updated", threadId: thread.id };
+}
+async function run() {
+  const forumChannelId = required("DISCORD_FORUM_CHANNEL_ID");
+  const payload = JSON.parse(await fs.readFile(required("GITHUB_EVENT_PATH"), "utf8"));
+  if (!payload.issue) throw new Error("Workflow payload does not contain an issue.");
+  await synchronizeIssue({ issue: payload.issue, ownerRepo: required("GITHUB_REPOSITORY"), forumChannelId });
 }
 
 if (process.argv[1] && new URL(`file:${process.argv[1]}`).href === import.meta.url) run().catch(error => { console.error(`[discord-issues] ${error.message}`); process.exitCode = 1; });
