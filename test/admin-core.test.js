@@ -100,3 +100,11 @@ test("blueprint ownership exposes a profile link only for public profiles", () =
   assert.match(server, /jsonb_agg\(DISTINCT jsonb_build_object\('name'/);
   assert.match(inventoryMobiglass, /mi-owner-link/);
 });
+
+test("admin users and group members reuse public-profile overlays without exposing private profiles", () => {
+  assert.match(server, /profile_public AND u\.account_status='active' THEN '\/profile\/' \|\| u\.id::text ELSE NULL END AS profile_path/);
+  assert.match(mobiglass, /data-admin-profile-id/);
+  assert.match(mobiglass, /\/api\/public-profiles\//);
+  assert.match(mobiglass, /admin-profile-link/);
+  assert.match(mobiglass, /admin-close-profile/);
+});
