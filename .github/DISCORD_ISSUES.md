@@ -37,6 +37,10 @@ Create these existing forum tags exactly once; the workflow resolves their IDs b
 
 Missing tags generate a workflow warning; configuration is not changed automatically. Managed tags are recalculated while unrelated existing tags are retained where Discord's five-tag limit allows. Discord 429 responses are retried once using `retry_after`. Missing secrets, permission failures, non-forum channels, malformed/duplicate mappings, deleted mapped threads, and missing starter messages produce actionable workflow logs without credentials.
 
+## Issue-form summary policy
+
+Discord is intentionally a summary view. From GitHub Issue Forms, the starter message shows `Description` (up to roughly 600 characters) and never includes `Steps to reproduce`, `Expected behavior`, `Actual behavior`, or `Additional context`. `Logs / error messages` is omitted for `No response`, `N/A`, `None`, or dash-only answers; otherwise it is shown as an **Error** preview of at most 200 characters, followed by `… Full logs on GitHub.` when shortened. The GitHub Issue link always remains the source for complete detail.
+
 ## Security and disabling
 
 Issue title, body, and author are untrusted. The script neutralizes Discord mention syntax and sends `allowed_mentions: { parse: [] }`; it does not execute issue content or log tokens. To disable safely, disable `.github/workflows/discord-issues.yml` in GitHub Actions (or remove the two secrets). Existing forum posts remain readable.

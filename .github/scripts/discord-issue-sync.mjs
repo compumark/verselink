@@ -4,6 +4,7 @@ const DISCORD_API = "https://discord.com/api/v10";
 const MARKER = /<!--\s*verselink-discord-thread:(\d+)\s*-->/;
 const MAX_THREAD_NAME = 100;
 const MAX_MESSAGE = 2000;
+const EXCLUDED_FORM_SECTIONS = new Set(["steps to reproduce", "expected behavior", "actual behavior", "additional context"]);
 
 export function normalizeLabel(value) { return String(value || "").trim().toLowerCase(); }
 export function chooseType(labels) {
@@ -24,14 +25,39 @@ export function sanitizeDiscordText(value) {
   return String(value || "").replace(/@(everyone|here)\b/gi, "@\u200b$1").replace(/<@&?(\d+)>/g, "@$1").replace(/<@!(\d+)>/g, "@$1");
 }
 export function parseThreadMarker(body) { return MARKER.exec(String(body || ""))?.[1] || null; }
+export function parseIssueFormSections(body) {
+  const source = String(body || "");
+  const headings = [...source.matchAll(/^#{1,6}\s+(.+?)\s*$/gm)];
+  return headings.map((match, index) => ({
+    name: normalizeLabel(match[1]),
+    content: source.slice(match.index + match[0].length, headings[index + 1]?.index ?? source.length).trim()
+  }));
+}
+export function isEmptyLogResponse(value) {
+  const lines = String(value || "").split(/\r?\n/).map(line => line.trim().toLowerCase()).filter(Boolean);
+  return !lines.length || lines.every(line => ["no response", "n/a", "none", "-"].includes(line));
+}
+export function buildIssueSummary(body) {
+  const source = String(body || "").trim();
+  const sections = parseIssueFormSections(source);
+  const description = sections.find(section => section.name === "description")?.content;
+  const fallback = sections.length ? sections.find(section => !EXCLUDED_FORM_SECTIONS.has(section.name) && section.name !== "logs / error messages")?.content : source;
+  const summary = String(description || fallback || "_No description provided._").trim();
+  const logs = sections.find(section => section.name === "logs / error messages")?.content;
+  const compactLogs = isEmptyLogResponse(logs) ? "" : String(logs).replace(/\s+/g, " ").trim();
+  return {
+    summary: summary.length > 600 ? `${summary.slice(0, 599).trimEnd()}…` : summary,
+    error: compactLogs ? (compactLogs.length > 200 ? `${compactLogs.slice(0, 200).trimEnd()}… Full logs on GitHub.` : compactLogs) : ""
+  };
+}
 export function buildMessage(issue, type = chooseType(issue.labels || [])) {
   const status = issueStatus(issue);
-  const heading = `**GitHub ${type[0].toUpperCase()}${type.slice(1)} #${issue.number}**\n\n### ${sanitizeDiscordText(issue.title)}`;
+  const title = String(issue.title || "Untitled").trim().slice(0, 500);
+  const heading = `**GitHub ${type[0].toUpperCase()}${type.slice(1)} #${issue.number}**\n\n### ${sanitizeDiscordText(title)}`;
   const footer = `\n\n🔗 **GitHub Issue**\n${issue.html_url}\n\n_GitHub is the source of truth for status and issue tracking._`;
   const author = `\n\n**Author:** ${sanitizeDiscordText(issue.user?.login || "unknown")}\n**Status:** ${status}\n\n`;
-  const rawBody = sanitizeDiscordText(issue.body || "_No description provided._").trim();
-  const budget = MAX_MESSAGE - heading.length - author.length - footer.length;
-  const body = rawBody.length > budget ? `${rawBody.slice(0, Math.max(0, budget - 39)).trimEnd()}\n\nFull description available on GitHub.` : rawBody;
+  const { summary, error } = buildIssueSummary(issue.body);
+  const body = `${sanitizeDiscordText(summary)}${error ? `\n\n**Error**\n${sanitizeDiscordText(error)}` : ""}`;
   return `${heading}${author}${body}${footer}`.slice(0, MAX_MESSAGE);
 }
 export function desiredTagNames(issue) {

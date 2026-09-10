@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import { buildMessage, chooseType, desiredTagNames, issueStatus, mergeAppliedTags, parseThreadMarker, sanitizeDiscordText, synchronizeIssue, truncateTitle } from "../.github/scripts/discord-issue-sync.mjs";
+import { buildIssueSummary, buildMessage, chooseType, desiredTagNames, issueStatus, mergeAppliedTags, parseThreadMarker, sanitizeDiscordText, synchronizeIssue, truncateTitle } from "../.github/scripts/discord-issue-sync.mjs";
 
 const base = { number: 42, title: "A title", html_url: "https://github.com/compumark/verselink/issues/42", user: { login: "octo" }, labels: [], state: "open", body: "hello" };
 test("chooses one primary tag by priority", () => assert.equal(chooseType(["issue", "enhancement", "bug"]), "bug"));
@@ -12,6 +12,16 @@ test("keeps issue number while truncating title", () => assert.ok(truncateTitle(
 test("sanitizes Discord mentions", () => assert.equal(sanitizeDiscordText("@everyone <@123> <@&456>"), "@\u200beveryone @123 @456"));
 test("parses mapping comments", () => assert.equal(parseThreadMarker("<!-- verselink-discord-thread:123456789012345678 -->"), "123456789012345678"));
 test("message retains URL and disables nothing in content", () => assert.match(buildMessage(base), /GitHub Issue/));
+test("issue form messages include only description and compact real logs", () => {
+  const form = `### Description\n${"A".repeat(650)}\n\n### Steps to reproduce\nsecret steps\n\n### Expected behavior\nexpected detail\n\n### Actual behavior\nactual detail\n\n### Logs / error messages\n${"E".repeat(260)}\n\n### Additional context\nprivate detail`;
+  const message = buildMessage({ ...base, body: form });
+  assert.match(message, /^.*A{599}…/s);
+  assert.match(message, /\*\*Error\*\*\nE{200}… Full logs on GitHub\./);
+  for (const excluded of ["secret steps", "expected detail", "actual detail", "private detail"]) assert.doesNotMatch(message, new RegExp(excluded));
+});
+test("empty issue-form logs are omitted", () => {
+  for (const emptyLog of ["No response", "N/A", "None", "-\n-"]) assert.equal(buildIssueSummary(`### Description\nBrief\n\n### Logs / error messages\n${emptyLog}`).error, "");
+});
 test("new issues create directly without enumerating forum threads", async () => {
   const discordCalls = [];
   const githubCalls = [];
