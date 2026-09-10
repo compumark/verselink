@@ -9,6 +9,7 @@ import { selectWikiCandidate, selectWikiImageFile, shouldRefreshReference, wikiS
 import { hashRecoveryToken, isRecoveryToken, generateRecoveryToken } from "./auth-primitives.js";
 import { clientKey, createRateLimiter } from "./rate-limit.js";
 import { normalizeScmdbSinkBaseUrl, scmdbSinkUrl } from "./scmdb-sink-config.js";
+import { createDiscordAdminNotifier } from "./discord-admin-dm.js";
 
 const { Pool } = pg;
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -77,6 +78,7 @@ const configuredAdminUserIds = (() => {
 const changelogSource = readFileSync(join(publicDir, "changelog.html"), "utf8");
 const appCommit = String(process.env.APP_COMMIT || process.env.GIT_COMMIT || "unknown").trim() || "unknown";
 const appEnvironment = String(process.env.APP_ENVIRONMENT || "Production UI").trim() || "Production UI";
+const notifyNewUserRegistration = createDiscordAdminNotifier({ botToken: process.env.DISCORD_BOT_TOKEN, adminUserId: process.env.DISCORD_ADMIN_USER_ID, environment: appEnvironment });
 const appVersion = String(process.env.APP_VERSION || changelogSource.match(/data-release-kind="stable"\s+data-version="([^"]+)"/)?.[1]?.trim() || "unknown").trim() || "unknown";
 // Mobiglass view compatibility marker: 'changelog','about'
 const applyVerseLinkBranding = (html) => html
@@ -1412,7 +1414,9 @@ const server = createServer(async (req, res) => {
         await client.query("COMMIT");
         registrationRateLimit.clear(rateKey);
         res.writeHead(201, { "content-type": "application/json; charset=utf-8", "set-cookie": `bp_session=${encodeURIComponent(session)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000` });
-        return res.end(JSON.stringify({ ok: true, token, recovery_key: recoveryKey }));
+        res.end(JSON.stringify({ ok: true, token, recovery_key: recoveryKey }));
+        void notifyNewUserRegistration({ userId: user.rows[0].id, displayName, registeredAt: new Date().toISOString() }).catch(() => {});
+        return;
       } catch (error) { await client.query("ROLLBACK").catch(() => {}); if (error.code === "23505") return json(res, 409, { error: "VerseLink ID already exists" }); throw error; } finally { client.release(); }
     }
 

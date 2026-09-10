@@ -10,7 +10,7 @@ The public default stack is portable and uses the Named Volumes `verselink-postg
 4. Repository URL: `https://github.com/compumark/verselink.git`
 5. Reference: `main`.
 6. Compose path: `docker-compose.yml`.
-7. Add `POSTGRES_PASSWORD` and `SINK_TOKEN_PEPPER` as Environment variables. If SCMDB synchronization is needed, also add `SCMDB_SINK_BASE_URL` with this deployment's public ingest base URL, for example `https://verselink.example.org/v1/scmdb`.
+7. Add `POSTGRES_PASSWORD` and `SINK_TOKEN_PEPPER` as Environment variables. If SCMDB synchronization is needed, also add `SCMDB_SINK_BASE_URL` with this deployment's public ingest base URL, for example `https://verselink.example.org/v1/scmdb`. To enable optional private registration DMs, add both `DISCORD_BOT_TOKEN` and `DISCORD_ADMIN_USER_ID` (the recipient's Discord user snowflake). The bot must be able to DM that user; delivery is best-effort and never blocks registration. Use separate values for Production and DEV when desired.
 8. Deploy the stack.
 9. Check container health and open VerseLink on port `3000` or through the reverse proxy.
 

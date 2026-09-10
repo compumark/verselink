@@ -26,6 +26,8 @@ Stack über das GitHub-Repository anlegen, Branch `main` und Compose-Datei `dock
 
 Pflicht: `POSTGRES_PASSWORD`, `SINK_TOKEN_PEPPER`. Optional: `APP_ADMIN_USER_IDS`, `DISCORD_WEBHOOK_URL`, `DATABASE_URL` und PostgreSQL-Verbindungswerte. `APP_ADMIN_USER_IDS` ist eine kommagetrennte Liste unveränderlicher `app_users.id`-UUIDs; eine leere oder fehlende Liste vergibt keine Adminrechte.
 
+`DISCORD_BOT_TOKEN` und `DISCORD_ADMIN_USER_ID` sind optional und wirken nur zusammen. Sie senden nach dem Commit einer neuen Registrierung eine private Best-Effort-DM an die konfigurierte Discord-User-Snowflake. Der Bot muss dem Empfänger schreiben dürfen. Discord-Fehler blockieren die Registrierung nie; ein zweiter Bot oder Webhook ist nicht erforderlich. Werte pro Deployment geheim konfigurieren; Production und DEV können unterschiedliche Tokens oder Empfänger-IDs verwenden.
+
 `SCMDB_SINK_BASE_URL` ist erforderlich, wenn SCMDB-Synchronisierung verwendet werden soll. Der Wert muss als öffentlich erreichbare `http://`- oder `https://`-Ingest-Basis beim Deployment gesetzt werden, beispielsweise `https://verselink.example.org/v1/scmdb`. Es gibt keinen Default und keinen Production-Fallback. Fehlt der Wert oder ist er ungültig, startet VerseLink weiterhin, aber das Erstellen neuer SCMDB-Sinks ist deaktiviert. Für Self-Hosting muss die eigene URL gesetzt werden; Reverse Proxy, TLS und öffentliche Erreichbarkeit müssen SCMDB den Zugriff auf diesen Endpoint erlauben. Geheimnisse nur im Portainer-Environment oder einer nicht versionierten `.env`.
 
 ## Netzwerk, Ports und Storage

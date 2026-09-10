@@ -183,9 +183,15 @@ Required and optional values:
 | `UEX_API_TOKEN` | Optional; only needed for UEX features requiring authenticated access. |
 | `DISCORD_WEBHOOK_URL` | Optional Discord webhook URL. |
 | `DISCORD_ORDERS_WEBHOOKS` | Optional JSON mapping of group names to Discord webhook URLs. |
+| `DISCORD_BOT_TOKEN` | Optional server-side Discord bot token for private administrator registration notifications. |
+| `DISCORD_ADMIN_USER_ID` | Optional Discord user snowflake that receives registration notifications; requires `DISCORD_BOT_TOKEN`. |
 | `TZ` | Container timezone, such as `Europe/Vienna`. |
 
 `APP_ENVIRONMENT`, `APP_VERSION`, and `APP_COMMIT` are embedded build metadata. Do not configure them manually for GHCR images.
+
+### Optional Discord registration notifications
+
+Set both `DISCORD_BOT_TOKEN` and `DISCORD_ADMIN_USER_ID` in the deployment's secret configuration to send a private, best-effort DM when a genuinely new VerseLink account is committed. The bot must be able to DM that Discord user. Discord failure never blocks registration, and no additional bot or webhook is required. Production and DEV deployments may use different bot tokens and recipient IDs.
 
 ### First startup
 
