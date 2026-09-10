@@ -2124,8 +2124,8 @@ const server = createServer(async (req, res) => {
       return res.end();
     }
 
-    if (req.method === "GET" && (url.pathname === "/mobiglass" || url.pathname === "/ui-preview")) {
-      let html = applyVerseLinkBranding(await readFile(join(publicDir, "ui-preview.html"), "utf8"))
+    if (req.method === "GET" && url.pathname === "/mobiglass") {
+      let html = applyVerseLinkBranding(await readFile(join(publicDir, "mobiglass.html"), "utf8"))
         .replaceAll("fetch('/changelog')", "fetch('/api/changelog')")
         .replaceAll("AUFTRÄGE", "ORDERS")
         .replaceAll("Die wichtigsten Änderungen am Blueprint Inventory.", "The latest changes to VerseLink.")

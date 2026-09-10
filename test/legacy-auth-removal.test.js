@@ -22,7 +22,7 @@ test("only registered active SCMDB connected services may ingest", () => {
   assert.doesNotMatch(sink, /INSERT INTO scmdb_connections/);
 });
 
-test("the compatibility shell has no SCMDB login or sink-token creation fallback", async () => {
-  const preview = await readFile(new URL("../public/ui-preview.html", import.meta.url), "utf8");
-  assert.doesNotMatch(preview, /SINK TOKEN AUTHENTICATION|CREATE SINK TOKEN|fetch\('\/session'/);
+test("the Mobiglass shell has no SCMDB login or sink-token creation fallback", async () => {
+  const mobiglass = await readFile(new URL("../public/mobiglass.html", import.meta.url), "utf8");
+  assert.doesNotMatch(mobiglass, /SINK TOKEN AUTHENTICATION|CREATE SINK TOKEN|fetch\('\/session'/);
 });

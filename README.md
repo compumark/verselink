@@ -273,7 +273,7 @@ Check `http://SERVER-IP:3000/healthz` (or the corresponding local/reverse-proxy 
 
 - `/` redirects to the productive VerseLink UI at `/mobiglass`.
 - `/mobiglass` is the productive multi-module interface.
-- `/ui-preview` is reserved for a future UI version.
+- No legacy UI route is exposed.
 
 ## Environment variables
 

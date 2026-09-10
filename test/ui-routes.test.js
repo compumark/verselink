@@ -8,7 +8,7 @@ const aboutSource = await readFile(new URL("../public/js/about-mobiglass.js", im
 const materialInventorySource = await readFile(new URL("../public/js/material-inventory-mobiglass.js", import.meta.url), "utf8");
 const changelogSource = await readFile(new URL("../public/changelog.html", import.meta.url), "utf8");
 const changelogMobiglassSource = await readFile(new URL("../public/js/changelog-mobiglass.js", import.meta.url), "utf8");
-const uiPreviewSource = await readFile(new URL("../public/ui-preview.html", import.meta.url), "utf8");
+const mobiglassSource = await readFile(new URL("../public/mobiglass.html", import.meta.url), "utf8");
 const aliasMobiglassSource = await readFile(new URL("../public/js/alias-mobiglass.js", import.meta.url), "utf8");
 
 test("Mobiglass is the productive default UI", () => {
@@ -20,14 +20,17 @@ test("Mobiglass is the productive default UI", () => {
   assert.match(serverSource, /\["\/assets\/verselink\.png", "\/favicon\.png", "\/favicon\.ico"\]/);
 });
 
-test("ui-preview and Mobiglass share the productive shell", () => {
-  assert.match(serverSource, /url\.pathname === "\/mobiglass" \|\| url\.pathname === "\/ui-preview"/);
+test("Mobiglass is served from the productive shell without a legacy alias", () => {
+  assert.match(serverSource, /url\.pathname === "\/mobiglass"/);
+  assert.match(serverSource, /readFile\(join\(publicDir, "mobiglass\.html"\), "utf8"\)/);
+  const obsoleteShellName = ["ui", "preview"].join("-");
+  assert.doesNotMatch(serverSource, new RegExp(obsoleteShellName));
   assert.doesNotMatch(serverSource, /url\.pathname === "\/classic(?:\/|\")/);
 });
 
 test("Pyro keeps readable text and does not fall back to browser link colors", () => {
-  assert.match(uiPreviewSource, /html\[data-theme=pyro\]\{--accent:#ff8a78;--bright:#fff5f0;--muted:#f3beb5;--border:#a84e45;--text:#fffaf7/);
-  assert.match(uiPreviewSource, /a,a:visited\{color:var\(--accent\)\}/);
+  assert.match(mobiglassSource, /html\[data-theme=pyro\]\{--accent:#ff8a78;--bright:#fff5f0;--muted:#f3beb5;--border:#a84e45;--text:#fffaf7/);
+  assert.match(mobiglassSource, /a,a:visited\{color:var\(--accent\)\}/);
 });
 
 test("Mobiglass exposes the internal VerseLink About view", () => {
@@ -78,15 +81,15 @@ test("material stock changes are restricted to the contribution owner", () => {
 });
 
 test("inventory navigation exposes blueprint and material shortcuts", () => {
-  assert.match(uiPreviewSource, /nav-inventory-menu/);
-  assert.match(uiPreviewSource, /Open Blueprint Inventory/);
-  assert.match(uiPreviewSource, /Open Material Inventory/);
-  assert.match(uiPreviewSource, /\[data-app="material"\]\.locked \.app-icon\{filter:grayscale\(1\) brightness\(\.55\)\}/);
+  assert.match(mobiglassSource, /nav-inventory-menu/);
+  assert.match(mobiglassSource, /Open Blueprint Inventory/);
+  assert.match(mobiglassSource, /Open Material Inventory/);
+  assert.match(mobiglassSource, /\[data-app="material"\]\.locked \.app-icon\{filter:grayscale\(1\) brightness\(\.55\)\}/);
 });
 
 test("notification actions use the Mobiglass button styling", () => {
-  assert.match(uiPreviewSource, /\.notification-view-all,\.notification-mark-all,\.notification-desktop-toggle/);
-  assert.match(uiPreviewSource, /text-transform:uppercase/);
+  assert.match(mobiglassSource, /\.notification-view-all,\.notification-mark-all,\.notification-desktop-toggle/);
+  assert.match(mobiglassSource, /text-transform:uppercase/);
   assert.match(serverSource, /\/js\/notifications-mobiglass\.js/);
   assert.match(serverSource, /"cache-control": "no-cache"/);
 });
@@ -112,9 +115,9 @@ test("material inventory navigation is blocked before session verification", () 
 });
 
 test("material loading overlay clears after the material view is ready", () => {
-  assert.match(uiPreviewSource, /!materialReady&&!loadingMaterial/);
-  assert.match(uiPreviewSource, /materialReady=true/);
-  assert.match(uiPreviewSource, /body\.classList\.remove\('session-pending'\)/);
+  assert.match(mobiglassSource, /!materialReady&&!loadingMaterial/);
+  assert.match(mobiglassSource, /materialReady=true/);
+  assert.match(mobiglassSource, /body\.classList\.remove\('session-pending'\)/);
 });
 
 test("Mobiglass logout clears the shared authenticated header state", () => {
