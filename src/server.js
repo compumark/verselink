@@ -1772,7 +1772,12 @@ const server = createServer(async (req, res) => {
     const qualityBand = value => { const q=Number(value); return q>=1&&q<=399?1:q<=599?2:q<=699?3:q<=799?4:q<=899?5:q<=949?6:q<=998?7:q<=1000?8:null; };
     const normalizeMaterialLocation = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
     const materialLocationSystems = async () => new Map((await pool.query("SELECT name,star_system FROM inventory_locations WHERE active=true AND star_system IS NOT NULL")).rows.map(row => [normalizeMaterialLocation(row.name), row.star_system]));
-    const materialSystemForLocation = (source, systems) => /^(Stanton|Pyro|Nyx)\s*\//i.exec(String(source || ""))?.[1] || systems.get(normalizeMaterialLocation(source)) || "Unknown";
+    const materialSystemName = value => ({stanton:"Stanton",pyro:"Pyro",nyx:"Nyx"}[String(value || "").trim().toLowerCase()] || "");
+    const materialSystemForLocation = (source, systems) => {
+      const location = String(source || "").trim();
+      const system = /^(Stanton|Pyro|Nyx)\s*\//i.exec(location)?.[1] || /(?:^|\|)\s*(Stanton|Pyro|Nyx)\s*$/i.exec(location)?.[1] || systems.get(normalizeMaterialLocation(location));
+      return materialSystemName(system) || "Unknown";
+    };
     const materialInventoryNetRows = async (groupId, db = pool) => {
       const [contributions, withdrawals] = await Promise.all([
         db.query("SELECT c.*,COALESCE(u.verselink_name,u.display_name) AS player_name,CASE WHEN u.profile_public AND u.account_status='active' THEN '/profile/'||u.id::text ELSE NULL END AS profile_path FROM material_inventory_contributions c JOIN app_users u ON u.id=c.user_id WHERE c.group_id=$1 ORDER BY c.created_at,c.id", [groupId]),
