@@ -92,15 +92,17 @@ async function tagsForForum(channelId, issue, discordRequest) {
   for (const name of desiredTagNames(issue)) { const id = available.get(name); if (id) ids.push(id); else log(`Warning: Discord forum tag '${name}' was not found.`); }
   return { forum, availableTags: forum.available_tags || [], tagIds: [...new Set(ids)].slice(0, 5) };
 }
-async function findForumThread(forumChannelId, issueNumber, discordRequest) {
+async function findForumThread(forum, issueNumber, discordRequest) {
+  if (!forum.guild_id) throw new Error("DISCORD_FORUM_CHANNEL_ID must refer to a guild forum channel with a guild_id.");
+  const forumChannelId = forum.id;
   const prefix = `[#${issueNumber}] `;
-  const find = threads => {
-    const matches = (threads || []).filter(thread => String(thread.name || "").startsWith(prefix));
+  const find = (threads, filterToForum = false) => {
+    const matches = (threads || []).filter(thread => (!filterToForum || String(thread.parent_id || "") === String(forumChannelId)) && String(thread.name || "").startsWith(prefix));
     if (matches.length > 1) throw new Error(`Multiple Discord forum posts found for issue #${issueNumber}; refusing to choose one.`);
     return matches[0] || null;
   };
-  const active = await discordRequest(`/channels/${forumChannelId}/threads/active`);
-  const activeMatch = find(active.threads);
+  const active = await discordRequest(`/guilds/${forum.guild_id}/threads/active`);
+  const activeMatch = find(active.threads, true);
   if (activeMatch) return activeMatch;
   let before = "";
   do {
@@ -115,7 +117,7 @@ async function findForumThread(forumChannelId, issueNumber, discordRequest) {
 }
 export async function synchronizeIssue({ issue, forumChannelId, discordRequest = discord }) {
   const { forum, availableTags, tagIds } = await tagsForForum(forumChannelId, issue, discordRequest);
-  const thread = await findForumThread(forum.id, issue.number, discordRequest);
+  const thread = await findForumThread(forum, issue.number, discordRequest);
   if (!thread) {
     const created = await discordRequest(`/channels/${forum.id}/threads`, { method: "POST", body: JSON.stringify({ name: truncateTitle(issue.number, issue.title), applied_tags: tagIds, message: { content: buildMessage(issue), allowed_mentions: { parse: [] } } }) });
     log(`Created forum post ${created.id} for issue #${issue.number}.`);

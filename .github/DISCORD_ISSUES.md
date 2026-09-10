@@ -6,7 +6,7 @@ This optional GitHub Actions integration uses the **VerseLink Courier** Discord 
 
 The action identifies its forum post by the stable `[#IssueNumber]` prefix in the Discord post title. Later deliveries use that prefix to update only the post title, its bot starter message, and its forum tags. Community messages are never edited or deleted. Workflow concurrency queues deliveries for the same repository Issue, preventing `opened` and `labeled` from racing to create duplicate posts.
 
-Discord REST calls are limited to `GET /channels/{forum-id}` (validate the type and read `available_tags`), active and archived forum-thread listings (find the post by its stable title prefix), `POST /channels/{forum-id}/threads` (create the post and starter message), `PATCH /channels/{thread-id}`, and `PATCH /channels/{thread-id}/messages/{thread-id}`. Forum thread creation returns a nested starter message, and Discord assigns that starter message the same ID as the thread; therefore the thread ID safely identifies the bot starter message.
+Discord REST calls are limited to `GET /channels/{forum-id}` (validate the type and read `available_tags` and `guild_id`), `GET /guilds/{guild-id}/threads/active` (find active posts by title prefix and forum `parent_id`), archived forum-thread listings, `POST /channels/{forum-id}/threads` (create the post and starter message), `PATCH /channels/{thread-id}`, and `PATCH /channels/{thread-id}/messages/{thread-id}`. Forum thread creation returns a nested starter message, and Discord assigns that starter message the same ID as the thread; therefore the thread ID safely identifies the bot starter message.
 
 ## Setup
 

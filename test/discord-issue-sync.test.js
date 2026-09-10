@@ -25,15 +25,15 @@ test("new issues create a forum post without a GitHub request", async () => {
   const discordCalls = [];
   const discordRequest = async (path, options = {}) => {
     discordCalls.push({ path, options });
-    if (path === "/channels/forum") return { id: "forum", type: 15, available_tags: [{ id: "bug-tag", name: "bug" }] };
-    if (path === "/channels/forum/threads/active") return { threads: [] };
+    if (path === "/channels/forum") return { id: "forum", guild_id: "guild", type: 15, available_tags: [{ id: "bug-tag", name: "bug" }] };
+    if (path === "/guilds/guild/threads/active") return { threads: [{ id: "other-thread", parent_id: "other-forum", name: "[#42] Unrelated post", applied_tags: [] }] };
     if (path === "/channels/forum/threads/archived/public?limit=100") return { threads: [], has_more: false };
     if (path === "/channels/forum/threads") return { id: "thread", guild_id: "guild" };
     throw new Error(`unexpected Discord call: ${path}`);
   };
   const result = await synchronizeIssue({ issue: { ...base, labels: ["bug"] }, forumChannelId: "forum", discordRequest });
   assert.deepEqual(result, { action: "created", threadId: "thread" });
-  assert.deepEqual(discordCalls.map(call => call.path), ["/channels/forum", "/channels/forum/threads/active", "/channels/forum/threads/archived/public?limit=100", "/channels/forum/threads"]);
+  assert.deepEqual(discordCalls.map(call => call.path), ["/channels/forum", "/guilds/guild/threads/active", "/channels/forum/threads/archived/public?limit=100", "/channels/forum/threads"]);
   const payload = JSON.parse(discordCalls[3].options.body);
   assert.deepEqual(payload.applied_tags, ["bug-tag"]);
   assert.deepEqual(payload.message.allowed_mentions, { parse: [] });
@@ -42,23 +42,23 @@ test("existing forum posts update by issue-number prefix without a GitHub reques
   const discordCalls = [];
   const discordRequest = async (path, options = {}) => {
     discordCalls.push({ path, options });
-    if (path === "/channels/forum") return { id: "forum", type: 15, available_tags: [{ id: "bug-tag", name: "bug" }] };
-    if (path === "/channels/forum/threads/active") return { threads: [{ id: "thread", name: "[#42] Old title", applied_tags: [] }] };
+    if (path === "/channels/forum") return { id: "forum", guild_id: "guild", type: 15, available_tags: [{ id: "bug-tag", name: "bug" }] };
+    if (path === "/guilds/guild/threads/active") return { threads: [{ id: "thread", parent_id: "forum", name: "[#42] Old title", applied_tags: [] }] };
     if (path === "/channels/thread") return {};
     if (path === "/channels/thread/messages/thread") return {};
     throw new Error(`unexpected Discord call: ${path}`);
   };
   const result = await synchronizeIssue({ issue: { ...base, labels: ["bug"] }, forumChannelId: "forum", discordRequest });
   assert.deepEqual(result, { action: "updated", threadId: "thread" });
-  assert.deepEqual(discordCalls.map(call => call.path), ["/channels/forum", "/channels/forum/threads/active", "/channels/thread", "/channels/thread/messages/thread"]);
+  assert.deepEqual(discordCalls.map(call => call.path), ["/channels/forum", "/guilds/guild/threads/active", "/channels/thread", "/channels/thread/messages/thread"]);
   assert.equal(discordCalls.some(call => call.path === "/channels/forum/threads"), false);
 });
 test("archived forum posts update by issue-number prefix without a GitHub request", async () => {
   const discordCalls = [];
   const discordRequest = async (path, options = {}) => {
     discordCalls.push({ path, options });
-    if (path === "/channels/forum") return { id: "forum", type: 15, available_tags: [{ id: "bug-tag", name: "bug" }] };
-    if (path === "/channels/forum/threads/active") return { threads: [] };
+    if (path === "/channels/forum") return { id: "forum", guild_id: "guild", type: 15, available_tags: [{ id: "bug-tag", name: "bug" }] };
+    if (path === "/guilds/guild/threads/active") return { threads: [] };
     if (path === "/channels/forum/threads/archived/public?limit=100") return { threads: [{ id: "thread", name: "[#42] Archived title", applied_tags: [] }], has_more: false };
     if (path === "/channels/thread") return {};
     if (path === "/channels/thread/messages/thread") return {};
