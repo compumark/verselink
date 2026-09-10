@@ -1,9 +1,17 @@
 const DISCORD_API = "https://discord.com/api/v10";
+const UTC_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 const configured = value => String(value || "").trim();
 
+export function formatRegistrationTimestamp(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) throw new Error("invalid registration timestamp");
+  const twoDigits = number => String(number).padStart(2, "0");
+  return `${twoDigits(date.getUTCDate())}.${UTC_MONTHS[date.getUTCMonth()]}.${date.getUTCFullYear()}, ${twoDigits(date.getUTCHours())}:${twoDigits(date.getUTCMinutes())} UTC`;
+}
+
 export function buildRegistrationDm({ displayName, userId, environment, registeredAt }) {
-  return ["**New VerseLink Registration**", "", `User: ${String(displayName || "Unknown").trim() || "Unknown"}`, `User ID: ${String(userId || "unknown")}`, `Environment: ${String(environment || "unknown")}`, `Registered: ${String(registeredAt || new Date().toISOString())}`].join("\n");
+  return ["**New VerseLink Registration**", "", `User: ${String(displayName || "Unknown").trim() || "Unknown"}`, `User ID: ${String(userId || "unknown")}`, `Environment: ${String(environment || "unknown")}`, `Registered: ${formatRegistrationTimestamp(registeredAt || new Date())}`].join("\n");
 }
 
 export function createDiscordAdminNotifier({ botToken, adminUserId, environment, fetchImpl = fetch, logger = console }) {

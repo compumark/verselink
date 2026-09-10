@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
-import { buildRegistrationDm, createDiscordAdminNotifier } from "../src/discord-admin-dm.js";
+import { buildRegistrationDm, createDiscordAdminNotifier, formatRegistrationTimestamp } from "../src/discord-admin-dm.js";
 
 const registration = { displayName: "New Pilot", userId: "3c4c12bf-7d3b-42b5-bd3f-72ebed1f2da1", registeredAt: "2026-09-10T12:34:56.000Z" };
 const response = body => ({ ok: true, json: async () => body });
@@ -54,4 +54,16 @@ test("DM content contains only registration metadata", () => {
   const content = buildRegistrationDm({ ...registration, environment: "DEV" });
   assert.match(content, /Environment: DEV/);
   assert.doesNotMatch(content, /token|cookie|password|ip address/i);
+});
+test("formats registration timestamps in fixed UTC English form", () => {
+  assert.equal(formatRegistrationTimestamp("2026-09-10T09:01:30.820Z"), "10.Sep.2026, 09:01 UTC");
+  assert.equal(formatRegistrationTimestamp("2026-01-05T07:04:00.000Z"), "05.Jan.2026, 07:04 UTC");
+  assert.equal(formatRegistrationTimestamp("2026-12-24T18:30:00.000Z"), "24.Dec.2026, 18:30 UTC");
+});
+test("DM displays a UTC timestamp instead of the raw ISO string", () => {
+  const rawTimestamp = "2026-09-10T09:01:30.820Z";
+  const message = buildRegistrationDm({ ...registration, registeredAt: rawTimestamp });
+  assert.match(message, /Registered: 10\.Sep\.2026, 09:01 UTC/);
+  assert.doesNotMatch(message, new RegExp(rawTimestamp));
+  assert.doesNotMatch(message, /\b(?:CET|CEST)\b/);
 });
