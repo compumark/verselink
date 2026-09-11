@@ -19,6 +19,13 @@ const updateAuthenticatedUserState = user => {
 };
 const loadProfileView = () => location.hash === '#profile' ? import('/js/profile-mobiglass.js').then(module => module.mount(document.querySelector('#content'))) : Promise.resolve();
 window.addEventListener('hashchange', () => { loadProfileView().catch(error => console.error('Profile view failed', error)); });
+document.addEventListener('click', event => {
+  if (!event.target.closest('.verselink-name-button')) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  history.pushState(null, '', '#profile');
+  loadProfileView().catch(error => console.error('Profile view failed', error));
+}, true);
 window.updateAuthenticatedUserState = updateAuthenticatedUserState;
 document.addEventListener('verselink-profile-updated', event => updateAuthenticatedUserState(event.detail));
 document.addEventListener('click', event => { if (event.target.closest('#logout')) updateAuthenticatedUserState(null); });
