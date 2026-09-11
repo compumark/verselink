@@ -1,6 +1,19 @@
 const presets={CYAN:'#39D9FF',AZURE:'#3D8BFF',EMERALD:'#42E6A4',AMBER:'#FFB347',ORANGE:'#FF7A32',CRIMSON:'#FF4D5E',VIOLET:'#A77BFF',SNOW:'#D9F4FF'};
 const css=document.createElement('style');css.textContent='.profile-appearance{margin-top:24px;padding-top:18px;border-top:1px solid var(--border)}.profile-appearance strong{color:var(--bright);letter-spacing:.12em}.profile-appearance label{display:block;margin:10px 0;color:var(--muted);font-size:11px}.profile-presets{display:flex;flex-wrap:wrap;gap:7px}.profile-presets button,.profile-appearance button{padding:8px 10px;border:1px solid var(--border);background:var(--panel2);color:var(--bright);cursor:pointer}.profile-presets button.active{border-color:var(--user-accent,var(--accent));color:var(--user-accent,var(--accent))}.profile-color-row{display:flex;gap:8px;align-items:center}.profile-color-row input[type=color]{width:48px;height:40px;padding:3px}.accent-preview{display:grid;gap:8px;margin:14px 0;padding:14px;border:1px solid var(--user-accent,var(--accent));color:var(--user-accent,var(--accent));box-shadow:0 0 14px color-mix(in srgb,var(--user-accent,var(--accent)) 35%,transparent)}.accent-preview button{width:max-content;background:var(--user-accent,var(--accent));color:var(--bg)}';document.head.append(css);
-const hex=/^#[0-9A-F]{6}$/i;const apply=v=>document.documentElement.style.setProperty('--user-accent',hex.test(v||'')?v:'var(--accent)');
+const hex=/^#[0-9A-F]{6}$/i;
+const apply=v=>{
+  const root=document.documentElement;
+  if(!hex.test(v||'')){
+    root.style.removeProperty('--user-accent');
+    root.style.removeProperty('--accent');
+    root.style.removeProperty('--glow');
+    return;
+  }
+  const color=v.toUpperCase(),rgb=[1,3,5].map(index=>parseInt(color.slice(index,index+2),16)).join(',');
+  root.style.setProperty('--user-accent',color);
+  root.style.setProperty('--accent',color);
+  root.style.setProperty('--glow',`rgba(${rgb},.32)`);
+};
 function install(){const form=document.querySelector('#profile-form');if(!form||form.querySelector('.profile-appearance'))return;const input=form.querySelector('#profile-discord');const section=document.createElement('section');section.className='profile-appearance';section.innerHTML='<strong>INTERFACE CUSTOMIZATION</strong><label>ACCENT COLOR</label><label><input type="radio" name="accent-choice" value=""> THEME DEFAULT</label><div class="profile-presets">'+Object.entries(presets).map(([n,v])=>`<button type="button" data-accent="${v}">${n}</button>`).join('')+'</div><label for="profile-accent">CUSTOM COLOR</label><div class="profile-color-row"><input id="profile-accent-picker" type="color" value="#39D9FF"><input class="profile-input" id="profile-accent" name="accent_color" pattern="#[0-9A-Fa-f]{6}" placeholder="#RRGGBB"></div><div class="accent-preview"><b>PREVIEW</b><span>HUD LINE · SELECTED STATE</span><button type="button">ACTION</button></div><button type="button" id="accent-reset">RESET TO THEME DEFAULT</button></section>';input.after(section);const h=section.querySelector('#profile-accent'),p=section.querySelector('#profile-accent-picker');const set=v=>{if(v&&!hex.test(v))return;h.value=v||'';if(v)p.value=v;apply(v);section.querySelectorAll('[data-accent]').forEach(b=>b.classList.toggle('active',b.dataset.accent===v));section.querySelector('input[type=radio]').checked=!v};section.querySelectorAll('[data-accent]').forEach(b=>b.onclick=()=>set(b.dataset.accent));p.oninput=()=>set(p.value.toUpperCase());h.oninput=()=>{if(hex.test(h.value))set(h.value.toUpperCase())};section.querySelector('#accent-reset').onclick=()=>set('');form.addEventListener('submit',()=>h.setCustomValidity(h.value&&!hex.test(h.value)?'Use #RRGGBB':''));}
 new MutationObserver(install).observe(document.body,{childList:true,subtree:true});
 fetch('/api/profile').then(r=>r.ok?r.json():null).then(body=>{const v=body?.profile?.accent_color;apply(v);const field=document.querySelector('#profile-accent');if(field&&v){field.value=v;document.querySelector('#profile-accent-picker').value=v;document.querySelectorAll('[data-accent]').forEach(b=>b.classList.toggle('active',b.dataset.accent===v));}}).catch(()=>{});
