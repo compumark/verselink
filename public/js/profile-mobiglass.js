@@ -108,6 +108,8 @@ export const mount = async root => {
       root.querySelector('#profile-scmdb-disconnect')?.addEventListener('click', showDisconnectConfirm);
       root.querySelector('#profile-scmdb-refresh')?.addEventListener('click', async event => { event.currentTarget.disabled = true; try { connections = await loadScmdb(); render('SCMDB STATUS REFRESHED'); } catch (error) { render(`ERROR: ${error.message}`); } });
       root.querySelector('#profile-form').onsubmit = async event => { event.preventDefault(); try { profile = await updateProfile(Object.fromEntries(new FormData(event.target))); document.dispatchEvent(new CustomEvent('verselink-profile-updated', { detail: profile })); render('PROFILE SAVED'); } catch (error) { render(`ERROR: ${error.message}`); } };
+      const profileMessage = root.querySelector('.profile-card > .profile-note');
+      if (profileMessage) root.querySelector('#profile-form .profile-actions')?.after(profileMessage);
     };
     const installRsiSync = () => {
       const form = root.querySelector('#profile-form');
