@@ -101,6 +101,16 @@ test("blueprint ownership exposes a profile link only for public profiles", () =
   assert.match(inventoryMobiglass, /mi-owner-link/);
 });
 
+test("runtime logging controls stay behind the existing admin guard and Mobiglass UI", () => {
+  assert.match(server, /url\.pathname === "\/api\/admin\/logging"/);
+  assert.match(server, /logger\.setRuntimeOverride/);
+  assert.match(server, /logger\.resetRuntimeOverride/);
+  assert.match(server, /if \(!current\?\.is_admin\) return json\(res, 403/);
+  assert.match(mobiglass, /\/api\/admin\/logging/);
+  assert.match(mobiglass, /TEMPORARY OVERRIDE ACTIVE/);
+  assert.match(mobiglass, /SENSITIVE VALUES REMAIN REDACTED/);
+});
+
 test("admin users and group members reuse public-profile overlays without exposing private profiles", () => {
   assert.match(server, /profile_public AND u\.account_status='active' THEN '\/profile\/' \|\| u\.id::text ELSE NULL END AS profile_path/);
   assert.match(mobiglass, /data-admin-profile-id/);

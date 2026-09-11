@@ -14,6 +14,18 @@ The public default stack is portable and uses the Named Volumes `verselink-postg
 8. Deploy the stack.
 9. Check container health and open VerseLink on port `3000` or through the reverse proxy.
 
+## Logging
+
+VerseLink writes JSONL access logs as `access-YYYY-MM-DD.log` and application logs as
+`verselink-YYYY-MM-DD.log` below `LOG_DIR` (default: `/app/logs`). Set
+`LOG_LEVEL=INFO` to choose the startup default (`ERROR`, `WARN`, `INFO`, or `DEBUG`) and
+`LOG_RETENTION_DAYS=30` to control cleanup of only these VerseLink-created files.
+
+An existing VerseLink administrator can temporarily change the effective level in the
+MobiGlass Admin Center. This override is not stored in PostgreSQL: it expires at its
+chosen reset time, can be reset manually, and is always lost when the process/container
+restarts, returning to `LOG_LEVEL`.
+
 No GHCR image is required; Portainer builds the app from the repository Dockerfile.
 
 ## SCMDB synchronization

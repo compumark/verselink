@@ -1,6 +1,6 @@
-import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,12 +10,13 @@ import { hashRecoveryToken, isRecoveryToken, generateRecoveryToken } from "./aut
 import { clientKey, createRateLimiter } from "./rate-limit.js";
 import { normalizeScmdbSinkBaseUrl, scmdbSinkUrl } from "./scmdb-sink-config.js";
 import { createDiscordAdminNotifier } from "./discord-admin-dm.js";
+import { createLogger } from "./logger.js";
 
 const { Pool } = pg;
 const root = fileURLToPath(new URL("..", import.meta.url));
 const publicDir = join(root, "public");
 const logDirectory = process.env.LOG_DIR || "/app/logs";
-const logDirectoryReady = mkdir(logDirectory, { recursive: true });
+const logger = createLogger({ logDirectory });
 const port = Number(process.env.APP_PORT || 3000);
 const inviteExpiryDate = (days = 14, now = new Date()) => {
   const expiry = new Date(now);
@@ -26,7 +27,7 @@ const inviteExpiryDate = (days = 14, now = new Date()) => {
 };
 const cleanupExpiredInvites = async () => {
   const result = await pool.query("DELETE FROM group_invites WHERE expires_at <= now() RETURNING id");
-  console.log(`[invites] cleanup removed=${result.rowCount}`);
+  logger.info("invites.cleanup", { removed: result.rowCount });
 };
 const scheduleInviteCleanup = () => {
   const now = new Date();
@@ -34,7 +35,7 @@ const scheduleInviteCleanup = () => {
   next.setHours(0, 10, 0, 0);
   if (next <= now) next.setDate(next.getDate() + 1);
   setTimeout(async () => {
-    try { await cleanupExpiredInvites(); } catch (error) { console.warn(`[invites] cleanup failed; reason=${logValue(error.message)}`); }
+    try { await cleanupExpiredInvites(); } catch (error) { logger.warn("invites.cleanup.failed", { error: error.message }); }
     scheduleInviteCleanup();
   }, Math.max(1000, next.getTime() - now.getTime()));
 };
@@ -44,9 +45,9 @@ const discordOrdersWebhooks = (() => {
   try {
     const entries = Object.entries(JSON.parse(process.env.DISCORD_ORDERS_WEBHOOKS || "{}"));
     return new Map(entries.map(([group, webhook]) => [group.trim().toLowerCase(), String(webhook).trim()]).filter(([, webhook]) => webhook));
-  } catch { console.warn("[discord] invalid DISCORD_ORDERS_WEBHOOKS JSON"); return new Map(); }
+  } catch { logger.warn("discord.order_webhooks.invalid_configuration"); return new Map(); }
 })();
-console.log(`[discord] order webhooks configured; groups=${[...discordOrdersWebhooks.keys()].join(",") || "none"}`);
+logger.info("discord.order_webhooks.configured", { groups: discordOrdersWebhooks.size });
 const verseLinkAppUrl = process.env.VERSELINK_APP_URL || "http://localhost:3000";
 const uexApiToken = process.env.UEX_API_TOKEN;
 const UEX_CACHE_TTL_MS = 1800000;
@@ -72,7 +73,7 @@ const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}
 const configuredAdminUserIds = (() => {
   const entries = String(process.env.APP_ADMIN_USER_IDS || "").split(",").map((value) => value.trim()).filter(Boolean);
   const validIds = entries.filter((value) => uuidPattern.test(value));
-  if (validIds.length !== entries.length) console.warn(`[admin] ignored invalid APP_ADMIN_USER_IDS entries; count=${entries.length - validIds.length}`);
+  if (validIds.length !== entries.length) logger.warn("admin.configuration.invalid_user_ids", { message: "ignored invalid APP_ADMIN_USER_IDS entries", count: entries.length - validIds.length });
   return new Set(validIds.map((value) => value.toLowerCase()));
 })();
 const changelogSource = readFileSync(join(publicDir, "changelog.html"), "utf8");
@@ -104,12 +105,12 @@ const pool = new Pool(databaseUrl ? { connectionString: databaseUrl, max: 10 } :
 
 const corsHeaders = {
   "access-control-allow-origin": "*",
-  "access-control-allow-methods": "POST, OPTIONS",
+  "access-control-allow-methods": "GET, POST, PUT, OPTIONS",
   "access-control-allow-headers": "Content-Type"
 };
 
 const scmdbSinkBaseUrl = normalizeScmdbSinkBaseUrl(process.env.SCMDB_SINK_BASE_URL);
-if (String(process.env.SCMDB_SINK_BASE_URL || "").trim() && !scmdbSinkBaseUrl) console.warn("[scmdb] synchronization disabled because SCMDB_SINK_BASE_URL is invalid");
+if (String(process.env.SCMDB_SINK_BASE_URL || "").trim() && !scmdbSinkBaseUrl) logger.warn("scmdb.configuration.invalid_sink_url");
 
 const publicTokenKey = createHash("sha256").update(pepper).update("public-link-token-storage").digest();
 const encryptPublicToken = (token) => { const iv = randomBytes(12); const cipher = createCipheriv("aes-256-gcm", publicTokenKey, iv); const encrypted = Buffer.concat([cipher.update(token, "utf8"), cipher.final()]); return `${iv.toString("base64url")}.${cipher.getAuthTag().toString("base64url")}.${encrypted.toString("base64url")}`; };
@@ -883,14 +884,14 @@ const syncWikiMaterials = async () => {
 const notifyDiscordOrderCreated = async ({ order, groupName, creatorName, creatorProfilePath }) => {
   const normalizedGroupName = String(groupName || "").trim().toLowerCase();
   const webhookUrl = discordOrdersWebhooks.get(normalizedGroupName);
-  if (!webhookUrl) { console.log(`[discord] order notification skipped; group=${normalizedGroupName || "unknown"}`); return; }
+  if (!webhookUrl) { logger.debug("discord.order_notification.skipped", { group: normalizedGroupName || "unknown" }); return; }
   const creator = creatorProfilePath ? `[${creatorName}](${verseLinkAppUrl}${creatorProfilePath})` : creatorName;
   const orderUrl = `${verseLinkAppUrl}/mobiglass?group_id=${encodeURIComponent(order.group_id)}&order_id=${encodeURIComponent(order.id)}#orders`;
   try {
     const response = await fetch(webhookUrl, { method: "POST", headers: { "content-type": "application/json" }, signal: AbortSignal.timeout(8000), body: JSON.stringify({ embeds: [{ title: `📦 Neue Order ${order.order_number}`, description: `**${order.material_name}** · **${order.required_quantity} ${order.quantity_unit}**\nQuality: **${order.required_quality || "Any quality"}**\nErstellt von: **${creator}**`, color: 0x29b6f6, fields: [{ name: "Gruppe", value: groupName || "Unbekannte Gruppe", inline: true }, { name: "Order öffnen", value: `[${order.order_number} in VerseLink öffnen](${orderUrl})`, inline: true }], footer: { text: "VerseLink · Material Orders" } }] }) });
-    if (!response.ok) console.warn(`[discord] order notification failed; status=${response.status}`);
-    else console.log(`[discord] order notification sent; order=${order.order_number}; group=${normalizedGroupName}`);
-  } catch (error) { console.warn(`[discord] order notification failed; reason=${logValue(error.message)}`); }
+    if (!response.ok) logger.warn("discord.order_notification.failed", { status: response.status });
+    else logger.info("discord.order_notification.sent", { order_id: order.id, group: normalizedGroupName });
+  } catch (error) { logger.warn("discord.order_notification.failed", { error: error.message }); }
 };
 
 const parseCookies = (header = "") => Object.fromEntries(header.split(";").map((part) => {
@@ -1000,21 +1001,19 @@ const htmlEscape = (value = "") => String(value).replace(/[&<>\"']/g, (char) => 
 }[char]));
 
 const logValue = (value) => String(value ?? "unknown").replace(/[\r\n\t]/g, " ").slice(0, 200);
-const writeApiLog = async (entry) => {
-  const date = new Date().toISOString().slice(0, 10);
-  await logDirectoryReady;
-  await appendFile(join(logDirectory, `${date}.log`), `${JSON.stringify(entry)}\n`, "utf8");
-};
+const requestLogContext = (req, user) => ({ request_id: req.requestId, user_id: user?.id, user: user?.verselink_name || user?.display_name });
+const pollingPaths = new Set(["/api/notifications", "/api/session", "/api/me", "/api/me/status"]);
 const logApiRequest = (req, res, url, startedAt) => {
   if (!url.pathname.startsWith("/api/")) return;
   res.once("finish", () => {
     getCurrentAppUser(req).then((user) => {
       const identity = user?.user_handle || user?.scmdb_display_name || user?.display_name || "anonymous";
-      const entry = { timestamp: new Date().toISOString(), user: logValue(identity), method: req.method, path: logValue(url.pathname), status: res.statusCode, duration_ms: Date.now() - startedAt };
-      console.log(`[http] user=${entry.user} method=${entry.method} path=${entry.path} status=${entry.status} duration_ms=${entry.duration_ms}`);
-      writeApiLog(entry).catch((error) => console.warn(`[http] file log failed; reason=${logValue(error.message)}`));
+      const duration = Date.now() - startedAt;
+      const level = res.statusCode >= 500 || duration > 1000 ? "WARN" : res.statusCode >= 400 ? "WARN" : pollingPaths.has(url.pathname) ? "DEBUG" : "INFO";
+      const entry = { request_id: req.requestId, user_id: user?.id, user: logValue(identity), method: req.method, path: logValue(url.pathname), status: res.statusCode, duration_ms: duration, ...(duration > 3000 ? { slow_request: true } : {}) };
+      logger.access(entry, level);
     }).catch((error) => {
-      console.warn(`[http] request log failed; method=${req.method}; path=${logValue(url.pathname)}; reason=${logValue(error.message)}`);
+      logger.warn("http.request_log.failed", { method: req.method, path: logValue(url.pathname), error: error.message }, { request_id: req.requestId });
     });
   });
 };
@@ -1270,6 +1269,8 @@ const calculateTradingRoutes = (rows, system, ship, capital, fullLoadOnly, hideO
 const tradingHtml = () => readFile(join(publicDir, "trading.html"), "utf8");
 
 const server = createServer(async (req, res) => {
+  req.requestId = randomUUID();
+  res.setHeader("x-request-id", req.requestId);
   try {
     const url = new URL(req.url, "http://localhost");
     logApiRequest(req, res, url, Date.now());
@@ -1418,6 +1419,7 @@ const server = createServer(async (req, res) => {
         const session = await createDashboardSession(client, user.rows[0].id);
         await client.query("COMMIT");
         registrationRateLimit.clear(rateKey);
+        logger.info("auth.register", {}, { request_id: req.requestId, user_id: user.rows[0].id });
         res.writeHead(201, { "content-type": "application/json; charset=utf-8", "set-cookie": `bp_session=${encodeURIComponent(session)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000` });
         res.end(JSON.stringify({ ok: true, token, recovery_key: recoveryKey }));
         void notifyNewUserRegistration({ userId: user.rows[0].id, displayName, registeredAt: new Date().toISOString() }).catch(() => {});
@@ -1475,12 +1477,13 @@ const server = createServer(async (req, res) => {
       const result = await pool.query("SELECT t.id, t.app_user_id, u.account_status FROM auth_tokens t JOIN app_users u ON u.id=t.app_user_id WHERE t.token_hash=$1 AND t.revoked_at IS NULL", [hashAuthToken(token)]);
       if (!result.rowCount || result.rows[0].account_status !== "active") { loginRateLimit.recordFailure(rateKey); return json(res, 401, { error: "invalid VerseLink ID" }); }
       const client = await pool.connect();
-      try { await client.query("BEGIN"); await client.query("UPDATE auth_tokens SET last_used_at=now() WHERE id=$1", [result.rows[0].id]); const session = await createDashboardSession(client, result.rows[0].app_user_id); await client.query("COMMIT"); loginRateLimit.clear(rateKey); res.writeHead(200, { "content-type": "application/json; charset=utf-8", "set-cookie": `bp_session=${encodeURIComponent(session)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000` }); return res.end(JSON.stringify({ ok: true })); } catch (error) { await client.query("ROLLBACK").catch(() => {}); throw error; } finally { client.release(); }
+      try { await client.query("BEGIN"); await client.query("UPDATE auth_tokens SET last_used_at=now() WHERE id=$1", [result.rows[0].id]); const session = await createDashboardSession(client, result.rows[0].app_user_id); await client.query("COMMIT"); loginRateLimit.clear(rateKey); logger.info("auth.login.success", {}, { request_id: req.requestId, user_id: result.rows[0].app_user_id }); res.writeHead(200, { "content-type": "application/json; charset=utf-8", "set-cookie": `bp_session=${encodeURIComponent(session)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000` }); return res.end(JSON.stringify({ ok: true })); } catch (error) { await client.query("ROLLBACK").catch(() => {}); throw error; } finally { client.release(); }
     }
 
     if (req.method === "POST" && url.pathname === "/logout") {
       const session = parseCookies(req.headers.cookie).bp_session;
       if (session) await pool.query("DELETE FROM dashboard_sessions WHERE session_hash = $1", [hashSession(session)]);
+      logger.info("auth.logout", {}, { request_id: req.requestId });
       res.writeHead(303, { location: "/login", "set-cookie": "bp_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0" });
       return res.end();
     }
@@ -1827,7 +1830,7 @@ const server = createServer(async (req, res) => {
       if(!/^[0-9a-f-]{36}$/i.test(groupId)||!materialName||!Number.isInteger(qualityValue)||qualityValue<1||qualityValue>1000||!Number.isInteger(qualityBand)||qualityBand<1||qualityBand>8||!Number.isFinite(quantity)||quantity<=0)return json(res,400,{error:"invalid contribution"});
       const member=await pool.query("SELECT app_user_id FROM group_members WHERE group_id=$1 AND app_user_id=$2",[groupId,context.appUserId]);if(!member.rowCount)return json(res,403,{error:"group member required"});
       const userId=context.appUserId,sourceLocation=params.get("source_location")||params.get("source")||null,insert=await pool.query("INSERT INTO material_inventory_contributions (group_id,material_name,quality_band,user_id,quantity_scu,quality_value,status,source_location,note,in_refinery,refinery_station,deposited_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,CASE WHEN $7='deposited' THEN now() ELSE NULL END) RETURNING id",[groupId,materialName,qualityBand,userId,quantity,qualityValue,params.get("status")==="deposited"?"deposited":"reported",sourceLocation,params.get("note")||null,["1","on","true"].includes(params.get("in_refinery")),params.get("refinery_station")||null]);
-      return json(res,201,{ok:true,id:insert.rows[0].id});
+      logger.info("material.contributed", { group_id: groupId, material_id: insert.rows[0].id, amount_scu: quantity, source_location_id: sourceLocation }, { request_id: req.requestId, user_id: userId }); return json(res,201,{ok:true,id:insert.rows[0].id});
     }
 
     if (req.method === "GET" && url.pathname === "/api/material-inventory/locations") {
@@ -1851,8 +1854,8 @@ const server = createServer(async (req, res) => {
       const client=await pool.connect();try{await client.query("BEGIN");await client.query("SELECT pg_advisory_xact_lock(hashtext($1))",[`material-inventory:${groupId}:user:${context.appUserId}`]);
         const rows=(await materialInventoryNetRows(groupId,client)).filter(row=>row.user_id===context.appUserId&&Number(row.available_scu)>0);
         for(const row of rows){const quantity=Number(row.available_scu);await client.query("INSERT INTO material_inventory_withdrawals(group_id,material_name,quality_band,quality_value,user_id,contributor_user_id,warehouse,quantity_scu,note) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NULL)",[groupId,row.material_name,row.quality_band,row.quality_value,context.appUserId,context.appUserId,row.source_location||null,quantity]);await client.query("INSERT INTO material_inventory_contributions(group_id,material_name,quality_band,user_id,quantity_scu,quality_value,status,source_location,note,in_refinery) VALUES($1,$2,$3,$4,$5,$6,'reported',$7,NULL,false)",[groupId,row.material_name,row.quality_band,context.appUserId,quantity,row.quality_value,destination]);}
-        await client.query("COMMIT");return json(res,201,{ok:true,moved:rows.length});
-      }catch(error){await client.query("ROLLBACK");console.error("[materials] move-all failed",error.message);return json(res,500,{error:"all material could not be moved"});}finally{client.release();}
+        await client.query("COMMIT");logger.info("material.moved", { group_id: groupId, destination_location_id: destination, moved_rows: rows.length }, { request_id: req.requestId, user_id: context.appUserId });return json(res,201,{ok:true,moved:rows.length});
+      }catch(error){await client.query("ROLLBACK");logger.error("material.move_all.failed",error,{request_id:req.requestId,user_id:context.appUserId});return json(res,500,{error:"all material could not be moved"});}finally{client.release();}
     }
     const handleMaterialInventoryMove = async (req, res, url) => {
       const context=await getSessionContext(req);if(!context?.appUserId)return json(res,401,{error:"login required"});const p=new URLSearchParams(await readBody(req)),groupId=p.get("group_id")||"",destination=(p.get("destination")||"").trim(),qty=Number(p.get("quantity_scu")),band=Number(p.get("quality_band")),qualityValue=Number(p.get("quality_value")),contributorUserId=p.get("contributor_user_id")||"",source=p.get("source_location")||"",material=p.get("material_name")||"";const member=await pool.query("SELECT app_user_id FROM group_members WHERE group_id=$1 AND app_user_id=$2",[groupId,context.appUserId]);if(!member.rowCount)return json(res,403,{error:"group member required"});if(member.rows[0].app_user_id!==contributorUserId)return json(res,403,{error:"only the contribution owner can move this stock"});if(!/^[0-9a-f-]{36}$/i.test(groupId)||!material||!destination||destination===source||!Number.isInteger(band)||!Number.isInteger(qualityValue)||!/^[0-9a-f-]{36}$/i.test(contributorUserId)||!Number.isFinite(qty)||qty<=0)return json(res,400,{error:"invalid move"});const client=await pool.connect();try{await client.query("BEGIN");await client.query("SELECT pg_advisory_xact_lock(hashtext($1))",[`material-inventory:${groupId}:user:${context.appUserId}`]);const rows=await materialInventoryNetRows(groupId,client);const stock=rows.find(row=>row.user_id===contributorUserId&&row.material_name.toLowerCase()===material.toLowerCase()&&Number(row.quality_band)===band&&Number(row.quality_value)===qualityValue&&(row.source_location||"")===source);if(!stock||qty>Number(stock.available_scu)){await client.query("ROLLBACK");return json(res,400,{error:"move exceeds available stock"});}await client.query("INSERT INTO material_inventory_withdrawals(group_id,material_name,quality_band,quality_value,user_id,contributor_user_id,warehouse,quantity_scu,note) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NULL)",[groupId,material,band,qualityValue,context.appUserId,contributorUserId,source,qty]);const insert=await client.query("INSERT INTO material_inventory_contributions(group_id,material_name,quality_band,user_id,quantity_scu,quality_value,status,source_location,note,in_refinery) VALUES($1,$2,$3,$4,$5,$6,'reported',$7,NULL,false) RETURNING id",[groupId,material,band,contributorUserId,qty,qualityValue,destination]);await client.query("COMMIT");return json(res,201,{ok:true,id:insert.rows[0].id});}catch(error){await client.query("ROLLBACK");console.error("[materials] move failed",error.message);return json(res,500,{error:"material move could not be saved"});}finally{client.release();}
@@ -1992,7 +1995,7 @@ const server = createServer(async (req, res) => {
       const current = await getCurrentAppUser(req); const p = new URLSearchParams(await readBody(req)); const groupId=p.get("group_id")||""; const material=p.get("material_name")?.trim()||""; const qty=Number(p.get("required_quantity"));
       if (!/^[0-9a-f-]{36}$/i.test(groupId)||!validText(material,120)||!Number.isFinite(qty)||qty<=0) return json(res,400,{error:"invalid order"});
       const access=await pool.query("SELECT 1 FROM group_members WHERE group_id=$1 AND app_user_id=$2",[groupId,context.appUserId]); if(!access.rowCount)return json(res,403,{error:"group member required"});
-      const result=await pool.query("INSERT INTO material_orders (order_number,group_id,created_by,blueprint_tag,material_name,required_quantity,quantity_unit,required_quality,note) VALUES ($1||'-'||to_char(now(), 'YYYY')||'-'||lpad(nextval('material_order_number_seq')::text, 4, '0'),$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,order_number,group_id,material_name,required_quantity,quantity_unit,required_quality",[materialOrderCode(material),groupId,context.appUserId,p.get("blueprint_tag")||null,material,qty,p.get("quantity_unit")||"SCU",p.get("required_quality")||null,p.get("note")||null]); await pool.query("INSERT INTO app_notifications (app_user_id,kind,title,message,order_id) SELECT gm.app_user_id,'order_created',$1,$2,$3 FROM group_members gm WHERE gm.group_id=$4 AND gm.app_user_id<>$5",["NEW ORDER "+result.rows[0].order_number,material+" · "+qty+" "+(p.get("quantity_unit")||"SCU"),result.rows[0].id,groupId,context.appUserId]); const creator=await pool.query("SELECT g.name AS group_name,COALESCE(u.verselink_name,u.display_name) AS creator_name,CASE WHEN u.profile_public THEN '/profile/'||u.id::text ELSE null END AS creator_profile_path FROM blueprint_groups g JOIN app_users u ON u.id=$1 WHERE g.id=$2",[context.appUserId,groupId]); if(p.get("announce_discord")==="1") void notifyDiscordOrderCreated({order:result.rows[0],groupName:creator.rows[0]?.group_name,creatorName:creator.rows[0]?.creator_name||"Unbekannt",creatorProfilePath:creator.rows[0]?.creator_profile_path}); return json(res,201,{ok:true,id:result.rows[0].id,order_number:result.rows[0].order_number});
+      const result=await pool.query("INSERT INTO material_orders (order_number,group_id,created_by,blueprint_tag,material_name,required_quantity,quantity_unit,required_quality,note) VALUES ($1||'-'||to_char(now(), 'YYYY')||'-'||lpad(nextval('material_order_number_seq')::text, 4, '0'),$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,order_number,group_id,material_name,required_quantity,quantity_unit,required_quality",[materialOrderCode(material),groupId,context.appUserId,p.get("blueprint_tag")||null,material,qty,p.get("quantity_unit")||"SCU",p.get("required_quality")||null,p.get("note")||null]); await pool.query("INSERT INTO app_notifications (app_user_id,kind,title,message,order_id) SELECT gm.app_user_id,'order_created',$1,$2,$3 FROM group_members gm WHERE gm.group_id=$4 AND gm.app_user_id<>$5",["NEW ORDER "+result.rows[0].order_number,material+" · "+qty+" "+(p.get("quantity_unit")||"SCU"),result.rows[0].id,groupId,context.appUserId]); const creator=await pool.query("SELECT g.name AS group_name,COALESCE(u.verselink_name,u.display_name) AS creator_name,CASE WHEN u.profile_public THEN '/profile/'||u.id::text ELSE null END AS creator_profile_path FROM blueprint_groups g JOIN app_users u ON u.id=$1 WHERE g.id=$2",[context.appUserId,groupId]); if(p.get("announce_discord")==="1") void notifyDiscordOrderCreated({order:result.rows[0],groupName:creator.rows[0]?.group_name,creatorName:creator.rows[0]?.creator_name||"Unbekannt",creatorProfilePath:creator.rows[0]?.creator_profile_path}); logger.info("order.created", { group_id: groupId, order_id: result.rows[0].id, amount_scu: qty }, requestLogContext(req, current)); return json(res,201,{ok:true,id:result.rows[0].id,order_number:result.rows[0].order_number});
     }
 
     if (req.method === "POST" && url.pathname === "/api/orders/action") {
@@ -2017,6 +2020,31 @@ const server = createServer(async (req, res) => {
       await pool.query("UPDATE app_notifications SET read_at=now() WHERE id=$1 AND app_user_id=$2", [id, context.appUserId]); return json(res, 200, { ok: true });
     }
 
+    if (req.method === "GET" && url.pathname === "/api/admin/logging") {
+      const current = await getCurrentAppUser(req);
+      if (!current?.is_admin) return json(res, 403, { error: "admin required" });
+      return json(res, 200, logger.getState());
+    }
+
+    if (req.method === "PUT" && url.pathname === "/api/admin/logging") {
+      const current = await getCurrentAppUser(req);
+      if (!current?.is_admin) return json(res, 403, { error: "admin required" });
+      let body;
+      try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: "invalid JSON body" }); }
+      const context = requestLogContext(req, current);
+      if (body?.reset === true) {
+        logger.resetRuntimeOverride(context);
+        return json(res, 200, logger.getState());
+      }
+      try {
+        logger.setRuntimeOverride(body?.level, Number(body?.reset_after_minutes), context);
+        return json(res, 200, logger.getState());
+      } catch (error) {
+        logger.warn("admin.log_level.invalid", { error: error.message }, context);
+        return json(res, 400, { error: error.message });
+      }
+    }
+
     if (req.method === "GET" && url.pathname === "/api/admin/state") {
       const current = await getCurrentAppUser(req); if (!current?.is_admin) return json(res, 403, { error: "app admin required" });
       const [groups, users, tokenStats] = await Promise.all([
@@ -2026,12 +2054,12 @@ const server = createServer(async (req, res) => {
       ]); return json(res, 200, { groups: groups.rows, users: users.rows, token_stats: tokenStats.rows[0] });
     }
     if (req.method === "GET" && url.pathname === "/api/admin/uex-sync") { const current=await getCurrentAppUser(req);if(!current?.is_admin)return json(res,403,{error:"admin required"});const result=await pool.query("SELECT last_sync_at FROM uex_sync_state WHERE id=true");return json(res,200,{...uexSyncState,lastSyncAt:result.rows[0]?.last_sync_at||uexSyncState.lastSyncAt}); }
-    if (req.method === "POST" && url.pathname === "/api/admin/uex-sync") { const current=await getCurrentAppUser(req);if(!current?.is_admin)return json(res,403,{error:"admin required"});try{return json(res,200,await syncUexData())}catch(error){console.warn(`[uex] sync failed; reason=${logValue(error.message)}`);return json(res,502,{error:"UEX sync failed"});} }
+    if (req.method === "POST" && url.pathname === "/api/admin/uex-sync") { const current=await getCurrentAppUser(req);if(!current?.is_admin)return json(res,403,{error:"admin required"});try{return json(res,200,await syncUexData())}catch(error){logger.warn("uex.sync.failed",{error:error.message},requestLogContext(req,current));return json(res,502,{error:"UEX sync failed"});} }
 
     if (req.method === "POST" && url.pathname === "/api/admin/tokens/cleanup") {
       const current = await getCurrentAppUser(req); if (!current?.is_admin) return json(res, 403, { error: "app admin required" });
       const removed = await pool.query("DELETE FROM scmdb_connections WHERE app_user_id IS NULL AND scmdb_user_id IS NULL AND last_seen_at < now() - interval '24 hours' RETURNING token_hash");
-      console.log(`[admin] token cleanup removed=${removed.rowCount}`);
+      logger.info("admin.tokens.cleaned", { removed: removed.rowCount }, requestLogContext(req, current));
       return json(res, 200, { ok: true, deleted: removed.rowCount });
     }
 
@@ -2578,19 +2606,19 @@ const server = createServer(async (req, res) => {
   } catch (error) {
     const status = error.message === "payload too large" ? 413 : 503;
     const safePath = req.url?.split("?")[0] || "unknown";
-    console.error(`[http] request failed; method=${req.method}; path=${safePath}; status=${status}; reason=${error.message}`);
-    if (status === 503 && error.stack) console.error(error.stack);
+    logger.error("http.request.failed", error, { request_id: req.requestId }, { method: req.method, path: safePath, status });
     return json(res, status, { error: status === 413 ? "payload too large" : "service unavailable" });
   }
 });
 ensureSchema().then(() => syncReferenceData()).then(() => {
   server.listen(port, "0.0.0.0", () => {
-      console.log(`VerseLink listening on ${port}`);
-      scheduleInviteCleanup();
+    logger.info("server.started", { app_environment: appEnvironment, app_version: appVersion, app_commit: appCommit, effective_log_level: logger.getState().effective_level, log_directory: logDirectory, retention_days: logger.getState().retention_days, port });
+    logger.cleanupRetention();
+    scheduleInviteCleanup();
     syncWikiImages();
     syncWikiMaterials();
   });
 }).catch((error) => {
-  console.error("Database initialization failed", error.message);
+  logger.error("database.initialization.failed", error);
   process.exit(1);
 });
