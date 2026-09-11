@@ -17,9 +17,11 @@ const updateAuthenticatedUserState = user => {
   }
   document.dispatchEvent(new CustomEvent('verselink-user-state-changed', { detail: user || null }));
 };
+const loadProfileView = () => location.hash === '#profile' ? import('/js/profile-mobiglass.js').then(module => module.mount(document.querySelector('#content'))) : Promise.resolve();
+window.addEventListener('hashchange', () => { loadProfileView().catch(error => console.error('Profile view failed', error)); });
 window.updateAuthenticatedUserState = updateAuthenticatedUserState;
 document.addEventListener('verselink-profile-updated', event => updateAuthenticatedUserState(event.detail));
 document.addEventListener('click', event => { if (event.target.closest('#logout')) updateAuthenticatedUserState(null); });
 const install = async () => { const response = await fetch('/api/me', { cache: 'no-store' }); const body = await response.json(); updateAuthenticatedUserState(response.ok ? body.user : null); };
-window.addEventListener('load', () => { install().catch(() => updateAuthenticatedUserState(null)); });
+window.addEventListener('load', () => { install().catch(() => updateAuthenticatedUserState(null)); loadProfileView().catch(error => console.error('Profile view failed', error)); });
 document.head.insertAdjacentHTML('beforeend', '<style>.verselink-name-button{display:block;margin-top:6px;padding:0;border:0;background:transparent;color:var(--accent);font:9px inherit;letter-spacing:.1em;cursor:pointer}.verselink-name-button:hover{text-decoration:underline;color:var(--bright)}</style>');
