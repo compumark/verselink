@@ -2307,7 +2307,7 @@ const server = createServer(async (req, res) => {
       return res.end(content);
     }
 
-    if (req.method === "GET" && ["/js/about-mobiglass.js", "/js/admin-mobiglass.js", "/js/alias-mobiglass.js", "/js/profile-mobiglass.js", "/js/mobiglass-auth-entry.js", "/js/notifications-mobiglass.js", "/js/version-watch.js", "/js/auth-core.js", "/js/trading-core.js", "/js/trading-classic.js", "/js/trading-mobiglass.js"].includes(url.pathname)) {
+    if (req.method === "GET" && ["/js/about-mobiglass.js", "/js/admin-mobiglass.js", "/js/alias-mobiglass.js", "/js/profile-mobiglass.js", "/js/profile-accent.js", "/js/mobiglass-auth-entry.js", "/js/notifications-mobiglass.js", "/js/version-watch.js", "/js/auth-core.js", "/js/trading-core.js", "/js/trading-classic.js", "/js/trading-mobiglass.js"].includes(url.pathname)) {
       const content = await readFile(join(publicDir, "js", url.pathname.slice("/js/".length)));
       res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" });
       return res.end(content);
