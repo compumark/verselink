@@ -16,8 +16,8 @@ The public default stack is portable and uses the Named Volumes `verselink-postg
 
 ## Logging
 
-VerseLink writes JSONL access logs as `access-YYYY-MM-DD.log` and application logs as
-`verselink-YYYY-MM-DD.log` below `LOG_DIR` (default: `/app/logs`). Set
+VerseLink writes JSONL access logs as `YYYY-MM-DD_access.log` and application logs as
+`YYYY-MM-DD_verselink.log` below `LOG_DIR` (default: `/app/logs`). Set
 `LOG_LEVEL=INFO` to choose the startup default (`ERROR`, `WARN`, `INFO`, or `DEBUG`) and
 `LOG_RETENTION_DAYS=30` to control cleanup of only these VerseLink-created files.
 

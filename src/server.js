@@ -500,7 +500,7 @@ const loginRateLimit = createRateLimiter({ limit: 10, windowMs: 10 * 60_000 });
 const registrationRateLimit = createRateLimiter({ limit: 5, windowMs: 15 * 60_000 });
 const recoveryRateLimit = createRateLimiter({ limit: 5, windowMs: 15 * 60_000 });
 const recoveryRotationRateLimit = createRateLimiter({ limit: 5, windowMs: 15 * 60_000 });
-const tooManyRequests = (res) => json(res, 429, { error: "too many requests" });
+const tooManyRequests = (res, req, event = "auth.rate_limited") => { logger.warn(event, { reason: "rate_limited" }, { request_id: req?.requestId }); return json(res, 429, { error: "too many requests" }); };
 const sameVerseLinkOrigin = (req) => {
   const origin = req.headers.origin;
   if (!origin) return true;
@@ -1002,14 +1002,15 @@ const htmlEscape = (value = "") => String(value).replace(/[&<>\"']/g, (char) => 
 
 const logValue = (value) => String(value ?? "unknown").replace(/[\r\n\t]/g, " ").slice(0, 200);
 const requestLogContext = (req, user) => ({ request_id: req.requestId, user_id: user?.id, user: user?.verselink_name || user?.display_name });
-const pollingPaths = new Set(["/api/notifications", "/api/session", "/api/me", "/api/me/status"]);
+const pollingPaths = new Set(["/api/notifications", "/api/session", "/api/me", "/api/me/status", "/api/profile", "/api/profile/scmdb", "/api/version"]);
+const authLogPaths = new Set(["/auth/register", "/auth/login", "/auth/recover", "/logout"]);
 const logApiRequest = (req, res, url, startedAt) => {
-  if (!url.pathname.startsWith("/api/")) return;
+  if (!url.pathname.startsWith("/api/") && !authLogPaths.has(url.pathname)) return;
   res.once("finish", () => {
     getCurrentAppUser(req).then((user) => {
       const identity = user?.user_handle || user?.scmdb_display_name || user?.display_name || "anonymous";
       const duration = Date.now() - startedAt;
-      const level = res.statusCode >= 500 || duration > 1000 ? "WARN" : res.statusCode >= 400 ? "WARN" : pollingPaths.has(url.pathname) ? "DEBUG" : "INFO";
+      const level = res.statusCode >= 500 ? "ERROR" : res.statusCode >= 400 || duration > 1000 ? "WARN" : pollingPaths.has(url.pathname) ? "DEBUG" : "INFO";
       const entry = { request_id: req.requestId, user_id: user?.id, user: logValue(identity), method: req.method, path: logValue(url.pathname), status: res.statusCode, duration_ms: duration, ...(duration > 3000 ? { slow_request: true } : {}) };
       logger.access(entry, level);
     }).catch((error) => {
@@ -1396,7 +1397,7 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/auth/register") {
       const rateKey = clientKey(req);
-      if (!registrationRateLimit.allow(rateKey)) return tooManyRequests(res);
+      if (!registrationRateLimit.allow(rateKey)) return tooManyRequests(res, req);
       const body = await readBody(req);
       let payload;
       try { payload = body.trim().startsWith("{") ? JSON.parse(body) : Object.fromEntries(new URLSearchParams(body)); } catch { registrationRateLimit.recordFailure(rateKey); return json(res, 400, { error: "invalid registration" }); }
@@ -1430,7 +1431,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/auth/recover") {
       const invalidRecovery = () => json(res, 401, { error: "invalid or expired recovery key" });
       const rateKey = clientKey(req);
-      if (!recoveryRateLimit.allow(rateKey)) return tooManyRequests(res);
+      if (!recoveryRateLimit.allow(rateKey)) return tooManyRequests(res, req);
       let payload;
       try { payload = JSON.parse(await readBody(req)); } catch { recoveryRateLimit.recordFailure(rateKey); return invalidRecovery(); }
       const recoveryKey = String(payload.recovery_key || "");
@@ -1468,14 +1469,14 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/auth/login") {
       const rateKey = clientKey(req);
-      if (!loginRateLimit.allow(rateKey)) return tooManyRequests(res);
+      if (!loginRateLimit.allow(rateKey)) return tooManyRequests(res, req);
       const body = await readBody(req);
       let payload;
-      try { payload = body.trim().startsWith("{") ? JSON.parse(body) : Object.fromEntries(new URLSearchParams(body)); } catch { loginRateLimit.recordFailure(rateKey); return json(res, 401, { error: "invalid VerseLink ID" }); }
+      try { payload = body.trim().startsWith("{") ? JSON.parse(body) : Object.fromEntries(new URLSearchParams(body)); } catch { loginRateLimit.recordFailure(rateKey); logger.warn("auth.login.failed", { reason: "invalid_credentials" }, { request_id: req.requestId }); return json(res, 401, { error: "invalid VerseLink ID" }); }
       const token = String(payload.token || "");
-      if (!verseLinkTokenPattern.test(token)) { loginRateLimit.recordFailure(rateKey); return json(res, 401, { error: "invalid VerseLink ID" }); }
+      if (!verseLinkTokenPattern.test(token)) { loginRateLimit.recordFailure(rateKey); logger.warn("auth.login.failed", { reason: "invalid_credentials" }, { request_id: req.requestId }); return json(res, 401, { error: "invalid VerseLink ID" }); }
       const result = await pool.query("SELECT t.id, t.app_user_id, u.account_status FROM auth_tokens t JOIN app_users u ON u.id=t.app_user_id WHERE t.token_hash=$1 AND t.revoked_at IS NULL", [hashAuthToken(token)]);
-      if (!result.rowCount || result.rows[0].account_status !== "active") { loginRateLimit.recordFailure(rateKey); return json(res, 401, { error: "invalid VerseLink ID" }); }
+      if (!result.rowCount || result.rows[0].account_status !== "active") { loginRateLimit.recordFailure(rateKey); logger.warn("auth.login.failed", { reason: "invalid_credentials" }, { request_id: req.requestId }); return json(res, 401, { error: "invalid VerseLink ID" }); }
       const client = await pool.connect();
       try { await client.query("BEGIN"); await client.query("UPDATE auth_tokens SET last_used_at=now() WHERE id=$1", [result.rows[0].id]); const session = await createDashboardSession(client, result.rows[0].app_user_id); await client.query("COMMIT"); loginRateLimit.clear(rateKey); logger.info("auth.login.success", {}, { request_id: req.requestId, user_id: result.rows[0].app_user_id }); res.writeHead(200, { "content-type": "application/json; charset=utf-8", "set-cookie": `bp_session=${encodeURIComponent(session)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000` }); return res.end(JSON.stringify({ ok: true })); } catch (error) { await client.query("ROLLBACK").catch(() => {}); throw error; } finally { client.release(); }
     }
@@ -2430,7 +2431,7 @@ const server = createServer(async (req, res) => {
       const context = await getSessionContext(req);
       if (!context?.appUserId) return json(res, 401, { error: "login required" });
       const rateKey = context.appUserId;
-      if (!recoveryRotationRateLimit.allow(rateKey)) return tooManyRequests(res);
+      if (!recoveryRotationRateLimit.allow(rateKey)) return tooManyRequests(res, req);
       const recoveryKey = generateRecoveryToken();
       if (!isRecoveryToken(recoveryKey)) return json(res, 500, { error: "unable to create recovery key" });
       const client = await pool.connect();
@@ -2602,6 +2603,10 @@ const server = createServer(async (req, res) => {
       try { await pool.query("DELETE FROM material_inventory_withdrawals WHERE group_id=$1", [groupId]); await pool.query("DELETE FROM material_inventory_contributions WHERE group_id=$1", [groupId]); await pool.query("COMMIT"); return json(res, 200, { ok: true }); } catch (error) { await pool.query("ROLLBACK"); return json(res, 500, { error: "material inventory could not be cleared" }); }
     }
 
+    if (url.pathname.startsWith("/api/") || authLogPaths.has(url.pathname)) {
+      const current = await getCurrentAppUser(req).catch(() => null);
+      logger.warn("http.route_not_found", { method: req.method, path: url.pathname, status: 404 }, requestLogContext(req, current));
+    }
     return json(res, 404, { error: "not found" });
   } catch (error) {
     const status = error.message === "payload too large" ? 413 : 503;
@@ -2612,7 +2617,7 @@ const server = createServer(async (req, res) => {
 });
 ensureSchema().then(() => syncReferenceData()).then(() => {
   server.listen(port, "0.0.0.0", () => {
-    logger.info("server.started", { app_environment: appEnvironment, app_version: appVersion, app_commit: appCommit, effective_log_level: logger.getState().effective_level, log_directory: logDirectory, retention_days: logger.getState().retention_days, port });
+    logger.system("server.started", { app_environment: appEnvironment, app_version: appVersion, app_commit: appCommit, effective_log_level: logger.getState().effective_level, log_directory: logDirectory, retention_days: logger.getState().retention_days, port });
     logger.cleanupRetention();
     scheduleInviteCleanup();
     syncWikiImages();
