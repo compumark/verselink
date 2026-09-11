@@ -1,15 +1,18 @@
 const presets={CYAN:'#39D9FF',AZURE:'#3D8BFF',EMERALD:'#42E6A4',AMBER:'#FFB347',ORANGE:'#FF7A32',CRIMSON:'#FF4D5E',VIOLET:'#A77BFF',SNOW:'#D9F4FF'};
 const css=document.createElement('style');css.textContent='.profile-appearance{margin-top:24px;padding-top:18px;border-top:1px solid var(--border)}.profile-appearance strong{color:var(--bright);letter-spacing:.12em}.profile-appearance label{display:block;margin:10px 0;color:var(--muted);font-size:11px}.profile-presets{display:flex;flex-wrap:wrap;gap:7px}.profile-presets button,.profile-appearance button{padding:8px 10px;border:1px solid var(--border);background:var(--panel2);color:var(--bright);cursor:pointer}.profile-presets button.active{border-color:var(--user-accent,var(--accent));color:var(--user-accent,var(--accent))}.profile-color-row{display:flex;gap:8px;align-items:center}.profile-color-row input[type=color]{width:48px;height:40px;padding:3px}.accent-preview{display:grid;gap:8px;margin:14px 0;padding:14px;border:1px solid var(--user-accent,var(--accent));color:var(--user-accent,var(--accent));box-shadow:0 0 14px color-mix(in srgb,var(--user-accent,var(--accent)) 35%,transparent)}.accent-preview button{width:max-content;background:var(--user-accent,var(--accent));color:var(--bg)}';document.head.append(css);
+const appCss=document.createElement('style');appCss.textContent=`html[data-user-accent="true"] .gg button,html[data-user-accent="true"] .mi button,html[data-user-accent="true"] .tm button,html[data-user-accent="true"] .mg-orders button{border-color:var(--accent)!important;color:var(--accent)!important;background:color-mix(in srgb,var(--accent) 16%,var(--panel2))!important;box-shadow:0 0 10px color-mix(in srgb,var(--accent) 28%,transparent)}html[data-user-accent="true"] .gg button:hover,html[data-user-accent="true"] .mi button:hover,html[data-user-accent="true"] .tm button:hover,html[data-user-accent="true"] .mg-orders button:hover,html[data-user-accent="true"] .mg-orders #mg-new,html[data-user-accent="true"] .mg-orders-form button[type=submit],html[data-user-accent="true"] .mg-dialog-panel button[type=submit],html[data-user-accent="true"] .mi-app button.active,html[data-user-accent="true"] .mi-actions button:last-child{background:var(--accent)!important;color:var(--bg)!important}html[data-user-accent="true"] .gg input:focus,html[data-user-accent="true"] .gg select:focus,html[data-user-accent="true"] .tm input:focus,html[data-user-accent="true"] .tm select:focus,html[data-user-accent="true"] .mg-orders input:focus,html[data-user-accent="true"] .mg-orders select:focus{border-color:var(--accent)!important;box-shadow:0 0 12px var(--glow)}`;document.head.append(appCss);
 const hex=/^#[0-9A-F]{6}$/i;
 const apply=v=>{
   const root=document.documentElement;
   if(!hex.test(v||'')){
+    delete root.dataset.userAccent;
     root.style.removeProperty('--user-accent');
     root.style.removeProperty('--accent');
     root.style.removeProperty('--glow');
     return;
   }
   const color=v.toUpperCase(),rgb=[1,3,5].map(index=>parseInt(color.slice(index,index+2),16)).join(',');
+  root.dataset.userAccent='true';
   root.style.setProperty('--user-accent',color);
   root.style.setProperty('--accent',color);
   root.style.setProperty('--glow',`rgba(${rgb},.32)`);
