@@ -140,9 +140,15 @@ CREATE TABLE IF NOT EXISTS app_users (
   account_status text NOT NULL DEFAULT 'active' CHECK (account_status IN ('active','blocked','deleted'))
 );
 ALTER TABLE app_users ADD COLUMN IF NOT EXISTS accent_color varchar(7);
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS text_color varchar(7);
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'app_users_accent_color_check') THEN
     ALTER TABLE app_users ADD CONSTRAINT app_users_accent_color_check CHECK (accent_color IS NULL OR accent_color ~ '^#[0-9A-Fa-f]{6}$');
+  END IF;
+END $$;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'app_users_text_color_check') THEN
+    ALTER TABLE app_users ADD CONSTRAINT app_users_text_color_check CHECK (text_color IS NULL OR text_color ~ '^#[0-9A-Fa-f]{6}$');
   END IF;
 END $$;
 CREATE TABLE IF NOT EXISTS auth_tokens (
@@ -917,7 +923,7 @@ const getSessionContext = async (req) => {
 const getCurrentAppUser = async (req) => {
   const context = await getSessionContext(req);
   if (!context?.appUserId) return null;
-  const result = await pool.query(`SELECT u.id, COALESCE(u.verselink_name, u.display_name) AS display_name, u.display_name AS scmdb_display_name, u.verselink_name, u.is_admin, u.account_status, c.user_handle, p.display_name AS profile_display_name FROM app_users u LEFT JOIN LATERAL (SELECT token_hash, user_handle FROM scmdb_connections WHERE app_user_id = u.id AND revoked_at IS NULL AND connection_status IN ('connected', 'pending') ORDER BY CASE connection_status WHEN 'connected' THEN 0 ELSE 1 END, last_seen_at DESC NULLS LAST LIMIT 1) c ON true LEFT JOIN scmdb_profiles p ON p.token_hash = c.token_hash WHERE u.id = $1`, [context.appUserId]);
+  const result = await pool.query(`SELECT u.id, COALESCE(u.verselink_name, u.display_name) AS display_name, u.display_name AS scmdb_display_name, u.verselink_name, u.is_admin, u.account_status, u.accent_color, u.text_color, c.user_handle, p.display_name AS profile_display_name FROM app_users u LEFT JOIN LATERAL (SELECT token_hash, user_handle FROM scmdb_connections WHERE app_user_id = u.id AND revoked_at IS NULL AND connection_status IN ('connected', 'pending') ORDER BY CASE connection_status WHEN 'connected' THEN 0 ELSE 1 END, last_seen_at DESC NULLS LAST LIMIT 1) c ON true LEFT JOIN scmdb_profiles p ON p.token_hash = c.token_hash WHERE u.id = $1`, [context.appUserId]);
   const user = result.rows[0];
   if (!user) return null;
   const syncedName = user.profile_display_name || user.user_handle;
@@ -2365,7 +2371,7 @@ const server = createServer(async (req, res) => {
       const current = await getCurrentAppUser(req);
       if (!current) return json(res, 401, { error: "login required" });
       const connected = await pool.query("SELECT 1 FROM scmdb_connections WHERE app_user_id=$1 AND connection_status='connected' AND revoked_at IS NULL LIMIT 1", [current.id]);
-      return json(res, 200, { user: { id: current.id, display_name: current.display_name, verselink_name: current.verselink_name, scmdb_display_name: current.scmdb_display_name, is_admin: current.is_admin, account_status: current.account_status, accent_color: current.accent_color || null, user_handle: current.user_handle || null }, scmdb_connected: Boolean(connected.rowCount) });
+      return json(res, 200, { user: { id: current.id, display_name: current.display_name, verselink_name: current.verselink_name, scmdb_display_name: current.scmdb_display_name, is_admin: current.is_admin, account_status: current.account_status, accent_color: current.accent_color || null, text_color: current.text_color || null, user_handle: current.user_handle || null }, scmdb_connected: Boolean(connected.rowCount) });
     }
 
     if (req.method === "POST" && url.pathname === "/api/profile/scmdb/connect") {
@@ -2471,7 +2477,7 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/profile") {
       const current = await getCurrentAppUser(req); if (!current) return json(res, 401, { error: "login required" });
-      const result = await pool.query("SELECT id,COALESCE(verselink_name,display_name) AS display_name,verselink_name,display_name AS scmdb_display_name,rsi_profile_url,discord_name,profile_public,accent_color,rsi_avatar_url,rsi_handle,rsi_citizen_record,rsi_organization,rsi_enlisted,rsi_fluency,rsi_profile_synced_at,EXISTS(SELECT 1 FROM auth_recovery_tokens WHERE app_user_id=app_users.id AND revoked_at IS NULL) AS has_recovery_key FROM app_users WHERE id=$1", [current.id]);
+      const result = await pool.query("SELECT id,COALESCE(verselink_name,display_name) AS display_name,verselink_name,display_name AS scmdb_display_name,rsi_profile_url,discord_name,profile_public,accent_color,text_color,rsi_avatar_url,rsi_handle,rsi_citizen_record,rsi_organization,rsi_enlisted,rsi_fluency,rsi_profile_synced_at,EXISTS(SELECT 1 FROM auth_recovery_tokens WHERE app_user_id=app_users.id AND revoked_at IS NULL) AS has_recovery_key FROM app_users WHERE id=$1", [current.id]);
       const profile = result.rows[0];
       return json(res, 200, { profile: { ...profile, public_path: `/profile/${profile.id}` } });
     }
@@ -2500,13 +2506,16 @@ const server = createServer(async (req, res) => {
       const discordName = (params.get("discord_name") || "").trim();
       const accentInput = (params.get("accent_color") || "").trim();
       const accentColor = accentInput === "" ? null : accentInput.toUpperCase();
+      const textInput = (params.get("text_color") || "").trim();
+      const textColor = textInput === "" ? null : textInput.toUpperCase();
       const rsiProfileUrl = normalizeRsiProfileUrl(rsiInput);
       if (name && (!validText(name, 50) || !/^[\p{L}\p{N}][\p{L}\p{N} ._-]*$/u.test(name))) return json(res, 400, { error: "name must be 1-50 letters, numbers, spaces, dots, hyphens or underscores" });
       if (rsiInput && !rsiProfileUrl) return json(res, 400, { error: "RSI profile URL must use https://robertsspaceindustries.com" });
       if (discordName && !validText(discordName, 80)) return json(res, 400, { error: "Discord name must be 1-80 characters" });
       if (accentInput && !/^#[0-9A-F]{6}$/i.test(accentInput)) return json(res, 400, { error: "accent color must be a 6-digit hex value" });
+      if (textInput && !/^#[0-9A-F]{6}$/i.test(textInput)) return json(res, 400, { error: "text color must be a 6-digit hex value" });
       try {
-        const updated = await pool.query("UPDATE app_users SET verselink_name=$1,rsi_profile_url=$2,discord_name=$3,profile_public=$4,accent_color=$5,rsi_avatar_url=CASE WHEN rsi_profile_url IS DISTINCT FROM $2 THEN NULL ELSE rsi_avatar_url END,rsi_handle=CASE WHEN rsi_profile_url IS DISTINCT FROM $2 THEN NULL ELSE rsi_handle END,rsi_citizen_record=CASE WHEN rsi_profile_url IS DISTINCT FROM $2 THEN NULL ELSE rsi_citizen_record END,rsi_organization=CASE WHEN rsi_profile_url IS DISTINCT FROM $2 THEN NULL ELSE rsi_organization END,rsi_enlisted=CASE WHEN rsi_profile_url IS DISTINCT FROM $2 THEN NULL ELSE rsi_enlisted END,rsi_fluency=CASE WHEN rsi_profile_url IS DISTINCT FROM $2 THEN NULL ELSE rsi_fluency END,rsi_profile_synced_at=CASE WHEN rsi_profile_url IS DISTINCT FROM $2 THEN NULL ELSE rsi_profile_synced_at END WHERE id=$6 RETURNING id,COALESCE(verselink_name,display_name) AS display_name,verselink_name,display_name AS scmdb_display_name,rsi_profile_url,discord_name,profile_public,accent_color,rsi_avatar_url,rsi_handle,rsi_citizen_record,rsi_organization,rsi_enlisted,rsi_fluency,rsi_profile_synced_at", [name || null, rsiProfileUrl, discordName || null, params.get("profile_public") === "1", accentColor, current.id]);
+        const updated = await pool.query("UPDATE app_users SET verselink_name=$1,rsi_profile_url=$2,discord_name=$3,profile_public=$4,accent_color=$5,text_color=$6,rsi_avatar_url=CASE WHEN rsi_profile_url IS DISTINCT FROM $2 THEN NULL ELSE rsi_avatar_url END,rsi_handle=CASE WHEN rsi_profile_url IS DISTINCT FROM $2 THEN NULL ELSE rsi_handle END,rsi_citizen_record=CASE WHEN rsi_profile_url IS DISTINCT FROM $2 THEN NULL ELSE rsi_citizen_record END,rsi_organization=CASE WHEN rsi_profile_url IS DISTINCT FROM $2 THEN NULL ELSE rsi_organization END,rsi_enlisted=CASE WHEN rsi_profile_url IS DISTINCT FROM $2 THEN NULL ELSE rsi_enlisted END,rsi_fluency=CASE WHEN rsi_profile_url IS DISTINCT FROM $2 THEN NULL ELSE rsi_fluency END,rsi_profile_synced_at=CASE WHEN rsi_profile_url IS DISTINCT FROM $2 THEN NULL ELSE rsi_profile_synced_at END WHERE id=$7 RETURNING id,COALESCE(verselink_name,display_name) AS display_name,verselink_name,display_name AS scmdb_display_name,rsi_profile_url,discord_name,profile_public,accent_color,text_color,rsi_avatar_url,rsi_handle,rsi_citizen_record,rsi_organization,rsi_enlisted,rsi_fluency,rsi_profile_synced_at", [name || null, rsiProfileUrl, discordName || null, params.get("profile_public") === "1", accentColor, textColor, current.id]);
         return json(res, 200, { ok: true, profile: { ...updated.rows[0], public_path: `/profile/${updated.rows[0].id}` } });
       } catch (error) {
         if (error.code === "23505") return json(res, 409, { error: "this VerseLink name is already in use" });
