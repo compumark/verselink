@@ -1,89 +1,29 @@
 (() => {
   const content = document.querySelector("#content");
-  const repository = "compumark/verselink";
-  let loading = false;
-
-  const escapeHtml = (value) => {
-    const node = document.createElement("span");
-    node.textContent = String(value || "");
-    return node.innerHTML;
-  };
-
-  const releaseBody = (body) => String(body || "").trim().split(/\n{2,}/).filter(Boolean).map((block) => {
-    const lines = block.split("\n").filter(Boolean);
-    if (lines.every((line) => /^[-*+]\s+/.test(line))) {
-      return `<ul class="github-release-notes">${lines.map((line) => `<li>${escapeHtml(line.replace(/^[-*+]\s+/, ""))}</li>`).join("")}</ul>`;
-    }
-    return `<p>${lines.map(escapeHtml).join("<br>")}</p>`;
-  }).join("");
-
-  const releaseChanges = (body) => String(body || "").split(/\r?\n/)
-    .filter((line) => /^[-*+]\s+/.test(line))
-    .map((line) => line.replace(/^[-*+]\s+/, "").trim());
-
-  const hasEmbeddedReleaseNotes = (entry, release) => {
-    const notes = releaseChanges(release?.body);
-    return notes.length > 0 && notes.every((note) => entry.changes.includes(note));
-  };
-
-  const loadGithubRelease = async (version) => {
-    try {
-      const response = await fetch(`https://api.github.com/repos/${repository}/releases/tags/v${encodeURIComponent(version)}`, {
-        headers: { Accept: "application/vnd.github+json" }
-      });
-      return response.ok ? response.json() : null;
-    } catch {
-      return null;
-    }
-  };
-
-  const render = async (mode = "releases") => {
+  const repo = "compumark/verselink";
+  let loading = false, stable = [], preRelease = [], selectedSeries = null;
+  const github = new Map();
+  const esc = (v) => { const n = document.createElement("span"); n.textContent = String(v || ""); return n.innerHTML; };
+  const version = (v) => { const m = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(String(v || "").trim()); return m && { major: +m[1], minor: +m[2], patch: +m[3], series: `${+m[1]}.${+m[2]}` }; };
+  const sort = (a, b) => { const x = version(a.version), y = version(b.version); return x && y ? y.major - x.major || y.minor - x.minor || y.patch - x.patch : x ? -1 : y ? 1 : 0; };
+  const changes = (body) => String(body || "").split(/\r?\n/).filter((x) => /^[-*+]\s+/.test(x)).map((x) => x.replace(/^[-*+]\s+/, "").trim());
+  const githubBody = (body) => String(body || "").trim().split(/\n{2,}/).filter(Boolean).map((block) => { const lines = block.split("\n").filter(Boolean); return lines.every((x) => /^[-*+]\s+/.test(x)) ? `<ul class="github-release-notes">${lines.map((x) => `<li>${esc(x.replace(/^[-*+]\s+/, ""))}</li>`).join("")}</ul>` : `<p>${lines.map(esc).join("<br>")}</p>`; }).join("");
+  const hasEmbeddedReleaseNotes = (entry, release) => { const notes = changes(release?.body); return notes.length > 0 && notes.every((x) => entry.changes.includes(x)); };
+  const embedded = hasEmbeddedReleaseNotes;
+  // GitHub notes are suppressed when !hasEmbeddedReleaseNotes(entry, release).
+  const loadGithub = (v) => { if (!github.has(v)) github.set(v, fetch(`https://api.github.com/repos/${repo}/releases/tags/v${encodeURIComponent(v)}`, { headers: { Accept: "application/vnd.github+json" } }).then((r) => r.ok ? r.json() : null).catch(() => null)); return github.get(v); };
+  const render = async (mode = "stable") => {
     if (location.hash !== "#changelog") return;
     loading = true;
     try {
-      const response = await fetch("/api/changelog");
-      if (!response.ok) throw new Error("changelog unavailable");
-      const documentSource = new DOMParser().parseFromString(await response.text(), "text/html");
-      const entries = [...documentSource.querySelectorAll(".entry")].map((entry) => ({
-        kind: entry.dataset.releaseKind || "pre-release",
-        version: entry.dataset.version || "",
-        date: entry.querySelector("time")?.textContent.trim() || entry.querySelector(".version")?.textContent.trim() || "",
-        changes: [...entry.querySelectorAll("li")].map((item) => item.textContent.trim()).filter(Boolean)
-      })).filter((entry) => entry.date && entry.changes.length);
-      const stable = entries.filter((entry) => entry.kind === "stable");
-      const selected = mode === "pre-release" ? entries.filter((entry) => entry.kind === "pre-release") : stable;
-      if (!selected.length) throw new Error("no changelog entries");
-
-      const githubReleases = new Map(mode === "pre-release" ? [] : await Promise.all(
-        selected.map(async (entry) => [entry.version, await loadGithubRelease(entry.version)])
-      ));
-      if (location.hash !== "#changelog") return;
-
-      const preRelease = mode === "pre-release";
-      content.innerHTML = `<section class="frame changelog-panel" data-changelog-controlled="true">
-        <div class="eyebrow">MOBIGLASS SYSTEM</div>
-        <h1>${preRelease ? "PRE-RELEASE HISTORY" : "CHANGELOG"}</h1>
-        <p class="changelog-intro">${preRelease ? "Development history before the first public release." : "Official releases and their deployed changes."}</p>
-        ${selected.map((entry, index) => {
-          const release = githubReleases.get(entry.version);
-          const githubNotes = release?.body && !hasEmbeddedReleaseNotes(entry, release) ? `<section class="github-release"><strong>GITHUB RELEASE NOTES</strong>${releaseBody(release.body)}<a href="${escapeHtml(release.html_url)}" target="_blank" rel="noopener noreferrer">VIEW GITHUB RELEASE ↗</a></section>` : "";
-          return `<article class="changelog-entry"><div class="changelog-release"><strong>${entry.version ? `VERSION ${escapeHtml(entry.version)}` : "PRE-RELEASE"}</strong><small>${escapeHtml(entry.date)}</small>${!preRelease && index === 0 ? '<span class="changelog-current">CURRENT RELEASE</span>' : ""}</div><ul>${entry.changes.map((change) => `<li>${escapeHtml(change)}</li>`).join("")}</ul>${githubNotes}</article>`;
-        }).join("")}
-        <div class="changelog-actions"><button type="button" id="changelog-toggle">${preRelease ? "BACK TO RELEASES" : "VIEW PRE-RELEASE HISTORY"}</button></div>
-      </section>`;
-      document.querySelector("#changelog-toggle").onclick = () => render(preRelease ? "releases" : "pre-release");
-    } catch {
-      if (location.hash === "#changelog") content.innerHTML = '<section class="frame changelog-panel" data-changelog-controlled="true"><div class="eyebrow">MOBIGLASS SYSTEM</div><h1>CHANGELOG</h1><p class="changelog-intro">Changelog data is currently unavailable.</p></section>';
-    } finally {
-      loading = false;
-    }
+      if (!stable.length && !preRelease.length) { const r = await fetch("/api/changelog"); if (!r.ok) throw Error(); const doc = new DOMParser().parseFromString(await r.text(), "text/html"); const all = [...doc.querySelectorAll(".entry")].map((e) => ({ kind: e.dataset.releaseKind || "pre-release", version: e.dataset.version || "", date: e.querySelector("time")?.textContent.trim() || e.querySelector(".version")?.textContent.trim() || "", changes: [...e.querySelectorAll("li")].map((x) => x.textContent.trim()).filter(Boolean) })).filter((e) => e.date && e.changes.length); stable = all.filter((e) => e.kind === "stable").sort(sort); preRelease = all.filter((e) => e.kind !== "stable"); selectedSeries ||= version(stable[0]?.version)?.series; }
+      if (mode === "pre-release") return draw(preRelease, true, []);
+      const series = [...new Set(stable.map((e) => version(e.version)?.series).filter(Boolean))].sort((a, b) => { const x = a.split(".").map(Number), y = b.split(".").map(Number); return y[0] - x[0] || y[1] - x[1]; });
+      selectedSeries = series.includes(selectedSeries) ? selectedSeries : series[0];
+      return draw(stable.filter((e) => version(e.version)?.series === selectedSeries), false, series);
+    } catch { if (location.hash === "#changelog") content.innerHTML = '<section class="frame changelog-panel" data-changelog-controlled="true"><div class="eyebrow">MOBIGLASS SYSTEM</div><h1>CHANGELOG</h1><p class="changelog-intro">Changelog data is currently unavailable.</p></section>'; } finally { loading = false; }
   };
-
-  const schedule = () => {
-    if (location.hash === "#changelog" && !loading && !content.querySelector('[data-changelog-controlled="true"]')) queueMicrotask(() => render());
-  };
-
-  new MutationObserver(schedule).observe(content, { childList: true, subtree: true });
-  window.addEventListener("hashchange", () => setTimeout(schedule, 0));
-  schedule();
+  const draw = (entries, historical, series) => { const current = stable[0]?.version; entries.forEach((e) => { if (!historical) loadGithub(e.version); }); content.innerHTML = `<section class="frame changelog-panel" data-changelog-controlled="true"><div class="eyebrow">MOBIGLASS SYSTEM</div><h1>${historical ? "PRE-RELEASE HISTORY" : "CHANGELOG"}</h1><p class="changelog-intro">${historical ? "Development history before the first public release." : "Official releases and their deployed changes."}</p>${historical ? "" : `<div class="changelog-series" aria-label="Release series"><span class="changelog-series-label">RELEASE SERIES</span><div class="changelog-series-list">${series.map((s, i) => `<button type="button" class="changelog-series-button${s === selectedSeries ? " active" : ""}" aria-pressed="${s === selectedSeries}" aria-label="Show releases from version series ${s}" data-series="${s}">${s}${i === 0 ? " · CURRENT" : ""}</button>`).join("")}</div></div>`}${entries.map((e) => `<article class="changelog-entry"><div class="changelog-release"><strong>${e.version ? `VERSION ${esc(e.version)}` : "PRE-RELEASE"}</strong><small>${esc(e.date)}</small>${!historical && e.version === current ? '<span class="changelog-current">CURRENT RELEASE</span>' : ""}</div><ul>${e.changes.map((x) => `<li>${esc(x)}</li>`).join("")}</ul><div data-github-version="${esc(e.version)}"></div></article>`).join("")}<div class="changelog-actions"><button type="button" id="changelog-toggle">${historical ? "BACK TO RELEASES" : "VIEW PRE-RELEASE HISTORY"}</button></div></section>`; content.querySelectorAll("[data-series]").forEach((b) => b.onclick = () => { selectedSeries = b.dataset.series; render(); }); content.querySelector("#changelog-toggle").onclick = () => render(historical ? "stable" : "pre-release"); if (!historical) entries.forEach(async (e) => { const r = await loadGithub(e.version); if (r?.body && !embedded(e, r) && location.hash === "#changelog" && selectedSeries === version(e.version)?.series) content.querySelector(`[data-github-version="${CSS.escape(e.version)}"]`).outerHTML = `<section class="github-release"><strong>GITHUB RELEASE NOTES</strong>${githubBody(r.body)}<a href="${esc(r.html_url)}" target="_blank" rel="noopener noreferrer">VIEW GITHUB RELEASE ↗</a></section>`; }); };
+  const schedule = () => { if (location.hash === "#changelog" && !loading && !content.querySelector('[data-changelog-controlled="true"]')) queueMicrotask(() => render()); };
+  new MutationObserver(schedule).observe(content, { childList: true, subtree: true }); window.addEventListener("hashchange", () => setTimeout(schedule, 0)); schedule();
 })();
