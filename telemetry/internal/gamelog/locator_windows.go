@@ -23,16 +23,15 @@ func platformLocatorDefaults() locatorDefaults {
 }
 
 func queryStarCitizenProcesses() (string, error) {
-	return runWindowsCommand("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", `Get-CimInstance Win32_Process -Filter "Name = 'StarCitizen.exe'" | ForEach-Object { $_.ExecutablePath }`)
+	return runWindowsCommand("powershell.exe", starCitizenProcessPowerShellArgs()...)
 }
 
 func queryRegistryRoots() ([]string, error) {
-	keys := []string{`HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\RSI Launcher`, `HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\RSI Launcher`, `HKLM\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\RSI Launcher`}
 	roots := []string{}; var lastErr error
-	for _, key := range keys {
-		output, err := runWindowsCommand("reg.exe", "query", key, "/v", "InstallLocation")
+	for _, key := range rsiLauncherRegistryKeys() {
+		output, err := runWindowsCommand("reg.exe", "query", key)
 		if err != nil { lastErr = err; continue }
-		roots = append(roots, registryInstallLocations(output)...)
+		roots = append(roots, registryHintPaths(output)...)
 	}
 	if len(roots) == 0 && lastErr != nil { return nil, lastErr }; return uniquePaths(roots), nil
 }

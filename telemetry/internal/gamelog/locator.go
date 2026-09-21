@@ -224,22 +224,66 @@ func gameLogFromExecutable(executable string) (string, bool) {
 func registryStarCitizenRoots(hint string) []string {
 	hint = strings.Trim(strings.TrimSpace(hint), `"`)
 	if hint == "" { return nil }
-	return uniquePaths([]string{hint, joinPath(hint, "StarCitizen"), joinPath(windowsDir(hint), "StarCitizen")})
+	if strings.EqualFold(windowsBase(hint), "StarCitizen.exe") || strings.HasSuffix(strings.ToUpper(hint), ".EXE") {
+		hint = windowsDir(hint)
+	}
+	parent := windowsDir(hint)
+	roots := []string{joinPath(hint, "StarCitizen"), joinPath(parent, "StarCitizen")}
+	if strings.EqualFold(windowsBase(hint), "StarCitizen") { roots = append([]string{hint}, roots...) }
+	return uniquePaths(roots)
 }
 
-// registryInstallLocations accepts only the stable value name and type emitted
-// by reg.exe. It intentionally ignores unrelated uninstall values and prose.
-func registryInstallLocations(output string) []string {
+// registryHintPaths accepts only the bounded RSI Launcher value names emitted
+// by reg.exe. Uninstall-related values must contain a quoted executable path;
+// this prevents command-line fragments and unrelated prose from becoming paths.
+func registryHintPaths(output string) []string {
 	paths := []string{}
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 3 || !strings.EqualFold(fields[0], "InstallLocation") || !strings.EqualFold(fields[1], "REG_SZ") {
+		if len(fields) < 3 || (!strings.EqualFold(fields[1], "REG_SZ") && !strings.EqualFold(fields[1], "REG_EXPAND_SZ")) {
 			continue
 		}
-		path := strings.Trim(strings.Join(fields[2:], " "), `"`)
+		name, value := fields[0], strings.TrimSpace(strings.Join(fields[2:], " "))
+		var path string
+		switch {
+		case strings.EqualFold(name, "InstallLocation"):
+			path = strings.Trim(value, `"`)
+		case strings.EqualFold(name, "UninstallString"), strings.EqualFold(name, "QuietUninstallString"), strings.EqualFold(name, "DisplayIcon"):
+			path = quotedWindowsPath(value)
+		default:
+			continue
+		}
 		if path != "" { paths = append(paths, path) }
 	}
 	return uniquePaths(paths)
+}
+
+func quotedWindowsPath(value string) string {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, `"`) { return "" }
+	end := strings.Index(value[1:], `"`)
+	if end < 0 { return "" }
+	return value[1 : end+1]
+}
+
+// starCitizenProcessPowerShellArgs is static by design: it contains no caller
+// input and therefore cannot turn discovery configuration into PowerShell code.
+func starCitizenProcessPowerShellArgs() []string {
+	return []string{"-NoProfile", "-NonInteractive", "-Command", `Get-CimInstance Win32_Process -Filter "Name = 'StarCitizen.exe'" | ForEach-Object { $_.ExecutablePath }`}
+}
+
+const rsiLauncherRegistryGUID = "81bfc699-f883-50c7-b674-2483b6baae23"
+
+// rsiLauncherRegistryKeys is intentionally bounded to known RSI Launcher
+// locations. Discovery must never turn into a generic registry crawler.
+func rsiLauncherRegistryKeys() []string {
+	return []string{
+		`HKCU\Software\` + rsiLauncherRegistryGUID,
+		`HKLM\Software\` + rsiLauncherRegistryGUID,
+		`HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\` + rsiLauncherRegistryGUID,
+		`HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\` + rsiLauncherRegistryGUID,
+		`HKLM\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\` + rsiLauncherRegistryGUID,
+	}
 }
 
 func gameLogInChannel(channel string) string { return joinPath(channel, "Game.log") }

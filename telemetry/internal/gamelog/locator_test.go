@@ -203,11 +203,55 @@ func TestRegistryHintsAndFailures(t *testing.T) {
 	if result.Found() || !hasAttempt(result, StrategyRegistry, OutcomeNoCandidate) { t.Fatalf("expected unusable registry diagnostics: %#v", result) }
 }
 
-func TestRegistryInstallLocationsAreConservative(t *testing.T) {
-	output := "InstallLocation    REG_SZ    \"C:\\Program Files\\Roberts Space Industries\\StarCitizen\"\nDisplayName REG_SZ Something Else\nInstallLocation REG_DWORD 1\n"
-	got := registryInstallLocations(output)
-	want := `C:\Program Files\Roberts Space Industries\StarCitizen`
-	if len(got) != 1 || got[0] != want { t.Fatalf("got %v, want %s", got, want) }
+func TestRegistryHintPathsAndRootsAreConservative(t *testing.T) {
+	tests := []struct { name, output, hint, want string }{
+		{"install location", "InstallLocation    REG_SZ    C:\\Program Files\\Roberts Space Industries\\RSI Launcher", `C:\Program Files\Roberts Space Industries\RSI Launcher`, `C:\Program Files\Roberts Space Industries\StarCitizen`},
+		{"uninstall string", "UninstallString    REG_SZ    \"D:\\Roberts Space Industries\\RSI Launcher\\Uninstall RSI Launcher.exe\" /allusers", `D:\Roberts Space Industries\RSI Launcher\Uninstall RSI Launcher.exe`, `D:\Roberts Space Industries\StarCitizen`},
+		{"quiet uninstall string", "QuietUninstallString REG_SZ \"E:\\Roberts Space Industries\\RSI Launcher\\Uninstall RSI Launcher.exe\" /quiet", `E:\Roberts Space Industries\RSI Launcher\Uninstall RSI Launcher.exe`, `E:\Roberts Space Industries\StarCitizen`},
+		{"display icon", "DisplayIcon REG_SZ \"F:\\Roberts Space Industries\\RSI Launcher\\RSI Launcher.exe\",0", `F:\Roberts Space Industries\RSI Launcher\RSI Launcher.exe`, `F:\Roberts Space Industries\StarCitizen`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := registryHintPaths(test.output)
+			if len(got) != 1 || got[0] != test.hint { t.Fatalf("hint: got %v, want %s", got, test.hint) }
+			roots := registryStarCitizenRoots(got[0])
+			if !containsFold(roots, test.want) { t.Fatalf("roots: got %v, want %s", roots, test.want) }
+		})
+	}
+
+	for _, output := range []string{
+		"malformed registry output",
+		"DisplayName REG_SZ Unrelated Product",
+		"UninstallString REG_SZ C:\\Program Files\\Unquoted.exe /allusers",
+		"InstallLocation REG_SZ",
+		"InstallLocation REG_DWORD 1",
+	} {
+		if got := registryHintPaths(output); len(got) != 0 { t.Fatalf("got unexpected hints %v for %q", got, output) }
+	}
+}
+
+func TestStarCitizenProcessPowerShellArgsAreStaticAndCorrect(t *testing.T) {
+	args := starCitizenProcessPowerShellArgs()
+	if len(args) != 4 || args[0] != "-NoProfile" || args[1] != "-NonInteractive" || args[2] != "-Command" { t.Fatalf("unexpected args: %q", args) }
+	script := args[3]
+	for _, required := range []string{"Get-CimInstance", "Name = 'StarCitizen.exe'", "ForEach-Object", "ExecutablePath"} {
+		if !strings.Contains(script, required) { t.Fatalf("script missing %q: %q", required, script) }
+	}
+	if strings.Contains(script, `\"`) || strings.Contains(strings.ToUpper(script), "WMIC") { t.Fatalf("unsafe script: %q", script) }
+}
+
+func TestRSILauncherRegistryKeysAreBoundedAndIncludeGUID(t *testing.T) {
+	keys := rsiLauncherRegistryKeys()
+	if len(keys) != 5 { t.Fatalf("got %d keys: %v", len(keys), keys) }
+	for _, required := range []string{
+		`HKCU\Software\81bfc699-f883-50c7-b674-2483b6baae23`,
+		`HKLM\Software\81bfc699-f883-50c7-b674-2483b6baae23`,
+		`HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\81bfc699-f883-50c7-b674-2483b6baae23`,
+		`HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\81bfc699-f883-50c7-b674-2483b6baae23`,
+		`HKLM\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\81bfc699-f883-50c7-b674-2483b6baae23`,
+	} {
+		if !containsFold(keys, required) { t.Fatalf("missing bounded RSI key %q in %v", required, keys) }
+	}
 }
 
 func TestKnownLocationMissingGameLogIsNotSelected(t *testing.T) {
