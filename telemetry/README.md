@@ -31,15 +31,16 @@ go run ./cmd/verselink-telemetry
 The current executable prints its identity and build defaults. A3 adds an
 internal, read-only Windows `Game.log` locator for later callers. A4 adds an
 internal, read-only live line tailer: it emits only newly appended complete raw
-lines, buffers partial writes, and accepts an explicit path-change hook. It
-does not parse lines, restore sessions, persist a path, or expose end-user
-configuration/UI yet.
+lines, buffers partial writes, and accepts an explicit path-change hook. A5
+parses the three session events `player_login`, `server_joined`, and
+`player_spawned` into local structured events. There is still no reducer,
+backend, or end-user runtime integration.
 
 ## Planned direction
 
-Later milestones may add parsing, telemetry events and state reduction,
-platform adapters, diagnostics, and a future VerseLink API client. None of
-those features are part of A4.
+Later milestones may add further parsing, state reduction, platform adapters,
+diagnostics, and a future VerseLink API client. None of those features are part
+of A5.
 
 The security boundary is explicit. VerseLink Telemetry will not use process
 memory reading, DLL injection, kernel drivers, packet sniffing, keyboard hooks,
