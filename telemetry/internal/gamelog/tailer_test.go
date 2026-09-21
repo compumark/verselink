@@ -228,10 +228,11 @@ func TestTailerCallbackOrderingAndReentrantSetPath(t *testing.T) {
 		if line.Text == "switch" { tailer.SetPath(ptu) }
 	}})
 	tailer.pollOnce()
-	appendTailerFile(t, live, "one\ntwo\nswitch\n")
+	appendTailerFile(t, live, "one\nswitch\nstale live line\n")
 	tailer.pollOnce()
 	tailer.pollOnce()
-	if got, want := texts(received), []string{"one", "two", "switch", "ptu"}; !reflect.DeepEqual(got, want) { t.Fatalf("got %q, want %q", got, want) }
+	if got, want := texts(received), []string{"one", "switch", "ptu"}; !reflect.DeepEqual(got, want) { t.Fatalf("got %q, want %q", got, want) }
+	if received[2].Path != ptu { t.Fatalf("expected PTU source path, got %q", received[2].Path) }
 }
 
 func TestTailerRunStopsPromptlyOnCancellation(t *testing.T) {

@@ -165,6 +165,9 @@ clear the pending partial buffer and restart at byte zero. Temporary file
 disappearance is recoverable; when the same identity returns it resumes at its
 previous offset, otherwise it treats it as replacement. A4 has an explicit
 path-change hook but does not poll the A3 locator and does not restore sessions.
+Ordinary same-identity truncation is detected when the new size is below the
+stored offset. If a file truncates and regrows to at least that offset between
+polls, size and identity alone cannot prove that truncation occurred.
 
 ## Session restoration
 

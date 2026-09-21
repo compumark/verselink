@@ -116,11 +116,18 @@ func (t *Tailer) Run(ctx context.Context) error {
 func (t *Tailer) pollOnce() {
 	t.mu.Lock()
 	lines := t.pollLocked()
+	deliveryGeneration := t.generation
 	onLine := t.onLine
 	t.mu.Unlock()
 
 	if onLine != nil {
 		for _, line := range lines {
+			t.mu.Lock()
+			generationCurrent := t.generation == deliveryGeneration
+			t.mu.Unlock()
+			if !generationCurrent {
+				return
+			}
 			onLine(line)
 		}
 	}
@@ -162,7 +169,8 @@ func (t *Tailer) pollLocked() []Line {
 		t.partial = nil
 	} else if info.Size() < t.offset {
 		// Same identity but shorter content: truncation/restart. Never join old
-		// partial bytes with post-truncation bytes.
+		// partial bytes with post-truncation bytes. If it truncates and regrows
+		// past the offset before this poll, size and identity cannot detect it.
 		t.offset = 0
 		t.partial = nil
 	}
