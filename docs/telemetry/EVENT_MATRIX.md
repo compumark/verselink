@@ -179,3 +179,43 @@ SC Bridge also documents currently unmatched/partially covered notification fami
 - Inventory
 
 These are research candidates, not part of the initial contract.
+
+## A2 fixture contract
+
+A2 stores the implementation contract and sanitized input fixtures under
+`telemetry/internal/gamelog` and `telemetry/testdata/events`. The fixtures are
+minimal text examples derived from the approved event semantics; player names,
+identifiers, and shard IDs are placeholders such as `TestPilot`,
+`123456789`, and `pub_test_shard_001`. No real account data or large log
+passages are included.
+
+Each approved event has a positive fixture and at least one realistic negative
+fixture. Expected output fields are stored in the machine-readable
+`telemetry/testdata/events/expectations.json` catalogue. The fixture tests
+validate the catalogue and file layout only; they deliberately do not parse
+Game.log and do not contain production regexes.
+
+Fixtures begin with sanitized RFC3339Nano timestamps in angle brackets, for
+example `<2026-09-21T10:15:30.123Z>`. Later parser work should use a valid
+line-start RFC3339/RFC3339Nano timestamp as the event timestamp. If the
+timestamp is malformed or missing, the parser may still recognize the event,
+but its timestamp must remain unset/zero; it must not invent the current system
+time. A multi-line event uses the timestamp of the line that emits the final
+event.
+
+`party_member_joined` and `party_member_left` preserve ordered two-line input.
+The first line creates pending state only; a valid continuation emits the final
+event and clears pending state. An unrelated recognized event clears stale
+pending state, and a continuation without a valid header must not emit a party
+event. The A2 fixtures describe these cases but do not implement the state
+machine.
+
+Raw and normalized values are separate contract concerns. For ship events,
+`raw` preserves the source text such as `@vehicle_NameRSI_Hermes : TestOwner`,
+while later parser work is expected to normalize `ship` to `RSI_Hermes`.
+`location_change` means last observed location, not continuous GPS or XYZ
+coordinates. `qt_arrived` has no destination and must not infer one by itself.
+
+`blueprint_received` and `refinery_complete` are reference-only future/P1
+fixtures. They are not presence events and are not connected to Blueprint or
+Material Inventory in A2.
