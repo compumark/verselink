@@ -4,6 +4,7 @@ node_modules/
 !.env.example
 data/
 *.log
+!telemetry/testdata/events/**/*.log
 *.bak
 *.tmp
 .DS_Store
