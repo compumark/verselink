@@ -28,7 +28,7 @@ OCR/screenshot extraction and continuous `Game.log` telemetry have different run
 ## ADR-002 — Prefer a standalone Telemetry repository
 
 Date: 2026-09-21  
-Status: Proposed
+Status: Accepted for A1; future extraction remains planned
 
 ### Decision
 
@@ -48,12 +48,19 @@ This enables:
 
 Planning documentation starts in the main VerseLink repository. The implementation repository may be created as part of A1.
 
+For A1, the implementation is intentionally located in `telemetry/` inside
+the VerseLink repository. It is a standalone Go module and is technically
+independent from the Node.js application. The existing `companion/` OCR
+project remains entirely separate. Moving the module to
+`compumark/verselink-telemetry` later should mainly require repository and CI
+relocation, not code redesign.
+
 ---
 
 ## ADR-003 — Go is the preferred implementation language
 
 Date: 2026-09-21  
-Status: Proposed
+Status: Accepted for A1
 
 ### Decision
 
@@ -73,6 +80,9 @@ Use Go for the new Telemetry client unless A1 identifies a blocking reason.
 - Node.js
 
 The existing Windows-only OCR stack is not a reason to force Telemetry onto .NET.
+
+A1 validates this choice with a minimal standalone Go module under
+`telemetry/`, using only the standard library.
 
 ---
 

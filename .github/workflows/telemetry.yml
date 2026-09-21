@@ -1,0 +1,38 @@
+name: Telemetry Go
+
+on:
+  push:
+    paths:
+      - "telemetry/**"
+      - ".github/workflows/telemetry.yml"
+  pull_request:
+    paths:
+      - "telemetry/**"
+      - ".github/workflows/telemetry.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: telemetry
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Vet
+        run: go vet ./...
