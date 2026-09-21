@@ -27,7 +27,7 @@ Goal: prove that a local client can reliably find, tail, parse, and reduce Star 
 | --- | --- | --- |
 | A1 | Project scaffold | COMPLETE |
 | A2 | Event specification and parser fixtures | COMPLETE |
-| A3 | Windows Game.log locator | TODO |
+| A3 | Windows Game.log locator | IN REVIEW |
 | A4 | Robust Game.log tailer | TODO |
 | A5 | Session event parser | TODO |
 | A6 | Location event parser | TODO |

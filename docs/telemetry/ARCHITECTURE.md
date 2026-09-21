@@ -118,6 +118,18 @@ Preferred strategy order:
 
 The active channel may be LIVE, PTU, EPTU, or another future channel. The locator must not assume LIVE only.
 
+The A3 locator performs one bounded, read-only discovery pass. It selects only a
+regular `Game.log` that can be opened read-only, and returns the selected path,
+the winning strategy, and local attempts for diagnostics. It first reads RSI
+Launcher logs (including a rotated fallback), then uses a non-interactive
+PowerShell CIM process query, bounded known installation roots, narrow registry
+install hints, and finally a caller-supplied manual path. It does not use WMIC,
+poll, tail, wait for the game, or scan disks recursively.
+
+On non-Windows platforms the default locator returns an explicit unsupported
+platform result and does not invoke Windows commands or perform discovery.
+Linux discovery remains a Milestone G concern.
+
 ### Linux
 
 The core parser and tailer remain platform-neutral. Only path discovery is platform-specific.

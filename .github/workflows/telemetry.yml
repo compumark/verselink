@@ -36,3 +36,9 @@ jobs:
 
       - name: Vet
         run: go vet ./...
+
+      - name: Windows cross-build
+        run: go build ./...
+        env:
+          GOOS: windows
+          GOARCH: amd64
