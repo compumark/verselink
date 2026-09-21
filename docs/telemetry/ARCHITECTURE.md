@@ -60,7 +60,7 @@ This decision can be revisited only through an explicit architecture decision.
 Game.log
   -> locator
   -> tailer
-  -> parser
+  -> GameLogParser
   -> TelemetryEvent
   -> reducer
   -> TelemetryState
@@ -68,6 +68,11 @@ Game.log
 ```
 
 The UI and server must not parse raw Star Citizen log lines.
+
+The parser receives one raw complete line from the tailer and returns at most
+one allowlisted `TelemetryEvent`. A timestamp is parsed only from a valid
+RFC3339/RFC3339Nano value at the start of the line; missing or malformed
+timestamps remain zero and are never replaced with system time.
 
 ## Suggested standalone repository layout
 

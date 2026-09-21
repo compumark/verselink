@@ -29,7 +29,7 @@ Goal: prove that a local client can reliably find, tail, parse, and reduce Star 
 | A2 | Event specification and parser fixtures | COMPLETE |
 | A3 | Windows Game.log locator | COMPLETE |
 | A4 | Robust Game.log tailer | COMPLETE |
-| A5 | Session event parser | TODO |
+| A5 | Session event parser | IN REVIEW |
 | A6 | Location event parser | TODO |
 | A7 | Ship event parser | TODO |
 | A8 | Quantum Travel event parser | TODO |
