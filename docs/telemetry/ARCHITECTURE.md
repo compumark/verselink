@@ -156,6 +156,19 @@ The tailer opens `Game.log` read-only and must tolerate:
 
 A polling model around 100–250 ms is acceptable for the first implementation.
 
+The A4 tailer is live-only: when its initial `Game.log` already exists, it
+attaches at EOF and does not replay history. If the initial file appears later,
+or a caller explicitly switches to a new path/channel, it reads that new file
+from byte zero. It buffers partial writes until `\n`, removes only a preceding
+`\r` from CRLF, and preserves all other raw text. Truncation and replacement
+clear the pending partial buffer and restart at byte zero. Temporary file
+disappearance is recoverable; when the same identity returns it resumes at its
+previous offset, otherwise it treats it as replacement. A4 has an explicit
+path-change hook but does not poll the A3 locator and does not restore sessions.
+Ordinary same-identity truncation is detected when the new size is below the
+stored offset. If a file truncates and regrows to at least that offset between
+polls, size and identity alone cannot prove that truncation occurred.
+
 ## Session restoration
 
 On telemetry startup, state should be rebuilt from the current Star Citizen session instead of replaying an entire historic log.
@@ -166,6 +179,9 @@ Preferred model:
 2. replay from that point,
 3. reduce events into current state,
 4. continue live tailing.
+
+This belongs to A11. A4 deliberately does not scan backwards, inspect login
+markers, or replay historical log content.
 
 ## Event model
 
