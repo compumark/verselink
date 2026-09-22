@@ -73,7 +73,7 @@ Goal: turn the core into a usable Windows background application.
 | Item | Description | Status |
 | --- | --- | --- |
 | B1 | Windows Runtime Integration | COMPLETE |
-| B2 | Windows Tray Application and Runtime Status | IN REVIEW |
+| B2 | Windows Tray Application and Runtime Status | COMPLETE |
 | B3 | Settings and Game.log Configuration | TODO |
 | B4 | Windows Startup and Application Lifecycle | TODO |
 | B5 | Local Diagnostics and Troubleshooting Export | TODO |
