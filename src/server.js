@@ -1915,6 +1915,92 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { mission: updated.rows[0] });
     }
 
+    const loadMissionAccess = async (missionId, appUserId) => (await pool.query(
+      `SELECT m.id,m.group_id,m.created_by,gm.role
+       FROM missions m
+       LEFT JOIN group_members gm ON gm.group_id=m.group_id AND gm.app_user_id=$2
+       WHERE m.id=$1`,
+      [missionId, appUserId]
+    )).rows[0] || null;
+    const canManageMission = (mission, current) => Boolean(current.is_admin || mission.created_by === current.id || mission.role === "owner");
+    const taskResponseColumns = "id,mission_id,type,title,description,assigned_to,target_quantity,unit,status,sort_order,created_at,updated_at,completed_at";
+    const taskCreateMatch = url.pathname.match(/^\/api\/missions\/([^/]+)\/tasks$/);
+    const taskPatchMatch = url.pathname.match(/^\/api\/missions\/([^/]+)\/tasks\/([^/]+)$/);
+
+    if ((taskCreateMatch && req.method === "POST") || (taskPatchMatch && req.method === "PATCH")) {
+      const current = await getCurrentAppUser(req);
+      if (!current) return json(res, 401, { error: "login required" });
+      const missionId = (taskCreateMatch || taskPatchMatch)[1];
+      if (!uuidPattern.test(missionId)) return json(res, 400, { error: "invalid mission" });
+      const mission = await loadMissionAccess(missionId, current.id);
+      if (!mission || (!mission.role && !current.is_admin)) return json(res, 404, { error: "mission not found" });
+      if (!canManageMission(mission, current)) return json(res, 403, { error: "mission creator, group owner, or app admin required" });
+
+      let data;
+      try { data = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: "invalid JSON" }); }
+      if (!data || typeof data !== "object" || Array.isArray(data)) return json(res, 400, { error: "invalid task" });
+
+      const validateAssignee = async (assignedTo) => {
+        if (assignedTo === null) return true;
+        if (typeof assignedTo !== "string" || !uuidPattern.test(assignedTo)) return false;
+        const assignee = await pool.query(
+          "SELECT 1 FROM app_users u JOIN group_members gm ON gm.app_user_id=u.id WHERE u.id=$1 AND gm.group_id=$2 AND u.account_status='active'",
+          [assignedTo, mission.group_id]
+        );
+        return Boolean(assignee.rowCount);
+      };
+      const validateDescription = (description) => description === null || (typeof description === "string" && description.length <= 500);
+      const normalizeUnit = (unit) => unit === null ? null : (typeof unit === "string" && unit.trim().length > 0 && unit.length <= 50 ? unit.trim() : undefined);
+
+      if (taskCreateMatch) {
+        const allowedFields = new Set(["type", "title", "description", "assigned_to", "target_quantity", "unit", "sort_order"]);
+        if (Object.keys(data).some((field) => !allowedFields.has(field))) return json(res, 400, { error: "invalid task fields" });
+        const type = data.type;
+        const title = typeof data.title === "string" ? data.title.trim() : "";
+        const description = data.description === undefined ? null : data.description;
+        const assignedTo = data.assigned_to === undefined ? null : data.assigned_to;
+        const sortOrder = data.sort_order === undefined ? 0 : data.sort_order;
+        if (!['checklist', 'item'].includes(type) || !validText(title) || !validateDescription(description) || !Number.isInteger(sortOrder)) return json(res, 400, { error: "invalid task" });
+        const unit = data.unit === undefined ? null : normalizeUnit(data.unit);
+        if (unit === undefined) return json(res, 400, { error: "invalid task unit" });
+        if (type === 'checklist' && (data.target_quantity !== undefined && data.target_quantity !== null || unit !== null)) return json(res, 400, { error: "checklist tasks cannot have quantity or unit" });
+        const targetQuantity = type === 'item' ? Number(data.target_quantity) : null;
+        if (type === 'item' && (!Number.isFinite(targetQuantity) || targetQuantity <= 0)) return json(res, 400, { error: "item tasks require a positive target quantity" });
+        if (!await validateAssignee(assignedTo)) return json(res, 400, { error: "assignee must be an active group member" });
+        const created = await pool.query(
+          `INSERT INTO mission_tasks (mission_id,type,title,description,assigned_to,target_quantity,unit,status,sort_order)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,'open',$8) RETURNING ${taskResponseColumns}`,
+          [missionId, type, title, description, assignedTo, targetQuantity, unit, sortOrder]
+        );
+        return json(res, 201, { task: created.rows[0] });
+      }
+
+      const taskId = taskPatchMatch[2];
+      if (!uuidPattern.test(taskId)) return json(res, 400, { error: "invalid task" });
+      const allowedFields = new Set(["title", "description", "assigned_to", "target_quantity", "unit", "sort_order"]);
+      if (!Object.keys(data).length || Object.keys(data).some((field) => !allowedFields.has(field))) return json(res, 400, { error: "only task metadata can be changed" });
+      const task = await pool.query(`SELECT ${taskResponseColumns} FROM mission_tasks WHERE id=$1 AND mission_id=$2`, [taskId, missionId]);
+      if (!task.rowCount) return json(res, 404, { error: "task not found" });
+      const existing = task.rows[0];
+      const title = Object.hasOwn(data, "title") ? (typeof data.title === "string" ? data.title.trim() : "") : existing.title;
+      const description = Object.hasOwn(data, "description") ? data.description : existing.description;
+      const assignedTo = Object.hasOwn(data, "assigned_to") ? data.assigned_to : existing.assigned_to;
+      const targetQuantity = Object.hasOwn(data, "target_quantity") ? Number(data.target_quantity) : (existing.target_quantity === null ? null : Number(existing.target_quantity));
+      const unit = Object.hasOwn(data, "unit") ? normalizeUnit(data.unit) : existing.unit;
+      const sortOrder = Object.hasOwn(data, "sort_order") ? data.sort_order : existing.sort_order;
+      if (!validText(title) || !validateDescription(description) || unit === undefined || !Number.isInteger(sortOrder)) return json(res, 400, { error: "invalid task" });
+      if (existing.type === 'checklist' && (Object.hasOwn(data, "target_quantity") || targetQuantity !== null || unit !== null)) return json(res, 400, { error: "checklist tasks cannot have quantity or unit" });
+      if (existing.type === 'item' && (!Number.isFinite(targetQuantity) || targetQuantity <= 0)) return json(res, 400, { error: "item tasks require a positive target quantity" });
+      if (Object.hasOwn(data, "assigned_to") && !await validateAssignee(assignedTo)) return json(res, 400, { error: "assignee must be an active group member" });
+      const values = [title, description, assignedTo, existing.type === 'item' ? targetQuantity : null, unit, sortOrder, taskId, missionId];
+      const updated = await pool.query(
+        `UPDATE mission_tasks SET title=$1,description=$2,assigned_to=$3,target_quantity=$4,unit=$5,sort_order=$6,updated_at=now()
+         WHERE id=$7 AND mission_id=$8 RETURNING ${taskResponseColumns}`,
+        values
+      );
+      return json(res, 200, { task: updated.rows[0] });
+    }
+
     const miningAccess = async (appUserId, groupId) => (await pool.query("SELECT gm.group_id,gm.role FROM group_members gm WHERE gm.app_user_id=$1 AND gm.group_id=$2", [appUserId, groupId])).rows[0];
     const qualityBand = value => { const q=Number(value); return q>=1&&q<=399?1:q<=599?2:q<=699?3:q<=799?4:q<=899?5:q<=949?6:q<=998?7:q<=1000?8:null; };
     const normalizeMaterialLocation = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
