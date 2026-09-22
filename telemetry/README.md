@@ -38,14 +38,16 @@ the `location_change` observation and `jurisdiction_entered` events. A7 adds
 internal parsing for ship boarding and exiting channel notifications. A8 adds
 internal Quantum Travel event parsing. A9 adds internal Party join, leave, and
 disbanded-event parsing with only the minimal pending operation needed for
-multi-line observations. There is still no reducer, backend, or end-user
-runtime integration.
+multi-line observations. A10 adds local, platform-neutral reduction of the 13
+P0 events into current session, location, ship, Quantum, Party, and timing
+state. There is still no session restore, backend, API, or end-user runtime
+integration.
 
 ## Planned direction
 
-Later milestones may add further parsing, state reduction, platform adapters,
-diagnostics, and a future VerseLink API client. None of those features are part
-of A9.
+Later milestones may add further parsing, platform adapters, diagnostics, and a
+future VerseLink API client. None of those features are part of A10. Session
+restore and restart reconstruction remain separate A11 work.
 
 The security boundary is explicit. VerseLink Telemetry will not use process
 memory reading, DLL injection, kernel drivers, packet sniffing, keyboard hooks,
