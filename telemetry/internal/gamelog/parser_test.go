@@ -116,13 +116,110 @@ func TestParserRejectsMalformedAndLaterEvents(t *testing.T) {
 		"[Notice] <Join PU> shard[] connection established",
 		"[Notice] {Join PU} id[example] status[Queued] port[64090]",
 		"[Notice] [CSessionManager::OnClientSpawned] preparing",
-		readParserFixture(t, "location/location_change.valid.log"),
+		readParserFixture(t, "ships/ship_boarded.valid.log"),
 	}
 	for _, line := range lines {
 		event, ok := parser.Parse(line)
 		if ok || !reflect.DeepEqual(event, telemetry.TelemetryEvent{}) {
 			t.Fatalf("unexpected event for %q: %#v", line, event)
 		}
+	}
+}
+
+func TestParserLocationFixtures(t *testing.T) {
+	parser := NewParser()
+	cases := []struct {
+		name      string
+		path      string
+		eventType string
+		timestamp time.Time
+		data      map[string]string
+	}{
+		{
+			name:      "location change",
+			path:      "location/location_change.valid.log",
+			eventType: "location_change",
+			timestamp: time.Date(2026, time.September, 21, 10, 16, 0, 123000000, time.UTC),
+			data:      map[string]string{"player": "TestPilot", "location": "RR_CRU_L1"},
+		},
+		{
+			name:      "jurisdiction entered",
+			path:      "location/jurisdiction_entered.valid.log",
+			eventType: "jurisdiction_entered",
+			timestamp: time.Date(2026, time.September, 21, 10, 16, 1, 123000000, time.UTC),
+			data:      map[string]string{"jurisdiction": "Stanton"},
+		},
+	}
+
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			event, ok := parser.Parse(readParserFixture(t, test.path))
+			if !ok || event.Type != test.eventType || event.Source != "game_log" || !event.Timestamp.Equal(test.timestamp) || !reflect.DeepEqual(event.Data, test.data) {
+				t.Fatalf("event = %#v, ok = %t", event, ok)
+			}
+		})
+	}
+}
+
+func TestParserRejectsLocationNegativeFixtures(t *testing.T) {
+	parser := NewParser()
+	for _, path := range []string{
+		"location/location_change.invalid.log",
+		"location/jurisdiction_entered.invalid.log",
+	} {
+		t.Run(path, func(t *testing.T) {
+			event, ok := parser.Parse(readParserFixture(t, path))
+			if ok || !reflect.DeepEqual(event, telemetry.TelemetryEvent{}) {
+				t.Fatalf("unexpected event %#v", event)
+			}
+		})
+	}
+}
+
+func TestParserLocationChangeRegressionCases(t *testing.T) {
+	parser := NewParser()
+	valid := `<2026-09-21T10:16:02.123Z> [Notice] <RequestLocationInventory> Player[TestPilot] requested inventory for Location[OOC_Stanton_2c]`
+	event, ok := parser.Parse(valid)
+	if !ok || event.Type != "location_change" || event.Data["location"] != "OOC_Stanton_2c" || len(event.Data) != 2 {
+		t.Fatalf("event = %#v, ok = %t", event, ok)
+	}
+
+	for _, line := range []string{
+		`[Notice] <RequestLocationInventory> Player[] requested inventory for Location[RR_CRU_L1]`,
+		`[Notice] <RequestLocationInventory> Player[TestPilot] requested inventory for Location[]`,
+		`[Notice] <RequestLocationInventory> Player[TestPilot requested inventory for Location[RR_CRU_L1]`,
+	} {
+		event, ok := parser.Parse(line)
+		if ok || !reflect.DeepEqual(event, telemetry.TelemetryEvent{}) {
+			t.Fatalf("unexpected event for %q: %#v", line, event)
+		}
+	}
+}
+
+func TestParserJurisdictionRegressionCases(t *testing.T) {
+	parser := NewParser()
+	event, ok := parser.Parse(`<2026-09-21T10:16:03.123Z> [Notice] <SHUDEvent_OnNotification> Added notification "Entered Example Zone Jurisdiction: "`)
+	if !ok || event.Type != "jurisdiction_entered" || !reflect.DeepEqual(event.Data, map[string]string{"jurisdiction": "Example Zone"}) {
+		t.Fatalf("event = %#v, ok = %t", event, ok)
+	}
+
+	for _, line := range []string{
+		`[Notice] <SHUDEvent_OnNotification> Added notification "Entered  Jurisdiction: "`,
+		`[Notice] <SHUDEvent_OnNotification> Added notification "Leaving Stanton Jurisdiction: "`,
+		`[Notice] <SHUDEvent_OnNotification> Added notification "Exited Stanton Jurisdiction: "`,
+	} {
+		event, ok := parser.Parse(line)
+		if ok || !reflect.DeepEqual(event, telemetry.TelemetryEvent{}) {
+			t.Fatalf("unexpected event for %q: %#v", line, event)
+		}
+	}
+}
+
+func TestParserLocationChangeWithoutTimestampHasZeroObservationTime(t *testing.T) {
+	parser := NewParser()
+	event, ok := parser.Parse(`[Notice] <RequestLocationInventory> Player[TestPilot] requested inventory for Location[RR_CRU_L1]`)
+	if !ok || event.Type != "location_change" || !event.Timestamp.IsZero() {
+		t.Fatalf("event = %#v, ok = %t", event, ok)
 	}
 }
 

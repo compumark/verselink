@@ -2,6 +2,7 @@ package gamelog
 
 import (
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/compumark/verselink-telemetry/internal/telemetry"
@@ -12,6 +13,8 @@ var (
 	playerLoginPattern   = regexp.MustCompile(`nickname="([^"]+)"\s+playerGEID=(\d+)`)
 	serverJoinedPattern  = regexp.MustCompile(`<Join PU>.*shard\[([^\]]+)\]`)
 	playerSpawnedPattern = regexp.MustCompile(`\[CSessionManager::OnClientSpawned\] Spawned!`)
+	locationChangePattern      = regexp.MustCompile(`<RequestLocationInventory> Player\[([^\]]+)\] requested inventory for Location\[([^\]]+)\]`)
+	jurisdictionEnteredPattern = regexp.MustCompile(`Added notification "Entered ([^"]+) Jurisdiction`)
 )
 
 // Parser recognizes the currently approved single-line Game.log allowlist.
@@ -38,6 +41,17 @@ func (p *Parser) Parse(line string) (telemetry.TelemetryEvent, bool) {
 	}
 	if playerSpawnedPattern.MatchString(line) {
 		return newEvent("player_spawned", line, map[string]string{}), true
+	}
+	if match := locationChangePattern.FindStringSubmatch(line); match != nil && strings.TrimSpace(match[1]) != "" && strings.TrimSpace(match[2]) != "" {
+		return newEvent("location_change", line, map[string]string{
+			"player":   match[1],
+			"location": match[2],
+		}), true
+	}
+	if match := jurisdictionEnteredPattern.FindStringSubmatch(line); match != nil && strings.TrimSpace(match[1]) != "" {
+		return newEvent("jurisdiction_entered", line, map[string]string{
+			"jurisdiction": match[1],
+		}), true
 	}
 	return telemetry.TelemetryEvent{}, false
 }

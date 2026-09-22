@@ -74,6 +74,13 @@ one allowlisted `TelemetryEvent`. A timestamp is parsed only from a valid
 RFC3339/RFC3339Nano value at the start of the line; missing or malformed
 timestamps remain zero and are never replaced with system time.
 
+A6 treats `location_change` as a last-observed location signal, not continuous
+GPS/XYZ positioning. The raw location identifier is preserved exactly, and the
+event timestamp is the observation time supplied by `Game.log`. A future
+reducer must retain that observation time independently from any telemetry
+heartbeat; a heartbeat may show that the client is alive but must not refresh
+the location observation.
+
 ## Suggested standalone repository layout
 
 ```text
