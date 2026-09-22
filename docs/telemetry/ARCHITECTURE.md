@@ -75,24 +75,27 @@ RFC3339/RFC3339Nano value at the start of the line; missing or malformed
 timestamps remain zero and are never replaced with system time.
 
 A6 treats `location_change` as a last-observed location signal, not continuous
-GPS/XYZ positioning. The raw location identifier is preserved exactly, and the
-event timestamp is the observation time supplied by `Game.log`. A future
-reducer must retain that observation time independently from any telemetry
-heartbeat; a heartbeat may show that the client is alive but must not refresh
-the location observation.
+GPS/XYZ positioning. The A10 reducer preserves the raw location identifier,
+the source, and the event timestamp as the observation time. Only a new
+`location_change` may update that observation time; ordinary events and any
+future heartbeat must not refresh it.
 
 A7 parses `ship_boarded` and `ship_exited` from their channel notifications.
 Their `raw` field is only the captured channel value, never the full Game.log
 line. `ship` removes only a leading `@vehicle_Name` prefix and `owner` is the
 channel value after the first ` : ` separator (or empty when no separator is
 present). These events are observations, not fleet or inventory
-synchronization; current-ship state belongs to the future reducer.
+synchronization. A10 records the current ship on boarding and clears it only
+when an exit matches that current ship, so a stale exit cannot clear a newer
+ship observation.
 
 A8 parses Quantum Travel observations independently. `qt_target_selected` and
 `qt_fuel_requested` carry an observed destination token exactly as captured;
 they do not resolve it. `qt_arrived` has an empty data map and never infers a
-destination. The parser retains no Quantum state: correlation of an arrival
-with an earlier target belongs to the future A10 reducer.
+destination. The parser retains no Quantum state. A10 reduces target selection
+and fuel request to their observed destination, and marks arrival while
+retaining a known destination; an arrival without prior QT state is represented
+with an empty destination rather than fabricating one.
 
 A9 treats Party join and leave notifications as two-line observations. A Party
 header only arms one pending join or leave operation and emits nothing; a
@@ -101,7 +104,9 @@ clears that pending operation. Recognized unrelated events and wrong opposing
 continuations clear it, while unmatched lines leave it unchanged; a newer Party
 header replaces the prior operation. `party_disbanded` is a single-line event
 with an empty data map that also clears pending state. This is minimal parser
-correlation, not Party membership state; party reduction belongs to A10.
+correlation, not Party membership state. A10 reduces those events into a
+lexicographically sorted Party member set: joins are idempotent, unknown leaves
+are no-ops, and disband clears the set.
 
 ## Suggested standalone repository layout
 
@@ -263,6 +268,20 @@ Example:
 ```
 
 A location observed timestamp and the client's heartbeat timestamp are separate concepts.
+
+## A10 reducer semantics
+
+`Reduce(state, event)` is platform-neutral and stateless; all retained data is
+part of `TelemetryState`. `player_spawned` activates the session, while no A10
+event ends it. Supported events with valid source timestamps update
+`lastEventAt` in processing order; zero timestamps never use system time or
+replace a known valid value. A ship exit clears the current ship only when its
+name matches and, when both are present, its owner also matches. Quantum state
+uses only `target_selected`, `fuel_requested`, and `arrived`; arrival preserves
+a known destination or records an empty one without inference. Party members
+are a sorted set with idempotent joins, exact leaves, and full disband clearing.
+A10 does not restore sessions, detect restarts, or rebuild historic state;
+those boundaries remain A11.
 
 ## Server integration — later phase
 
