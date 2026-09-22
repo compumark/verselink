@@ -70,15 +70,14 @@ Exit criteria:
 
 Goal: turn the core into a usable Windows background application.
 
-Planned work:
-
-- local diagnostics view,
-- tray application,
-- settings and manual log-path override,
-- start with Windows,
-- connection/game-state indicators,
-- local logs and troubleshooting export,
-- release packaging and updater strategy.
+| Item | Description | Status |
+| --- | --- | --- |
+| B1 | Windows Runtime Integration | IN REVIEW |
+| B2 | Windows Tray Application and Runtime Status | TODO |
+| B3 | Settings and Game.log Configuration | TODO |
+| B4 | Windows Startup and Application Lifecycle | TODO |
+| B5 | Local Diagnostics and Troubleshooting Export | TODO |
+| B6 | Windows Packaging, Release Artifacts and Update Strategy | TODO |
 
 ## Milestone C — VerseLink Connection
 
