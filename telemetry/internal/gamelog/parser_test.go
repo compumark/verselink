@@ -206,6 +206,7 @@ func TestParserJurisdictionRegressionCases(t *testing.T) {
 	for _, line := range []string{
 		`[Notice] <SHUDEvent_OnNotification> Added notification "Entered  Jurisdiction: "`,
 		`[Notice] <SHUDEvent_OnNotification> Added notification "Leaving Stanton Jurisdiction: "`,
+		`[Notice] <SHUDEvent_OnNotification> Added notification "Exited Stanton Jurisdiction: "`,
 	} {
 		event, ok := parser.Parse(line)
 		if ok || !reflect.DeepEqual(event, telemetry.TelemetryEvent{}) {
