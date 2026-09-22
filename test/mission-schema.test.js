@@ -46,5 +46,5 @@ test('creates indexes for mission, task, and contribution lookups', async () => 
     'mission_tasks_status_idx ON mission_tasks(status)',
     'mission_task_contributions_task_idx ON mission_task_contributions(task_id)',
     'mission_task_contributions_app_user_idx ON mission_task_contributions(app_user_id)'
-  ]) assert.match(source, new RegExp(index.replace(/[()]/g, '\\$&')));
+  ]) assert.ok(source.includes(`CREATE INDEX IF NOT EXISTS ${index};`), `missing index: ${index}`);
 });
