@@ -50,7 +50,7 @@ func TestFormatSessionPopulatedState(t *testing.T) {
 	if got := FormatSession(snapshot); got != want {
 		t.Fatalf("FormatSession() =\n%s\nwant:\n%s", got, want)
 	}
-	for _, forbidden := range []string{"raw Game.log line", "GEID", "map[", "123456789", "CrewMate", "SecondMate"} {
+	for _, forbidden := range []string{"GEID_SECRET_SENTINEL", "RAW_GAME_LOG_SECRET_SENTINEL", "GEID", "playerGEID", "map[", "CrewMate", "SecondMate"} {
 		if strings.Contains(FormatSession(snapshot), forbidden) {
 			t.Fatalf("formatted diagnostics contain forbidden value %q", forbidden)
 		}
