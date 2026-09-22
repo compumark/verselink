@@ -48,8 +48,9 @@ replays only the latest `player_login` session and continues from an exact
 live-tail byte offset while resetting local state on log restarts. A12 adds a
 small manifest-driven regression corpus covering all 13 P0 events, an
 end-to-end restore regression, monotonic Session diagnostics counters, and a
-deterministic local current-state formatter. There is still no backend, API,
-or end-user runtime integration.
+deterministic local current-state formatter. There is still no backend or API
+integration. B1 provides the foreground Windows console runtime, and B2 adds
+a minimal Windows tray entry point over the same local runtime pipeline.
 
 ## Regression corpus
 
@@ -108,8 +109,47 @@ Stop the program with `Ctrl+C`. This cancels the local Session cleanly; it does
 not create a service, a child process, a persistent lock, or telemetry state
 files.
 
-B1 does not include a tray icon, settings UI, autostart, installer, updater,
-VerseLink account pairing, API upload, or MobiGlass integration.
+B1 does not include settings UI, autostart, installer, updater, VerseLink
+account pairing, API upload, or MobiGlass integration.
+
+## Windows tray application
+
+B2 keeps the B1 console executable as a diagnostics and development entry
+point and adds a separate Windows tray executable. Both commands share the
+same locator, Session, parser, reducer, and structured runtime-status host;
+the tray never parses console output or raw `Game.log` lines.
+
+Build and run the tray application during development:
+
+```powershell
+cd telemetry
+go build -o verselink-telemetry-tray.exe ./cmd/verselink-telemetry-tray
+.\verselink-telemetry-tray.exe
+```
+
+To build it as a Windows GUI-subsystem executable without a visible console:
+
+```powershell
+go build -ldflags="-H windowsgui" -o verselink-telemetry-tray.exe ./cmd/verselink-telemetry-tray
+```
+
+The tray menu shows the current status, opens a small local diagnostics
+dialog, and exits cleanly. Runtime statuses include Starting, Searching for
+Game.log, Monitoring, Session active, Game.log unavailable, Warning, and
+Fatal error. If `Game.log` is not available, the tray remains running and
+retries the existing bounded locator every 15 seconds. It starts the existing
+Session when discovery later succeeds; it does not add another file watcher.
+
+The diagnostics dialog shows the selected path, source-reset count, session
+state, player handle, shard, location, jurisdiction, current ship, Quantum
+Travel state, Party count, and last event. Structured status snapshots remove
+Party member names and never contain raw `Game.log` lines, GEIDs, or raw event
+data maps. No diagnostics are uploaded or persisted.
+
+B2 does not provide persistent settings, a settings UI, a stored manual path,
+Windows autostart, a service, an installer/updater, account pairing, or network
+telemetry. Known live compatibility investigations for shard detection (#48)
+and ship-exit confirmation (#49) remain separate work.
 
 The security boundary is explicit. VerseLink Telemetry will not use process
 memory reading, DLL injection, kernel drivers, packet sniffing, keyboard hooks,
