@@ -116,12 +116,113 @@ func TestParserRejectsMalformedAndLaterEvents(t *testing.T) {
 		"[Notice] <Join PU> shard[] connection established",
 		"[Notice] {Join PU} id[example] status[Queued] port[64090]",
 		"[Notice] [CSessionManager::OnClientSpawned] preparing",
-		readParserFixture(t, "ships/ship_boarded.valid.log"),
+		readParserFixture(t, "quantum/qt_target_selected.valid.log"),
 	}
 	for _, line := range lines {
 		event, ok := parser.Parse(line)
 		if ok || !reflect.DeepEqual(event, telemetry.TelemetryEvent{}) {
 			t.Fatalf("unexpected event for %q: %#v", line, event)
+		}
+	}
+}
+
+func TestParserShipFixtures(t *testing.T) {
+	parser := NewParser()
+	cases := []struct {
+		name      string
+		path      string
+		eventType string
+		timestamp time.Time
+	}{
+		{"ship boarded", "ships/ship_boarded.valid.log", "ship_boarded", time.Date(2026, time.September, 21, 10, 17, 0, 123000000, time.UTC)},
+		{"ship exited", "ships/ship_exited.valid.log", "ship_exited", time.Date(2026, time.September, 21, 10, 18, 0, 123000000, time.UTC)},
+	}
+	wantData := map[string]string{"ship": "RSI_Hermes", "owner": "TestOwner", "raw": "@vehicle_NameRSI_Hermes : TestOwner"}
+
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			event, ok := parser.Parse(readParserFixture(t, test.path))
+			if !ok || event.Type != test.eventType || event.Source != "game_log" || !event.Timestamp.Equal(test.timestamp) || !reflect.DeepEqual(event.Data, wantData) || len(event.Data) != 3 {
+				t.Fatalf("event = %#v, ok = %t", event, ok)
+			}
+		})
+	}
+}
+
+func TestParserRejectsShipNegativeFixtures(t *testing.T) {
+	parser := NewParser()
+	for _, path := range []string{
+		"ships/ship_boarded.invalid.log",
+		"ships/ship_exited.invalid.log",
+	} {
+		t.Run(path, func(t *testing.T) {
+			event, ok := parser.Parse(readParserFixture(t, path))
+			if ok || !reflect.DeepEqual(event, telemetry.TelemetryEvent{}) {
+				t.Fatalf("unexpected event %#v", event)
+			}
+		})
+	}
+}
+
+func TestParserShipChannelRegressionCases(t *testing.T) {
+	parser := NewParser()
+	boarded := `<2026-09-21T10:17:01.123Z> [Notice] <SHUDEvent_OnNotification> Added notification "You have joined channel '@vehicle_NameAnvil_Carrack : Example Owner'.`
+	event, ok := parser.Parse(boarded)
+	wantData := map[string]string{"ship": "Anvil_Carrack", "owner": "Example Owner", "raw": "@vehicle_NameAnvil_Carrack : Example Owner"}
+	if !ok || event.Type != "ship_boarded" || !reflect.DeepEqual(event.Data, wantData) || len(event.Data) != 3 {
+		t.Fatalf("event = %#v, ok = %t", event, ok)
+	}
+
+	withoutPrefix := `[Notice] <SHUDEvent_OnNotification> Added notification "You have joined channel 'RSI_Hermes : TestOwner'.`
+	event, ok = parser.Parse(withoutPrefix)
+	if !ok || event.Type != "ship_boarded" || event.Data["ship"] != "RSI_Hermes" || event.Data["raw"] != "RSI_Hermes : TestOwner" {
+		t.Fatalf("event = %#v, ok = %t", event, ok)
+	}
+	middlePrefix := `[Notice] <SHUDEvent_OnNotification> Added notification "You have joined channel 'Fictional@vehicle_NameShip : TestOwner'.`
+	event, ok = parser.Parse(middlePrefix)
+	if !ok || event.Data["ship"] != "Fictional@vehicle_NameShip" {
+		t.Fatalf("event = %#v, ok = %t", event, ok)
+	}
+	withoutSeparator := `[Notice] <SHUDEvent_OnNotification> Added notification "You have joined channel '@vehicle_NameRSI_Hermes'.`
+	event, ok = parser.Parse(withoutSeparator)
+	if !ok || event.Type != "ship_boarded" || !reflect.DeepEqual(event.Data, map[string]string{"ship": "RSI_Hermes", "owner": "", "raw": "@vehicle_NameRSI_Hermes"}) {
+		t.Fatalf("event = %#v, ok = %t", event, ok)
+	}
+	plainColon := `[Notice] <SHUDEvent_OnNotification> Added notification "You have joined channel '@vehicle_NameExample:Variant'.`
+	event, ok = parser.Parse(plainColon)
+	if !ok || event.Type != "ship_boarded" || !reflect.DeepEqual(event.Data, map[string]string{"ship": "Example:Variant", "owner": "", "raw": "@vehicle_NameExample:Variant"}) {
+		t.Fatalf("event = %#v, ok = %t", event, ok)
+	}
+
+	for _, line := range []string{
+		`[Notice] <SHUDEvent_OnNotification> Added notification "You have joined party '@vehicle_NameRSI_Hermes : TestOwner'.`,
+		`[Notice] <SHUDEvent_OnNotification> Added notification "You have left party '@vehicle_NameRSI_Hermes : TestOwner'.`,
+		`[Notice] Vehicle channel @vehicle_NameRSI_Hermes : TestOwner`,
+		`[Notice] <SHUDEvent_OnNotification> Added notification "You have joined channel '@vehicle_Name : TestOwner'.`,
+	} {
+		event, ok := parser.Parse(line)
+		if ok || !reflect.DeepEqual(event, telemetry.TelemetryEvent{}) {
+			t.Fatalf("unexpected event for %q: %#v", line, event)
+		}
+	}
+
+	exited := `[Notice] <SHUDEvent_OnNotification> Added notification "You have left the channel '@vehicle_NameRSI_Hermes : TestOwner'.`
+	event, ok = parser.Parse(exited)
+	if !ok || event.Type != "ship_exited" || event.Data["ship"] != "RSI_Hermes" {
+		t.Fatalf("event = %#v, ok = %t", event, ok)
+	}
+}
+
+func TestParserShipTimestampHandling(t *testing.T) {
+	parser := NewParser()
+	for _, line := range []string{
+		`[Notice] <SHUDEvent_OnNotification> Added notification "You have joined channel '@vehicle_NameRSI_Hermes : TestOwner'.`,
+		`<not-a-date> [Notice] <SHUDEvent_OnNotification> Added notification "You have joined channel '@vehicle_NameRSI_Hermes : TestOwner'.`,
+		`prefix <2026-09-21T10:17:00.123Z> [Notice] <SHUDEvent_OnNotification> Added notification "You have joined channel '@vehicle_NameRSI_Hermes : TestOwner'.`,
+	} {
+		event, ok := parser.Parse(line)
+		if !ok || event.Type != "ship_boarded" || !event.Timestamp.IsZero() {
+			t.Fatalf("event = %#v, ok = %t", event, ok)
 		}
 	}
 }

@@ -34,7 +34,8 @@ internal, read-only live line tailer: it emits only newly appended complete raw
 lines, buffers partial writes, and accepts an explicit path-change hook. A5
 parses the three session events `player_login`, `server_joined`, and
 `player_spawned` into local structured events. A6 adds internal parsing for
-the `location_change` observation and `jurisdiction_entered` events. There is
+the `location_change` observation and `jurisdiction_entered` events. A7 adds
+internal parsing for ship boarding and exiting channel notifications. There is
 still no reducer, backend, or end-user runtime integration.
 
 ## Planned direction

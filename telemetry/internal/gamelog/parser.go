@@ -15,6 +15,8 @@ var (
 	playerSpawnedPattern = regexp.MustCompile(`\[CSessionManager::OnClientSpawned\] Spawned!`)
 	locationChangePattern      = regexp.MustCompile(`<RequestLocationInventory> Player\[([^\]]+)\] requested inventory for Location\[([^\]]+)\]`)
 	jurisdictionEnteredPattern = regexp.MustCompile(`Added notification "Entered ([^"]+) Jurisdiction`)
+	shipBoardedPattern         = regexp.MustCompile(`Added notification "You have joined channel '(.+?)'`)
+	shipExitedPattern          = regexp.MustCompile(`Added notification "You have left the channel '(.+?)'`)
 )
 
 // Parser recognizes the currently approved single-line Game.log allowlist.
@@ -53,7 +55,35 @@ func (p *Parser) Parse(line string) (telemetry.TelemetryEvent, bool) {
 			"jurisdiction": match[1],
 		}), true
 	}
+	if match := shipBoardedPattern.FindStringSubmatch(line); match != nil {
+		if data, ok := parseShipChannel(match[1]); ok {
+			return newEvent("ship_boarded", line, data), true
+		}
+	}
+	if match := shipExitedPattern.FindStringSubmatch(line); match != nil {
+		if data, ok := parseShipChannel(match[1]); ok {
+			return newEvent("ship_exited", line, data), true
+		}
+	}
 	return telemetry.TelemetryEvent{}, false
+}
+
+func parseShipChannel(channel string) (map[string]string, bool) {
+	parts := strings.SplitN(channel, " : ", 2)
+	ship := strings.TrimPrefix(parts[0], "@vehicle_Name")
+	if strings.TrimSpace(ship) == "" {
+		return nil, false
+	}
+	owner := ""
+	if len(parts) == 2 {
+		owner = parts[1]
+	}
+
+	return map[string]string{
+		"ship":  ship,
+		"owner": owner,
+		"raw":   channel,
+	}, true
 }
 
 func newEvent(eventType, line string, data map[string]string) telemetry.TelemetryEvent {
