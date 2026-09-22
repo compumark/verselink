@@ -35,14 +35,15 @@ lines, buffers partial writes, and accepts an explicit path-change hook. A5
 parses the three session events `player_login`, `server_joined`, and
 `player_spawned` into local structured events. A6 adds internal parsing for
 the `location_change` observation and `jurisdiction_entered` events. A7 adds
-internal parsing for ship boarding and exiting channel notifications. There is
-still no reducer, backend, or end-user runtime integration.
+internal parsing for ship boarding and exiting channel notifications. A8 adds
+internal Quantum Travel event parsing. There is still no reducer, backend, or
+end-user runtime integration.
 
 ## Planned direction
 
 Later milestones may add further parsing, state reduction, platform adapters,
 diagnostics, and a future VerseLink API client. None of those features are part
-of A6.
+of A8.
 
 The security boundary is explicit. VerseLink Telemetry will not use process
 memory reading, DLL injection, kernel drivers, packet sniffing, keyboard hooks,

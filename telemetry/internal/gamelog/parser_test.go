@@ -116,12 +116,125 @@ func TestParserRejectsMalformedAndLaterEvents(t *testing.T) {
 		"[Notice] <Join PU> shard[] connection established",
 		"[Notice] {Join PU} id[example] status[Queued] port[64090]",
 		"[Notice] [CSessionManager::OnClientSpawned] preparing",
-		readParserFixture(t, "quantum/qt_target_selected.valid.log"),
+		readParserFixture(t, "party/party_disbanded.valid.log"),
 	}
 	for _, line := range lines {
 		event, ok := parser.Parse(line)
 		if ok || !reflect.DeepEqual(event, telemetry.TelemetryEvent{}) {
 			t.Fatalf("unexpected event for %q: %#v", line, event)
+		}
+	}
+}
+
+func TestParserQuantumFixtures(t *testing.T) {
+	parser := NewParser()
+	cases := []struct {
+		name      string
+		path      string
+		eventType string
+		timestamp time.Time
+		data      map[string]string
+	}{
+		{"target selected", "quantum/qt_target_selected.valid.log", "qt_target_selected", time.Date(2026, time.September, 21, 10, 19, 0, 123000000, time.UTC), map[string]string{"destination": "ARC-L1"}},
+		{"fuel requested", "quantum/qt_fuel_requested.valid.log", "qt_fuel_requested", time.Date(2026, time.September, 21, 10, 19, 1, 123000000, time.UTC), map[string]string{"destination": "ARC-L1"}},
+		{"arrived", "quantum/qt_arrived.valid.log", "qt_arrived", time.Date(2026, time.September, 21, 10, 19, 2, 123000000, time.UTC), map[string]string{}},
+	}
+
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			event, ok := parser.Parse(readParserFixture(t, test.path))
+			if !ok || event.Type != test.eventType || event.Source != "game_log" || !event.Timestamp.Equal(test.timestamp) || !reflect.DeepEqual(event.Data, test.data) {
+				t.Fatalf("event = %#v, ok = %t", event, ok)
+			}
+			if test.eventType == "qt_arrived" && (event.Data == nil || len(event.Data) != 0) {
+				t.Fatalf("arrival data = %#v, want non-nil empty map", event.Data)
+			}
+		})
+	}
+}
+
+func TestParserRejectsQuantumNegativeFixtures(t *testing.T) {
+	parser := NewParser()
+	for _, path := range []string{
+		"quantum/qt_target_selected.invalid.log",
+		"quantum/qt_fuel_requested.invalid.log",
+		"quantum/qt_arrived.invalid.log",
+	} {
+		t.Run(path, func(t *testing.T) {
+			event, ok := parser.Parse(readParserFixture(t, path))
+			if ok || !reflect.DeepEqual(event, telemetry.TelemetryEvent{}) {
+				t.Fatalf("unexpected event %#v", event)
+			}
+		})
+	}
+}
+
+func TestParserQuantumRegressionCases(t *testing.T) {
+	parser := NewParser()
+	target := `[Notice] <Player Selected Quantum Target - Local> Player has selected point CRU-L5 as their destination`
+	event, ok := parser.Parse(target)
+	if !ok || event.Type != "qt_target_selected" || !reflect.DeepEqual(event.Data, map[string]string{"destination": "CRU-L5"}) {
+		t.Fatalf("event = %#v, ok = %t", event, ok)
+	}
+
+	fuel := `[Notice] <Player Requested Fuel to Quantum Target - Local> Player has requested fuel calculation to destination CRU-L5`
+	event, ok = parser.Parse(fuel)
+	if !ok || event.Type != "qt_fuel_requested" || !reflect.DeepEqual(event.Data, map[string]string{"destination": "CRU-L5"}) {
+		t.Fatalf("event = %#v, ok = %t", event, ok)
+	}
+
+	for _, line := range []string{
+		`[Notice] Player has selected point as their destination`,
+		`[Notice] Player has selected location ARC-L1 as their destination`,
+		`[Notice] <Player Requested Fuel to Quantum Target - Local> Player has requested fuel calculation to destination`,
+		`[Notice] Generic fuel calculation to destination CRU-L5`,
+		`[Notice] Quantum Drive is arriving at final destination`,
+		`[Notice] Quantum Travel arrival estimate updated`,
+	} {
+		event, ok := parser.Parse(line)
+		if ok || !reflect.DeepEqual(event, telemetry.TelemetryEvent{}) {
+			t.Fatalf("unexpected event for %q: %#v", line, event)
+		}
+	}
+}
+
+func TestParserQuantumArrivalDoesNotCorrelateDestination(t *testing.T) {
+	parser := NewParser()
+	target, ok := parser.Parse(`[Notice] <Player Selected Quantum Target - Local> Player has selected point ARC-L1 as their destination`)
+	if !ok || target.Type != "qt_target_selected" || !reflect.DeepEqual(target.Data, map[string]string{"destination": "ARC-L1"}) {
+		t.Fatalf("target = %#v, ok = %t", target, ok)
+	}
+	arrived, ok := parser.Parse(`[Notice] Quantum Drive has arrived at final destination`)
+	assertArrivalHasNoDestination(t, arrived, ok)
+
+	fuel, ok := parser.Parse(`[Notice] <Player Requested Fuel to Quantum Target - Local> Player has requested fuel calculation to destination CRU-L5`)
+	if !ok || fuel.Type != "qt_fuel_requested" || !reflect.DeepEqual(fuel.Data, map[string]string{"destination": "CRU-L5"}) {
+		t.Fatalf("fuel = %#v, ok = %t", fuel, ok)
+	}
+	arrived, ok = parser.Parse(`[Notice] Quantum Drive has arrived at final destination`)
+	assertArrivalHasNoDestination(t, arrived, ok)
+}
+
+func assertArrivalHasNoDestination(t *testing.T, event telemetry.TelemetryEvent, ok bool) {
+	t.Helper()
+	if !ok || event.Type != "qt_arrived" || event.Data == nil || len(event.Data) != 0 {
+		t.Fatalf("arrival event = %#v, ok = %t", event, ok)
+	}
+	if _, exists := event.Data["destination"]; exists {
+		t.Fatalf("arrival must not contain destination: %#v", event.Data)
+	}
+}
+
+func TestParserQuantumTimestampHandling(t *testing.T) {
+	parser := NewParser()
+	for _, line := range []string{
+		`[Notice] Player has selected point ARC-L1 as their destination`,
+		`<not-a-date> [Notice] Player has selected point ARC-L1 as their destination`,
+		`prefix <2026-09-21T10:19:00.123Z> [Notice] Player has selected point ARC-L1 as their destination`,
+	} {
+		event, ok := parser.Parse(line)
+		if !ok || event.Type != "qt_target_selected" || !event.Timestamp.IsZero() {
+			t.Fatalf("event = %#v, ok = %t", event, ok)
 		}
 	}
 }

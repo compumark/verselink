@@ -88,6 +88,12 @@ channel value after the first ` : ` separator (or empty when no separator is
 present). These events are observations, not fleet or inventory
 synchronization; current-ship state belongs to the future reducer.
 
+A8 parses Quantum Travel observations independently. `qt_target_selected` and
+`qt_fuel_requested` carry an observed destination token exactly as captured;
+they do not resolve it. `qt_arrived` has an empty data map and never infers a
+destination. The parser retains no Quantum state: correlation of an arrival
+with an earlier target belongs to the future A10 reducer.
+
 ## Suggested standalone repository layout
 
 ```text

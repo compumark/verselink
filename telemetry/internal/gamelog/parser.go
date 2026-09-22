@@ -17,6 +17,9 @@ var (
 	jurisdictionEnteredPattern = regexp.MustCompile(`Added notification "Entered ([^"]+) Jurisdiction`)
 	shipBoardedPattern         = regexp.MustCompile(`Added notification "You have joined channel '(.+?)'`)
 	shipExitedPattern          = regexp.MustCompile(`Added notification "You have left the channel '(.+?)'`)
+	qtTargetSelectedPattern    = regexp.MustCompile(`Player has selected point (\S+) as their destination`)
+	qtFuelRequestedPattern     = regexp.MustCompile(`<Player Requested Fuel to Quantum Target - Local>.*destination (\S+)`)
+	qtArrivedPattern           = regexp.MustCompile(`Quantum Drive has arrived at final destination`)
 )
 
 // Parser recognizes the currently approved single-line Game.log allowlist.
@@ -64,6 +67,19 @@ func (p *Parser) Parse(line string) (telemetry.TelemetryEvent, bool) {
 		if data, ok := parseShipChannel(match[1]); ok {
 			return newEvent("ship_exited", line, data), true
 		}
+	}
+	if match := qtTargetSelectedPattern.FindStringSubmatch(line); match != nil {
+		return newEvent("qt_target_selected", line, map[string]string{
+			"destination": match[1],
+		}), true
+	}
+	if match := qtFuelRequestedPattern.FindStringSubmatch(line); match != nil {
+		return newEvent("qt_fuel_requested", line, map[string]string{
+			"destination": match[1],
+		}), true
+	}
+	if qtArrivedPattern.MatchString(line) {
+		return newEvent("qt_arrived", line, map[string]string{}), true
 	}
 	return telemetry.TelemetryEvent{}, false
 }
