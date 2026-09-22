@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +18,18 @@ func readParserFixture(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(content)
+}
+
+func readParserFixtureLines(t *testing.T, path string) []string {
+	t.Helper()
+	return strings.Split(strings.TrimRight(readParserFixture(t, path), "\r\n"), "\n")
+}
+
+func assertNoParserEvent(t *testing.T, event telemetry.TelemetryEvent, ok bool) {
+	t.Helper()
+	if ok || !reflect.DeepEqual(event, telemetry.TelemetryEvent{}) {
+		t.Fatalf("unexpected event %#v, ok = %t", event, ok)
+	}
 }
 
 func TestParserSessionFixtures(t *testing.T) {
@@ -116,13 +129,253 @@ func TestParserRejectsMalformedAndLaterEvents(t *testing.T) {
 		"[Notice] <Join PU> shard[] connection established",
 		"[Notice] {Join PU} id[example] status[Queued] port[64090]",
 		"[Notice] [CSessionManager::OnClientSpawned] preparing",
-		readParserFixture(t, "party/party_disbanded.valid.log"),
+		readParserFixture(t, "reference/blueprint_received.valid.log"),
 	}
 	for _, line := range lines {
 		event, ok := parser.Parse(line)
 		if ok || !reflect.DeepEqual(event, telemetry.TelemetryEvent{}) {
 			t.Fatalf("unexpected event for %q: %#v", line, event)
 		}
+	}
+}
+
+func TestParserPartyFixtures(t *testing.T) {
+	cases := []struct {
+		name      string
+		path      string
+		eventType string
+		timestamp time.Time
+	}{
+		{"member joined", "party/party_member_joined.valid.log", "party_member_joined", time.Date(2026, time.September, 21, 10, 20, 0, 456000000, time.UTC)},
+		{"member left", "party/party_member_left.valid.log", "party_member_left", time.Date(2026, time.September, 21, 10, 21, 0, 456000000, time.UTC)},
+	}
+
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			parser := NewParser()
+			lines := readParserFixtureLines(t, test.path)
+			if len(lines) != 2 {
+				t.Fatalf("fixture lines = %d, want 2", len(lines))
+			}
+			header, headerOK := parser.Parse(lines[0])
+			assertNoParserEvent(t, header, headerOK)
+			event, ok := parser.Parse(lines[1])
+			if !ok || event.Type != test.eventType || event.Source != "game_log" || !event.Timestamp.Equal(test.timestamp) || !reflect.DeepEqual(event.Data, map[string]string{"player": "CrewMate"}) {
+				t.Fatalf("event = %#v, ok = %t", event, ok)
+			}
+			event, ok = parser.Parse(lines[1])
+			assertNoParserEvent(t, event, ok)
+		})
+	}
+
+	parser := NewParser()
+	event, ok := parser.Parse(readParserFixture(t, "party/party_disbanded.valid.log"))
+	if !ok || event.Type != "party_disbanded" || event.Source != "game_log" || !event.Timestamp.Equal(time.Date(2026, time.September, 21, 10, 22, 0, 123000000, time.UTC)) || event.Data == nil || len(event.Data) != 0 {
+		t.Fatalf("event = %#v, ok = %t", event, ok)
+	}
+
+	event, ok = parser.Parse(readParserFixture(t, "party/party_disbanded.invalid.log"))
+	assertNoParserEvent(t, event, ok)
+}
+
+func TestParserPartyNegativeAndStaleFixtures(t *testing.T) {
+	for _, path := range []string{
+		"party/party_member_joined.invalid.log",
+		"party/party_member_left.invalid.log",
+	} {
+		t.Run(path, func(t *testing.T) {
+			event, ok := NewParser().Parse(readParserFixture(t, path))
+			assertNoParserEvent(t, event, ok)
+		})
+	}
+
+	for _, line := range []string{
+		`<2026-09-21T10:20:00.456Z> CrewMate has joined the party.`,
+		`<2026-09-21T10:21:00.456Z> CrewMate has left the party.`,
+	} {
+		event, ok := NewParser().Parse(line)
+		assertNoParserEvent(t, event, ok)
+	}
+
+	for _, test := range []struct {
+		name string
+		path string
+	}{
+		{"joined stale", "party/party_member_joined.stale.log"},
+		{"left stale", "party/party_member_left.stale.log"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			parser := NewParser()
+			lines := readParserFixtureLines(t, test.path)
+			if len(lines) != 3 {
+				t.Fatalf("fixture lines = %d, want 3", len(lines))
+			}
+			event, ok := parser.Parse(lines[0])
+			assertNoParserEvent(t, event, ok)
+			event, ok = parser.Parse(lines[1])
+			if !ok || event.Type != "player_spawned" {
+				t.Fatalf("stale invalidator event = %#v, ok = %t", event, ok)
+			}
+			event, ok = parser.Parse(lines[2])
+			assertNoParserEvent(t, event, ok)
+		})
+	}
+
+	for _, test := range []struct {
+		name           string
+		path           string
+		laterOriginal  string
+	}{
+		{"joined wrong continuation", "party/party_member_joined.wrong-continuation.log", `<2026-09-21T10:20:01.456Z> CrewMate has joined the party.`},
+		{"left wrong continuation", "party/party_member_left.wrong-continuation.log", `<2026-09-21T10:21:01.456Z> CrewMate has left the party.`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			parser := NewParser()
+			lines := readParserFixtureLines(t, test.path)
+			event, ok := parser.Parse(lines[0])
+			assertNoParserEvent(t, event, ok)
+			event, ok = parser.Parse(lines[1])
+			assertNoParserEvent(t, event, ok)
+			event, ok = parser.Parse(test.laterOriginal)
+			assertNoParserEvent(t, event, ok)
+		})
+	}
+}
+
+func TestParserPartyStateTransitions(t *testing.T) {
+	joinHeader := `<2026-09-21T10:20:00.123Z> [Notice] <SHUDEvent_OnNotification> Added notification "New Member Joined`
+	leaveHeader := `<2026-09-21T10:21:00.123Z> [Notice] <SHUDEvent_OnNotification> Added notification "Member Left`
+	joinContinuation := `<2026-09-21T10:20:00.456Z> CrewMate has joined the party.`
+	leaveContinuation := `<2026-09-21T10:21:00.456Z> CrewMate has left the party.`
+
+	t.Run("unmatched noise preserves pending", func(t *testing.T) {
+		parser := NewParser()
+		event, ok := parser.Parse(joinHeader)
+		assertNoParserEvent(t, event, ok)
+		event, ok = parser.Parse("unmatched noise")
+		assertNoParserEvent(t, event, ok)
+		event, ok = parser.Parse(joinContinuation)
+		if !ok || event.Type != "party_member_joined" {
+			t.Fatalf("event = %#v, ok = %t", event, ok)
+		}
+	})
+
+	t.Run("new header replaces pending operation", func(t *testing.T) {
+		for _, test := range []struct {
+			first, second, continuation, eventType string
+		}{
+			{joinHeader, leaveHeader, leaveContinuation, "party_member_left"},
+			{leaveHeader, joinHeader, joinContinuation, "party_member_joined"},
+		} {
+			parser := NewParser()
+			event, ok := parser.Parse(test.first)
+			assertNoParserEvent(t, event, ok)
+			event, ok = parser.Parse(test.second)
+			assertNoParserEvent(t, event, ok)
+			event, ok = parser.Parse(test.continuation)
+			if !ok || event.Type != test.eventType {
+				t.Fatalf("event = %#v, ok = %t", event, ok)
+			}
+		}
+	})
+
+	t.Run("repeated headers replace rather than queue", func(t *testing.T) {
+		for _, test := range []struct {
+			header, continuation, eventType string
+		}{
+			{joinHeader, joinContinuation, "party_member_joined"},
+			{leaveHeader, leaveContinuation, "party_member_left"},
+		} {
+			parser := NewParser()
+			event, ok := parser.Parse(test.header)
+			assertNoParserEvent(t, event, ok)
+			event, ok = parser.Parse(test.header)
+			assertNoParserEvent(t, event, ok)
+			event, ok = parser.Parse(test.continuation)
+			if !ok || event.Type != test.eventType {
+				t.Fatalf("event = %#v, ok = %t", event, ok)
+			}
+			event, ok = parser.Parse(test.continuation)
+			assertNoParserEvent(t, event, ok)
+		}
+	})
+
+	t.Run("disband clears pending", func(t *testing.T) {
+		for _, test := range []struct {
+			header, continuation string
+		}{
+			{joinHeader, joinContinuation},
+			{leaveHeader, leaveContinuation},
+		} {
+			parser := NewParser()
+			event, ok := parser.Parse(test.header)
+			assertNoParserEvent(t, event, ok)
+			event, ok = parser.Parse(`<2026-09-21T10:22:00.123Z> [Notice] <SHUDEvent_OnNotification> Added notification "Party Disbanded`)
+			if !ok || event.Type != "party_disbanded" || event.Data == nil || len(event.Data) != 0 {
+				t.Fatalf("event = %#v, ok = %t", event, ok)
+			}
+			event, ok = parser.Parse(test.continuation)
+			assertNoParserEvent(t, event, ok)
+		}
+	})
+
+	t.Run("missing and malformed timestamps", func(t *testing.T) {
+		parser := NewParser()
+		event, ok := parser.Parse(joinHeader)
+		assertNoParserEvent(t, event, ok)
+		event, ok = parser.Parse("CrewMate has joined the party.")
+		assertNoParserEvent(t, event, ok)
+		event, ok = parser.Parse("CrewMate has left the party.")
+		assertNoParserEvent(t, event, ok)
+		event, ok = parser.Parse(`<not-a-date> CrewMate has joined the party.`)
+		if !ok || event.Type != "party_member_joined" || !event.Timestamp.IsZero() {
+			t.Fatalf("event = %#v, ok = %t", event, ok)
+		}
+	})
+}
+
+func TestParserPartyJoinChannelAndGroupForms(t *testing.T) {
+	for _, test := range []struct {
+		continuation string
+		player       string
+	}{
+		{`<2026-09-21T10:20:00.456Z> ChannelMate has joined the channel 'Example'`, "ChannelMate"},
+		{`<2026-09-21T10:20:00.456Z> GroupMate has joined the group 'Example'`, "GroupMate"},
+	} {
+		parser := NewParser()
+		event, ok := parser.Parse(`<2026-09-21T10:20:00.123Z> [Notice] <SHUDEvent_OnNotification> Added notification "New Member Joined`)
+		assertNoParserEvent(t, event, ok)
+		event, ok = parser.Parse(test.continuation)
+		if !ok || event.Type != "party_member_joined" || event.Source != "game_log" || !reflect.DeepEqual(event.Data, map[string]string{"player": test.player}) {
+			t.Fatalf("event = %#v, ok = %t", event, ok)
+		}
+	}
+}
+
+func TestParserRecognizedEventsClearPartyPending(t *testing.T) {
+	for _, path := range []string{
+		"session/player_login.valid.log",
+		"session/server_joined.valid.log",
+		"session/player_spawned.valid.log",
+		"location/location_change.valid.log",
+		"location/jurisdiction_entered.valid.log",
+		"ships/ship_boarded.valid.log",
+		"ships/ship_exited.valid.log",
+		"quantum/qt_target_selected.valid.log",
+		"quantum/qt_fuel_requested.valid.log",
+		"quantum/qt_arrived.valid.log",
+	} {
+		t.Run(path, func(t *testing.T) {
+			parser := NewParser()
+			event, ok := parser.Parse(`<2026-09-21T10:20:00.123Z> [Notice] <SHUDEvent_OnNotification> Added notification "New Member Joined`)
+			assertNoParserEvent(t, event, ok)
+			event, ok = parser.Parse(readParserFixture(t, path))
+			if !ok {
+				t.Fatalf("expected recognized event from %s", path)
+			}
+			event, ok = parser.Parse(`<2026-09-21T10:20:00.456Z> CrewMate has joined the party.`)
+			assertNoParserEvent(t, event, ok)
+		})
 	}
 }
 
