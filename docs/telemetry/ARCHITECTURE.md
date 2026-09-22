@@ -205,22 +205,33 @@ disappearance is recoverable; when the same identity returns it resumes at its
 previous offset, otherwise it treats it as replacement. A4 has an explicit
 path-change hook but does not poll the A3 locator and does not restore sessions.
 Ordinary same-identity truncation is detected when the new size is below the
-stored offset. If a file truncates and regrows to at least that offset between
-polls, size and identity alone cannot prove that truncation occurred.
+stored offset. A11 also keeps a bounded in-memory byte anchor immediately
+before the current offset. If the same file truncates and regrows past the old
+offset between polls, an anchor mismatch detects the lost continuity without
+using modification time or retaining historic log content.
 
 ## Session restoration
 
-On telemetry startup, state should be rebuilt from the current Star Citizen session instead of replaying an entire historic log.
+On telemetry startup, A11 scans backwards in bounded blocks for the latest
+complete `player_login` line and replays only complete lines from that boundary
+through the restore snapshot. If no valid boundary exists, it replays no
+history and starts with zero state. The restore uses the existing parser and
+reducer; timestamps remain source timestamps with no system-time inference.
 
-Preferred model:
+Restore and live tailing share one parser instance so pending Party correlation
+can cross the handoff. The handoff offset is the byte immediately after the
+last complete `\n`, not necessarily physical EOF. A trailing partial line is
+therefore read from its beginning by the live tailer when completed. The tailer
+is bound to the restore-time file identity and continuity anchor and begins at
+that exact offset, preserving bytes appended before its first poll without
+reprocessing restored complete lines.
 
-1. scan backwards for the latest reliable session/login marker,
-2. replay from that point,
-3. reduce events into current state,
-4. continue live tailing.
-
-This belongs to A11. A4 deliberately does not scan backwards, inspect login
-markers, or replay historical log content.
+A live `player_login` starts a fresh `TelemetryState` before that login is
+reduced. Truncation, replacement, or continuity-anchor mismatch synchronously
+resets both parser and state before any line from the new source is processed.
+A temporary disappearance of the same unchanged file keeps state and resumes
+at the prior offset. This remains local in-memory behavior: A11 adds no backend,
+API integration, heartbeat, persistence, or end-user runtime wiring.
 
 ## Event model
 
