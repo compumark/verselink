@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "synthetic": true,
+  "cases": [
+    {
+      "name": "p0-full-session",
+      "path": "p0-full-session.log",
+      "expectedEventCounts": {
+        "player_login": 1,
+        "server_joined": 1,
+        "player_spawned": 1,
+        "location_change": 1,
+        "jurisdiction_entered": 1,
+        "ship_boarded": 1,
+        "ship_exited": 1,
+        "qt_target_selected": 1,
+        "qt_fuel_requested": 1,
+        "qt_arrived": 1,
+        "party_member_joined": 1,
+        "party_member_left": 1,
+        "party_disbanded": 1
+      }
+    },
+    {
+      "name": "session-rollover",
+      "path": "session-rollover.log",
+      "expectedEventCounts": {
+        "player_login": 2,
+        "player_spawned": 2,
+        "location_change": 2,
+        "server_joined": 1
+      }
+    },
+    {
+      "name": "party-state",
+      "path": "party-state.log",
+      "expectedEventCounts": {
+        "party_member_joined": 2,
+        "party_member_left": 1,
+        "party_disbanded": 1,
+        "player_spawned": 1
+      }
+    },
+    {
+      "name": "noise-near-miss",
+      "path": "noise-near-miss.log",
+      "expectedEventCounts": {}
+    }
+  ]
+}

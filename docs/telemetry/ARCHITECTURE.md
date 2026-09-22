@@ -294,6 +294,31 @@ are a sorted set with idempotent joins, exact leaves, and full disband clearing.
 A10 does not restore sessions, detect restarts, or rebuild historic state;
 those boundaries remain A11.
 
+## A12 regression corpus and local diagnostics
+
+A2 and A12 serve different test layers. The A2 `testdata/events/` fixtures are
+minimal per-event contracts, while the A12 `testdata/regression/` corpus holds
+small, realistic multi-line sequences. Every A12 sequence is synthetic and
+sanitized; personal or complete `Game.log` files must never be committed.
+
+The versioned corpus manifest explicitly lists the only files the runner may
+read and defines expected event counts for each case. Collectively, those
+expectations cover all 13 current P0 parser contracts derived from
+`ApprovedEventContracts`. Unknown lines, Party headers, and other no-event
+lines are normal parser input, not parse failures. A regression failure is a
+manifest expectation mismatch such as a missing, unexpected, or incorrectly
+counted event. Reports retain only case metadata and aggregate counts, never
+raw Game.log content.
+
+Each Session also exposes local lifetime counters for complete lines presented
+to the parser, emitted parser events, and source resets. These counters include
+startup replay and live processing and remain monotonic across truncation,
+replacement, and continuity-loss resets even though parser and telemetry state
+are cleared. A thread-safe diagnostics snapshot includes a deep copy of current
+state and can be formatted as a concise deterministic local summary. It does
+not include GEIDs, raw lines, event data maps, network delivery, backend/API
+integration, persistence, or an end-user diagnostics UI.
+
 ## Server integration — later phase
 
 Planned endpoints:

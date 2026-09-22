@@ -1,0 +1,7 @@
+<2026-09-22T12:10:00.000Z> [Notice] nickname="PreviousPilot" playerGEID=987654321
+<2026-09-22T12:10:01.000Z> [Notice] [CSessionManager::OnClientSpawned] Spawned!
+<2026-09-22T12:10:02.000Z> [Notice] <RequestLocationInventory> Player[PreviousPilot] requested inventory for Location[OLD_LOCATION]
+<2026-09-22T12:11:00.000Z> [Notice] nickname="CurrentPilot" playerGEID=123456789
+<2026-09-22T12:11:01.000Z> [Notice] <Join PU> connection established shard[pub_test_shard_001]
+<2026-09-22T12:11:02.000Z> [Notice] [CSessionManager::OnClientSpawned] Spawned!
+<2026-09-22T12:11:03.000Z> [Notice] <RequestLocationInventory> Player[CurrentPilot] requested inventory for Location[CURRENT_LOCATION]

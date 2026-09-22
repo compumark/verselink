@@ -36,7 +36,7 @@ Goal: prove that a local client can reliably find, tail, parse, and reduce Star 
 | A9 | Party event parser | COMPLETE |
 | A10 | Telemetry state reducer | COMPLETE |
 | A11 | Session restore / restart handling | COMPLETE |
-| A12 | Regression corpus and diagnostics | TODO |
+| A12 | Regression corpus and diagnostics | IN REVIEW |
 
 Initial server-relevant events:
 

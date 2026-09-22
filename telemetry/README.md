@@ -42,14 +42,38 @@ multi-line observations. A10 adds local, platform-neutral reduction of the 13
 P0 events into current session, location, ship, Quantum, Party, and timing
 state. A11 adds local current-session restoration and restart handling: it
 replays only the latest `player_login` session and continues from an exact
-live-tail byte offset while resetting local state on log restarts. There is
-still no backend, API, or end-user runtime integration.
+live-tail byte offset while resetting local state on log restarts. A12 adds a
+small manifest-driven regression corpus covering all 13 P0 events, an
+end-to-end restore regression, monotonic Session diagnostics counters, and a
+deterministic local current-state formatter. There is still no backend, API,
+or end-user runtime integration.
+
+## Regression corpus
+
+The A12 corpus under `testdata/regression/` contains only synthetic, sanitized,
+purpose-built sequences. It complements the minimal per-event A2 fixtures
+under `testdata/events/`; it is not a location for personal or complete
+`Game.log` files. The manifest explicitly controls which fixtures are read and
+their expected event counts.
+
+Run the complete suite with verbose corpus output:
+
+```bash
+cd telemetry
+go test -v ./...
+```
+
+The reusable local diagnostics core summarizes Session counters and structured
+current state without retaining raw Game.log lines or GEIDs. It is not yet
+wired to the command executable or an end-user diagnostics UI. Backend/API and
+runtime UI work remain outside Milestone A.
 
 ## Planned direction
 
-Later milestones may add further parsing, platform adapters, diagnostics, and a
-future VerseLink API client. A11 remains local core behavior only: there is no
-backend, API integration, end-user runtime integration, or persistent state.
+Later milestones may add further parsing, platform adapters, an end-user
+diagnostics experience, and a future VerseLink API client. A12 remains local
+core and test behavior only: there is no backend, API integration, end-user
+runtime integration, or persistent state.
 
 The security boundary is explicit. VerseLink Telemetry will not use process
 memory reading, DLL injection, kernel drivers, packet sniffing, keyboard hooks,
