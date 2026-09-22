@@ -5,6 +5,10 @@ node_modules/
 data/
 *.log
 !telemetry/testdata/events/**/*.log
+!telemetry/testdata/regression/p0-full-session.log
+!telemetry/testdata/regression/session-rollover.log
+!telemetry/testdata/regression/party-state.log
+!telemetry/testdata/regression/noise-near-miss.log
 *.bak
 *.tmp
 .DS_Store

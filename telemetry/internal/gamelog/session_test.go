@@ -128,6 +128,10 @@ func TestSessionDoesNotReplayWithoutValidLoginBoundary(t *testing.T) {
 			if got := session.Snapshot(); !reflect.DeepEqual(got, (sessionZeroState())) {
 				t.Fatalf("state = %#v", got)
 			}
+			diagnostics := session.Diagnostics()
+			if diagnostics.LinesProcessed != 0 || diagnostics.ParserEventCount != 0 || diagnostics.SourceResetCount != 0 {
+				t.Fatalf("skipped history diagnostics = %#v", diagnostics)
+			}
 		})
 	}
 }
@@ -355,6 +359,183 @@ func TestSessionSnapshotIsDeepCopy(t *testing.T) {
 	actual := session.Snapshot()
 	if actual.Location.Raw != "LOCATION" || actual.Ship.Name != "Ship" || actual.Quantum.Destination != "ARC-L1" || !reflect.DeepEqual(actual.Party, []string{"CrewMate"}) {
 		t.Fatalf("snapshot aliases internal state: %#v", actual)
+	}
+}
+
+func TestSessionDiagnosticsCountRestoreAndLiveProcessing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Game.log")
+	writeTailerFile(t, path, joined(
+		sessionLogin(0, "Pilot"),
+		"restore noise",
+		sessionPartyHeader(1),
+		sessionPartyJoin(2, "RestoreCrew"),
+	))
+	session, info, err := NewSession(SessionConfig{Path: path})
+	if err != nil { t.Fatal(err) }
+
+	diagnostics := session.Diagnostics()
+	if diagnostics.LogPath != path || diagnostics.LinesProcessed != uint64(info.ReplayedLines) || diagnostics.LinesProcessed != 4 || diagnostics.ParserEventCount != 2 || diagnostics.SourceResetCount != 0 {
+		t.Fatalf("restore diagnostics = %#v", diagnostics)
+	}
+
+	appendTailerFile(t, path, "live noise\n")
+	session.tailer.pollOnce()
+	diagnostics = session.Diagnostics()
+	if diagnostics.LinesProcessed != 5 || diagnostics.ParserEventCount != 2 {
+		t.Fatalf("live noise diagnostics = %#v", diagnostics)
+	}
+
+	appendTailerFile(t, path, sessionSpawn(3)+"\n")
+	session.tailer.pollOnce()
+	diagnostics = session.Diagnostics()
+	if diagnostics.LinesProcessed != 6 || diagnostics.ParserEventCount != 3 {
+		t.Fatalf("live event diagnostics = %#v", diagnostics)
+	}
+
+	appendTailerFile(t, path, sessionPartyHeader(4)+"\n")
+	session.tailer.pollOnce()
+	diagnostics = session.Diagnostics()
+	if diagnostics.LinesProcessed != 7 || diagnostics.ParserEventCount != 3 {
+		t.Fatalf("Party header diagnostics = %#v", diagnostics)
+	}
+
+	appendTailerFile(t, path, sessionPartyJoin(5, "LiveCrew")+"\n")
+	session.tailer.pollOnce()
+	diagnostics = session.Diagnostics()
+	if diagnostics.LinesProcessed != 8 || diagnostics.ParserEventCount != 4 {
+		t.Fatalf("Party continuation diagnostics = %#v", diagnostics)
+	}
+
+	appendTailerFile(t, path, sessionLogin(6, "NewPilot")+"\n")
+	session.tailer.pollOnce()
+	diagnostics = session.Diagnostics()
+	if diagnostics.LinesProcessed != 9 || diagnostics.ParserEventCount != 5 || diagnostics.SourceResetCount != 0 {
+		t.Fatalf("live login diagnostics = %#v", diagnostics)
+	}
+	if diagnostics.State.PlayerHandle != "NewPilot" || len(diagnostics.State.Party) != 0 {
+		t.Fatalf("live login state = %#v", diagnostics.State)
+	}
+}
+
+func TestSessionDiagnosticsDoNotCountPartialBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Game.log")
+	complete := joined(sessionLogin(0, "Pilot"))
+	writeTailerFile(t, path, complete+"partial bytes")
+	session, info, err := NewSession(SessionConfig{Path: path})
+	if err != nil { t.Fatal(err) }
+	if info.ReplayedLines != 1 || session.Diagnostics().LinesProcessed != 1 {
+		t.Fatalf("initial info = %#v diagnostics = %#v", info, session.Diagnostics())
+	}
+
+	session.tailer.pollOnce()
+	if diagnostics := session.Diagnostics(); diagnostics.LinesProcessed != 1 || diagnostics.ParserEventCount != 1 {
+		t.Fatalf("partial bytes counted before newline: %#v", diagnostics)
+	}
+	appendTailerFile(t, path, "\n")
+	session.tailer.pollOnce()
+	if diagnostics := session.Diagnostics(); diagnostics.LinesProcessed != 2 || diagnostics.ParserEventCount != 1 {
+		t.Fatalf("completed noise line diagnostics = %#v", diagnostics)
+	}
+}
+
+func TestSessionDiagnosticsSourceResetIsMonotonic(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Game.log")
+	writeTailerFile(t, path, joined(sessionLogin(0, "OldPilot"), sessionSpawn(1)))
+	session, _, err := NewSession(SessionConfig{Path: path})
+	if err != nil { t.Fatal(err) }
+
+	writeTailerFile(t, path, joined(sessionShard(2, "replacement_shard")))
+	session.tailer.pollOnce()
+	diagnostics := session.Diagnostics()
+	if diagnostics.SourceResetCount != 1 || diagnostics.LinesProcessed != 3 || diagnostics.ParserEventCount != 3 {
+		t.Fatalf("reset diagnostics = %#v", diagnostics)
+	}
+	if diagnostics.State.PlayerHandle != "" || diagnostics.State.Shard != "replacement_shard" {
+		t.Fatalf("reset state = %#v", diagnostics.State)
+	}
+
+	appendTailerFile(t, path, "ordinary noise\n")
+	session.tailer.pollOnce()
+	diagnostics = session.Diagnostics()
+	if diagnostics.SourceResetCount != 1 || diagnostics.LinesProcessed != 4 || diagnostics.ParserEventCount != 3 {
+		t.Fatalf("post-reset diagnostics = %#v", diagnostics)
+	}
+}
+
+func TestSessionDiagnosticsCountsReplacementAndContinuityResets(t *testing.T) {
+	t.Run("replacement", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "Game.log")
+		old := filepath.Join(dir, "old.log")
+		writeTailerFile(t, path, joined(sessionLogin(0, "OldPilot")))
+		session, _, err := NewSession(SessionConfig{Path: path})
+		if err != nil { t.Fatal(err) }
+		if err := os.Rename(path, old); err != nil { t.Fatal(err) }
+		writeTailerFile(t, path, joined(sessionShard(1, "replacement_shard")))
+		session.tailer.pollOnce()
+
+		diagnostics := session.Diagnostics()
+		if diagnostics.SourceResetCount != 1 || diagnostics.LinesProcessed != 2 || diagnostics.ParserEventCount != 2 || diagnostics.State.PlayerHandle != "" || diagnostics.State.Shard != "replacement_shard" {
+			t.Fatalf("replacement diagnostics = %#v", diagnostics)
+		}
+	})
+
+	t.Run("continuity mismatch", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "Game.log")
+		oldContent := joined(sessionLogin(0, "OldPilot"), sessionSpawn(1), strings.Repeat("old", 3000))
+		writeTailerFile(t, path, oldContent)
+		session, _, err := NewSession(SessionConfig{Path: path})
+		if err != nil { t.Fatal(err) }
+		newPrefix := joined(sessionShard(2, "continuity_shard"))
+		newContent := newPrefix + strings.Repeat("new", len(oldContent)/3+100) + "\n"
+		if len(newContent) < len(oldContent) { t.Fatal("new content must regrow beyond old offset") }
+		writeTailerFile(t, path, newContent)
+		session.tailer.pollOnce()
+
+		diagnostics := session.Diagnostics()
+		if diagnostics.SourceResetCount != 1 || diagnostics.LinesProcessed != 5 || diagnostics.ParserEventCount != 3 || diagnostics.State.PlayerHandle != "" || diagnostics.State.Shard != "continuity_shard" {
+			t.Fatalf("continuity diagnostics = %#v", diagnostics)
+		}
+	})
+}
+
+func TestSessionDiagnosticsTemporaryDisappearanceDoesNotReset(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Game.log")
+	parked := filepath.Join(dir, "parked.log")
+	writeTailerFile(t, path, joined(sessionLogin(0, "Pilot")))
+	session, _, err := NewSession(SessionConfig{Path: path})
+	if err != nil { t.Fatal(err) }
+	if err := os.Rename(path, parked); err != nil { t.Fatal(err) }
+	session.tailer.pollOnce()
+	if err := os.Rename(parked, path); err != nil { t.Fatal(err) }
+	appendTailerFile(t, path, sessionSpawn(1)+"\n")
+	session.tailer.pollOnce()
+
+	diagnostics := session.Diagnostics()
+	if diagnostics.SourceResetCount != 0 || diagnostics.LinesProcessed != 2 || diagnostics.ParserEventCount != 2 {
+		t.Fatalf("diagnostics = %#v", diagnostics)
+	}
+}
+
+func TestSessionDiagnosticsStateIsDeepCopy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Game.log")
+	writeTailerFile(t, path, joined(
+		sessionLogin(0, "Pilot"), sessionLocation(1, "LOCATION"), sessionShip(2, "Ship"),
+		`<2026-09-22T10:00:03Z> Player has selected point ARC-L1 as their destination`,
+		sessionPartyHeader(4), sessionPartyJoin(5, "CrewMate"),
+	))
+	session, _, err := NewSession(SessionConfig{Path: path})
+	if err != nil { t.Fatal(err) }
+	diagnostics := session.Diagnostics()
+	diagnostics.State.Location.Raw = "changed"
+	diagnostics.State.Ship.Name = "changed"
+	diagnostics.State.Quantum.Destination = "changed"
+	diagnostics.State.Party[0] = "changed"
+
+	actual := session.Diagnostics()
+	if actual.State.Location.Raw != "LOCATION" || actual.State.Ship.Name != "Ship" || actual.State.Quantum.Destination != "ARC-L1" || !reflect.DeepEqual(actual.State.Party, []string{"CrewMate"}) {
+		t.Fatalf("diagnostics state aliases internal state: %#v", actual.State)
 	}
 }
 

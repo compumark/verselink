@@ -36,19 +36,34 @@ type RestoreInfo struct {
 	ReplayedLines  int
 }
 
+// SessionDiagnostics is a thread-safe local snapshot of one Session. Counters
+// are monotonic for the lifetime of the Session object and intentionally do
+// not retain raw Game.log lines.
+type SessionDiagnostics struct {
+	LogPath          string
+	LinesProcessed   uint64
+	ParserEventCount uint64
+	SourceResetCount uint64
+	State            telemetry.TelemetryState
+}
+
 // Session coordinates one Parser, one TelemetryState, and one live Tailer.
 // The same Parser instance is used for startup replay and live processing.
 type Session struct {
-	mu     sync.RWMutex
-	parser *Parser
-	state  telemetry.TelemetryState
-	tailer *Tailer
+	mu               sync.RWMutex
+	parser           *Parser
+	state            telemetry.TelemetryState
+	tailer           *Tailer
+	logPath          string
+	linesProcessed   uint64
+	parserEventCount uint64
+	sourceResetCount uint64
 }
 
 func NewSession(config SessionConfig) (*Session, RestoreInfo, error) {
 	path := strings.TrimSpace(config.Path)
 	info := RestoreInfo{Path: path}
-	session := &Session{parser: NewParser()}
+	session := &Session{parser: NewParser(), logPath: path}
 
 	file, fileInfo, err := openRestoreFile(path)
 	if err != nil {
@@ -102,22 +117,39 @@ func (s *Session) Run(ctx context.Context) error {
 func (s *Session) Snapshot() telemetry.TelemetryState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return copyTelemetryState(s.state)
+}
 
-	snapshot := s.state
-	if s.state.Location != nil {
-		location := *s.state.Location
+// Diagnostics returns lifetime counters and a deep copy of current state.
+func (s *Session) Diagnostics() SessionDiagnostics {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return SessionDiagnostics{
+		LogPath:          s.logPath,
+		LinesProcessed:   s.linesProcessed,
+		ParserEventCount: s.parserEventCount,
+		SourceResetCount: s.sourceResetCount,
+		State:            copyTelemetryState(s.state),
+	}
+}
+
+func copyTelemetryState(state telemetry.TelemetryState) telemetry.TelemetryState {
+	snapshot := state
+	if state.Location != nil {
+		location := *state.Location
 		snapshot.Location = &location
 	}
-	if s.state.Ship != nil {
-		ship := *s.state.Ship
+	if state.Ship != nil {
+		ship := *state.Ship
 		snapshot.Ship = &ship
 	}
-	if s.state.Quantum != nil {
-		quantum := *s.state.Quantum
+	if state.Quantum != nil {
+		quantum := *state.Quantum
 		snapshot.Quantum = &quantum
 	}
-	if s.state.Party != nil {
-		snapshot.Party = append([]string{}, s.state.Party...)
+	if state.Party != nil {
+		snapshot.Party = append([]string{}, state.Party...)
 	}
 	return snapshot
 }
@@ -154,10 +186,12 @@ func (s *Session) processLine(line Line) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.linesProcessed++
 	event, ok := s.parser.Parse(line.Text)
 	if !ok {
 		return
 	}
+	s.parserEventCount++
 	if event.Type == "player_login" {
 		s.state = telemetry.TelemetryState{}
 	}
@@ -167,6 +201,7 @@ func (s *Session) processLine(line Line) {
 func (s *Session) resetSource() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.sourceResetCount++
 	s.parser = NewParser()
 	s.state = telemetry.TelemetryState{}
 }
