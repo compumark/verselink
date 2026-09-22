@@ -1828,6 +1828,93 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { orders: result.rows.map((order) => ({ ...order, status: normalizeOrderStatus(order) })) });
     }
 
+    if (url.pathname === "/api/missions") {
+      const current = await getCurrentAppUser(req);
+      if (!current) return json(res, 401, { error: "login required" });
+
+      if (req.method === "GET") {
+        const groupId = url.searchParams.get("group_id") || "";
+        if (!groupId) return json(res, 400, { error: "group_id required" });
+        if (!uuidPattern.test(groupId)) return json(res, 400, { error: "invalid group" });
+        const group = await pool.query("SELECT 1 FROM blueprint_groups WHERE id=$1", [groupId]);
+        if (!group.rowCount) return json(res, 404, { error: "group not found" });
+        const access = await pool.query("SELECT 1 FROM group_members WHERE group_id=$1 AND app_user_id=$2", [groupId, current.id]);
+        if (!access.rowCount) return json(res, 403, { error: "group member required" });
+        const result = await pool.query(
+          "SELECT id,group_id,created_by,title,description,status,created_at,updated_at,completed_at FROM missions WHERE group_id=$1 ORDER BY created_at DESC,id DESC",
+          [groupId]
+        );
+        return json(res, 200, { missions: result.rows });
+      }
+
+      if (req.method === "POST") {
+        let data;
+        try { data = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: "invalid JSON" }); }
+        if (!data || typeof data !== "object" || Array.isArray(data)) return json(res, 400, { error: "invalid mission" });
+        const groupId = String(data.group_id || "");
+        const title = typeof data.title === "string" ? data.title.trim() : "";
+        const description = data.description === undefined ? null : data.description;
+        if (!uuidPattern.test(groupId) || !validText(title) || (description !== null && (typeof description !== "string" || description.length > 500))) return json(res, 400, { error: "invalid mission" });
+        const access = await pool.query("SELECT 1 FROM group_members WHERE group_id=$1 AND app_user_id=$2", [groupId, current.id]);
+        if (!access.rowCount) return json(res, 403, { error: "group member required" });
+        const result = await pool.query(
+          "INSERT INTO missions (group_id,created_by,title,description) VALUES ($1,$2,$3,$4) RETURNING id,group_id,created_by,title,description,status,created_at,updated_at,completed_at",
+          [groupId, current.id, title, description]
+        );
+        return json(res, 201, { mission: result.rows[0] });
+      }
+    }
+
+    const missionMatch = url.pathname.match(/^\/api\/missions\/([^/]+)$/);
+    if (missionMatch && ["GET", "PATCH"].includes(req.method)) {
+      const current = await getCurrentAppUser(req);
+      if (!current) return json(res, 401, { error: "login required" });
+      const missionId = missionMatch[1];
+      if (!uuidPattern.test(missionId)) return json(res, 400, { error: "invalid mission" });
+      const mission = await pool.query(
+        `SELECT m.id,m.group_id,m.created_by,m.title,m.description,m.status,m.created_at,m.updated_at,m.completed_at,gm.role
+         FROM missions m
+         LEFT JOIN group_members gm ON gm.group_id=m.group_id AND gm.app_user_id=$2
+         WHERE m.id=$1`,
+        [missionId, current.id]
+      );
+      if (!mission.rowCount) return json(res, 404, { error: "mission not found" });
+      const row = mission.rows[0];
+      if (req.method === "GET") {
+        if (!row.role) return json(res, 404, { error: "mission not found" });
+        const { role, ...response } = row;
+        return json(res, 200, { mission: response });
+      }
+
+      if (!row.role && !current.is_admin) return json(res, 404, { error: "mission not found" });
+      if (!current.is_admin && row.created_by !== current.id && row.role !== "owner") return json(res, 403, { error: "mission creator, group owner, or app admin required" });
+      let data;
+      try { data = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: "invalid JSON" }); }
+      if (!data || typeof data !== "object" || Array.isArray(data)) return json(res, 400, { error: "invalid mission" });
+      const allowedFields = new Set(["title", "description"]);
+      if (!Object.keys(data).length || Object.keys(data).some((field) => !allowedFields.has(field))) return json(res, 400, { error: "only title and description can be changed" });
+      const values = [];
+      const updates = [];
+      if (Object.hasOwn(data, "title")) {
+        const title = typeof data.title === "string" ? data.title.trim() : "";
+        if (!validText(title)) return json(res, 400, { error: "invalid mission title" });
+        values.push(title);
+        updates.push(`title=$${values.length}`);
+      }
+      if (Object.hasOwn(data, "description")) {
+        if (data.description !== null && (typeof data.description !== "string" || data.description.length > 500)) return json(res, 400, { error: "invalid mission description" });
+        values.push(data.description);
+        updates.push(`description=$${values.length}`);
+      }
+      values.push(missionId);
+      const updated = await pool.query(
+        `UPDATE missions SET ${updates.join(",")},updated_at=now() WHERE id=$${values.length}
+         RETURNING id,group_id,created_by,title,description,status,created_at,updated_at,completed_at`,
+        values
+      );
+      return json(res, 200, { mission: updated.rows[0] });
+    }
+
     const miningAccess = async (appUserId, groupId) => (await pool.query("SELECT gm.group_id,gm.role FROM group_members gm WHERE gm.app_user_id=$1 AND gm.group_id=$2", [appUserId, groupId])).rows[0];
     const qualityBand = value => { const q=Number(value); return q>=1&&q<=399?1:q<=599?2:q<=699?3:q<=799?4:q<=899?5:q<=949?6:q<=998?7:q<=1000?8:null; };
     const normalizeMaterialLocation = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
