@@ -81,6 +81,13 @@ reducer must retain that observation time independently from any telemetry
 heartbeat; a heartbeat may show that the client is alive but must not refresh
 the location observation.
 
+A7 parses `ship_boarded` and `ship_exited` from their channel notifications.
+Their `raw` field is only the captured channel value, never the full Game.log
+line. `ship` removes only a leading `@vehicle_Name` prefix and `owner` is the
+channel value after the first ` : ` separator (or empty when no separator is
+present). These events are observations, not fleet or inventory
+synchronization; current-ship state belongs to the future reducer.
+
 ## Suggested standalone repository layout
 
 ```text
