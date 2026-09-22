@@ -212,7 +212,10 @@ func TestStatusEmitterSuppressesCounterNoiseButEmitsSourceReset(t *testing.T) {
 	base := gamelog.SessionDiagnostics{
 		LinesProcessed:   10,
 		ParserEventCount: 2,
-		State:            telemetry.TelemetryState{SessionActive: true},
+		State: telemetry.TelemetryState{
+			SessionActive: true,
+			LastEventAt:   time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC),
+		},
 	}
 	status := Status{Phase: PhaseSessionActive, Message: "Session active", HasDiagnostics: true, Diagnostics: base}
 	if !emitter.Emit(status) {
@@ -228,6 +231,10 @@ func TestStatusEmitterSuppressesCounterNoiseButEmitsSourceReset(t *testing.T) {
 	status.Diagnostics.ParserEventCount++
 	if emitter.Emit(status) {
 		t.Fatal("ParserEventCount-only status was emitted")
+	}
+	status.Diagnostics.State.LastEventAt = time.Date(2026, 9, 22, 12, 0, 1, 0, time.UTC)
+	if emitter.Emit(status) {
+		t.Fatal("LastEventAt-only status was emitted")
 	}
 	status.Diagnostics.SourceResetCount++
 	if !emitter.Emit(status) {

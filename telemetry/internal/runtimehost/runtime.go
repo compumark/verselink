@@ -282,7 +282,6 @@ type DiagnosticState struct {
 	QuantumTarget    string
 	QuantumState     string
 	PartyCount       int
-	LastEventAt      time.Time
 	SourceResets     uint64
 }
 
@@ -294,7 +293,6 @@ func DiagnosticsState(snapshot gamelog.SessionDiagnostics) DiagnosticState {
 		Shard:         state.Shard,
 		Jurisdiction:  state.Jurisdiction,
 		PartyCount:    len(state.Party),
-		LastEventAt:   state.LastEventAt,
 		SourceResets:  snapshot.SourceResetCount,
 	}
 	copyLocation(&result, state.Location)
