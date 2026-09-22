@@ -228,6 +228,50 @@ SELECT setval('material_order_number_seq', GREATEST(COALESCE((SELECT MAX(regexp_
 ALTER TABLE material_orders ALTER COLUMN order_number DROP DEFAULT;
 ALTER TABLE material_orders ALTER COLUMN order_number SET NOT NULL;
 CREATE INDEX IF NOT EXISTS material_order_deliveries_order_idx ON material_order_deliveries(order_id, created_at);
+CREATE TABLE IF NOT EXISTS missions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  group_id uuid NOT NULL REFERENCES blueprint_groups(id) ON DELETE CASCADE,
+  created_by uuid REFERENCES app_users(id) ON DELETE SET NULL,
+  title text NOT NULL CHECK (btrim(title) <> ''),
+  description text,
+  status text NOT NULL DEFAULT 'open' CHECK (status IN ('open','in_progress','completed','cancelled')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  completed_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS missions_group_idx ON missions(group_id);
+CREATE INDEX IF NOT EXISTS missions_status_idx ON missions(status);
+CREATE TABLE IF NOT EXISTS mission_tasks (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  mission_id uuid NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+  type text NOT NULL CHECK (type IN ('checklist','item')),
+  title text NOT NULL CHECK (btrim(title) <> ''),
+  description text,
+  assigned_to uuid REFERENCES app_users(id) ON DELETE SET NULL,
+  target_quantity numeric,
+  unit text,
+  status text NOT NULL DEFAULT 'open' CHECK (status IN ('open','in_progress','completed','cancelled')),
+  sort_order integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  completed_at timestamptz,
+  CHECK (
+    (type = 'checklist' AND target_quantity IS NULL)
+    OR (type = 'item' AND target_quantity > 0)
+  )
+);
+CREATE INDEX IF NOT EXISTS mission_tasks_mission_idx ON mission_tasks(mission_id);
+CREATE INDEX IF NOT EXISTS mission_tasks_assigned_to_idx ON mission_tasks(assigned_to);
+CREATE INDEX IF NOT EXISTS mission_tasks_status_idx ON mission_tasks(status);
+CREATE TABLE IF NOT EXISTS mission_task_contributions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  task_id uuid NOT NULL REFERENCES mission_tasks(id) ON DELETE CASCADE,
+  app_user_id uuid REFERENCES app_users(id) ON DELETE SET NULL,
+  quantity numeric NOT NULL CHECK (quantity > 0),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS mission_task_contributions_task_idx ON mission_task_contributions(task_id);
+CREATE INDEX IF NOT EXISTS mission_task_contributions_app_user_idx ON mission_task_contributions(app_user_id);
 CREATE TABLE IF NOT EXISTS mining_pools (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(), group_id uuid NOT NULL REFERENCES blueprint_groups(id) ON DELETE CASCADE,
   name text NOT NULL, description text, status text NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed')),
