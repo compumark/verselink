@@ -2,6 +2,7 @@ package gamelog
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -246,5 +247,143 @@ func TestTailerRunStopsPromptlyOnCancellation(t *testing.T) {
 		if err != nil { t.Fatal(err) }
 	case <-time.After(time.Second):
 		t.Fatal("Run did not stop after cancellation")
+	}
+}
+
+func TestTailerResumeReadsBytesAppendedBeforeFirstPoll(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Game.log")
+	writeTailerFile(t, path, "restored\n")
+	info, err := os.Stat(path)
+	if err != nil { t.Fatal(err) }
+	file, err := os.Open(path)
+	if err != nil { t.Fatal(err) }
+	anchorOffset, anchor, err := readContinuityAnchor(file, info.Size())
+	if closeErr := file.Close(); err == nil { err = closeErr }
+	if err != nil { t.Fatal(err) }
+
+	var received []Line
+	tailer := newTailerWithResume(TailerConfig{Path: path, OnLine: func(line Line) { received = append(received, line) }}, tailerResume{
+		fileInfo: info, offset: info.Size(), anchorOffset: anchorOffset, anchor: anchor,
+	}, nil)
+	appendTailerFile(t, path, "appended\n")
+	tailer.pollOnce()
+	if got, want := texts(received), []string{"appended"}; !reflect.DeepEqual(got, want) { t.Fatalf("got %q, want %q", got, want) }
+}
+
+func TestTailerResetNotificationPrecedesReplacementLines(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Game.log")
+	oldPath := filepath.Join(dir, "old.log")
+	writeTailerFile(t, path, "")
+	var order []string
+	tailer := newTailerWithResume(TailerConfig{Path: path, OnLine: func(line Line) { order = append(order, "line:"+line.Text) }}, tailerResume{}, func() {
+		order = append(order, "reset")
+	})
+	tailer.pollOnce()
+	appendTailerFile(t, path, "old\n")
+	tailer.pollOnce()
+	if err := os.Rename(path, oldPath); err != nil { t.Fatal(err) }
+	writeTailerFile(t, path, "new\n")
+	tailer.pollOnce()
+	if got, want := order, []string{"line:old", "reset", "line:new"}; !reflect.DeepEqual(got, want) { t.Fatalf("got %q, want %q", got, want) }
+}
+
+func TestTailerContinuityAnchorDetectsRapidTruncateAndRegrow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Game.log")
+	writeTailerFile(t, path, "")
+	var received []Line
+	resetCount := 0
+	tailer := newTailerWithResume(TailerConfig{Path: path, OnLine: func(line Line) { received = append(received, line) }}, tailerResume{}, func() {
+		resetCount++
+	})
+	tailer.pollOnce()
+	old := strings.Repeat("old-", 1500) + "\n"
+	appendTailerFile(t, path, old)
+	tailer.pollOnce()
+	oldOffset := tailer.Snapshot().Offset
+
+	newContent := "new first\n" + strings.Repeat("new-", int(oldOffset/4)+100) + "\n"
+	writeTailerFile(t, path, newContent)
+	if int64(len(newContent)) < oldOffset { t.Fatalf("test content %d shorter than old offset %d", len(newContent), oldOffset) }
+	tailer.pollOnce()
+	if resetCount != 1 { t.Fatalf("resetCount = %d, want 1", resetCount) }
+	if len(received) < 2 || received[len(received)-2].Text != "new first" { t.Fatalf("new file was not read from zero: %q", texts(received)) }
+}
+
+func TestTailerTemporaryDisappearanceOfSameFileDoesNotReset(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Game.log")
+	parked := filepath.Join(dir, "parked.log")
+	writeTailerFile(t, path, "")
+	resetCount := 0
+	var received []Line
+	tailer := newTailerWithResume(TailerConfig{Path: path, OnLine: func(line Line) { received = append(received, line) }}, tailerResume{}, func() {
+		resetCount++
+	})
+	tailer.pollOnce()
+	appendTailerFile(t, path, "before\n")
+	tailer.pollOnce()
+	if err := os.Rename(path, parked); err != nil { t.Fatal(err) }
+	tailer.pollOnce()
+	if err := os.Rename(parked, path); err != nil { t.Fatal(err) }
+	appendTailerFile(t, path, "after\n")
+	tailer.pollOnce()
+	if resetCount != 0 { t.Fatalf("resetCount = %d, want 0", resetCount) }
+	if got, want := texts(received), []string{"before", "after"}; !reflect.DeepEqual(got, want) { t.Fatalf("got %q, want %q", got, want) }
+}
+
+func TestTailerContinuityAnchorAdvancesAcrossNormalPartialAppends(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Game.log")
+	writeTailerFile(t, path, "")
+	resetCount := 0
+	var received []Line
+	tailer := newTailerWithResume(TailerConfig{Path: path, OnLine: func(line Line) { received = append(received, line) }}, tailerResume{}, func() {
+		resetCount++
+	})
+	tailer.pollOnce()
+
+	first := strings.Repeat("a", 5000) + "\npartial"
+	appendTailerFile(t, path, first)
+	tailer.pollOnce()
+	firstOffset := tailer.Snapshot().Offset
+	firstAnchorOffset := tailer.anchorOffset
+	firstAnchor := append([]byte(nil), tailer.anchor...)
+	if firstAnchorOffset != firstOffset-4096 || !reflect.DeepEqual(firstAnchor, []byte(first[len(first)-4096:])) {
+		t.Fatalf("first anchor offset=%d len=%d for read offset=%d", firstAnchorOffset, len(firstAnchor), firstOffset)
+	}
+
+	second := " completed\n" + strings.Repeat("b", 5000) + "\n"
+	appendTailerFile(t, path, second)
+	tailer.pollOnce()
+	all := first + second
+	secondOffset := tailer.Snapshot().Offset
+	if resetCount != 0 { t.Fatalf("resetCount = %d, want 0", resetCount) }
+	if got, want := texts(received), []string{strings.Repeat("a", 5000), "partial completed", strings.Repeat("b", 5000)}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if secondOffset <= firstOffset || tailer.anchorOffset != secondOffset-4096 || !reflect.DeepEqual(tailer.anchor, []byte(all[len(all)-4096:])) {
+		t.Fatalf("advanced anchor offset=%d len=%d for read offset=%d", tailer.anchorOffset, len(tailer.anchor), secondOffset)
+	}
+	if firstAnchorOffset == tailer.anchorOffset && reflect.DeepEqual(firstAnchor, tailer.anchor) {
+		t.Fatal("continuity anchor did not advance with the physical read offset")
+	}
+}
+
+func TestContinuityAnchorHandlesSmallOffsets(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Game.log")
+	content := strings.Repeat("x", 100)
+	writeTailerFile(t, path, content)
+	file, err := os.Open(path)
+	if err != nil { t.Fatal(err) }
+	defer file.Close()
+
+	for _, offset := range []int64{0, 1, 100} {
+		t.Run(fmt.Sprintf("offset-%d", offset), func(t *testing.T) {
+			anchorOffset, anchor, err := readContinuityAnchor(file, offset)
+			if err != nil { t.Fatal(err) }
+			if anchorOffset != 0 || len(anchor) != int(offset) || string(anchor) != content[:int(offset)] {
+				t.Fatalf("anchorOffset=%d len=%d content=%q", anchorOffset, len(anchor), string(anchor))
+			}
+		})
 	}
 }

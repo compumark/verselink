@@ -12,6 +12,8 @@ import (
 
 const DefaultTailerPollInterval = 150 * time.Millisecond
 
+const tailerContinuityAnchorSize int64 = 4 * 1024
+
 // Line is one complete, unmodified Game.log line. Text has no newline suffix.
 type Line struct {
 	Path string
@@ -49,13 +51,23 @@ type Tailer struct {
 	initialProbe bool
 	interval     time.Duration
 	onLine       func(Line)
+	onReset      func()
 
 	activePath       string
 	activeGeneration uint64
 	fileInfo         os.FileInfo
 	offset           int64
 	partial          []byte
+	anchorOffset     int64
+	anchor           []byte
 	state            TailerState
+}
+
+type tailerResume struct {
+	fileInfo     os.FileInfo
+	offset       int64
+	anchorOffset int64
+	anchor       []byte
 }
 
 func NewTailer(config TailerConfig) *Tailer {
@@ -73,6 +85,28 @@ func NewTailer(config TailerConfig) *Tailer {
 		onLine:       config.OnLine,
 		state:        TailerWaitingForPath,
 	}
+}
+
+// newTailerWithResume is the Session-only handoff path. Unlike NewTailer, it
+// starts at the captured byte offset and binds that offset to the identity and
+// continuity anchor observed during restore. A nil fileInfo means the file was
+// absent during restore and must start at byte zero when it first appears.
+func newTailerWithResume(config TailerConfig, resume tailerResume, onReset func()) *Tailer {
+	tailer := NewTailer(config)
+	tailer.initialProbe = false
+	tailer.activePath = tailer.path
+	tailer.activeGeneration = tailer.generation
+	tailer.fileInfo = resume.fileInfo
+	tailer.offset = resume.offset
+	tailer.anchorOffset = resume.anchorOffset
+	tailer.anchor = append([]byte(nil), resume.anchor...)
+	tailer.onReset = onReset
+	if tailer.path == "" {
+		tailer.state = TailerWaitingForPath
+	} else {
+		tailer.state = TailerWaitingForFile
+	}
+	return tailer
 }
 
 // SetPath switches the active source. A newly selected path starts at byte zero
@@ -115,11 +149,15 @@ func (t *Tailer) Run(ctx context.Context) error {
 // pollOnce is the deterministic single-poll state transition used by tests.
 func (t *Tailer) pollOnce() {
 	t.mu.Lock()
-	lines := t.pollLocked()
+	lines, reset := t.pollLocked()
 	deliveryGeneration := t.generation
 	onLine := t.onLine
+	onReset := t.onReset
 	t.mu.Unlock()
 
+	if reset && onReset != nil {
+		onReset()
+	}
 	if onLine != nil {
 		for _, line := range lines {
 			t.mu.Lock()
@@ -133,13 +171,13 @@ func (t *Tailer) pollOnce() {
 	}
 }
 
-func (t *Tailer) pollLocked() []Line {
+func (t *Tailer) pollLocked() ([]Line, bool) {
 	if t.activeGeneration != t.generation || t.activePath != t.path {
 		t.resetActiveLocked()
 	}
 	if t.path == "" {
 		t.state = TailerWaitingForPath
-		return nil
+		return nil, false
 	}
 
 	info, err := os.Stat(t.path)
@@ -148,7 +186,7 @@ func (t *Tailer) pollLocked() []Line {
 		// can resume safely; a different identity resets below.
 		t.state = TailerWaitingForFile
 		t.initialProbe = false
-		return nil
+		return nil, false
 	}
 
 	if t.initialProbe && t.initialPath {
@@ -157,47 +195,67 @@ func (t *Tailer) pollLocked() []Line {
 		t.fileInfo = info
 		t.offset = info.Size()
 		t.partial = nil
+		t.setAnchorFromPathLocked(t.path)
 		t.initialProbe = false
 		t.state = TailerTailing
-		return nil
+		return nil, false
 	}
 	t.initialProbe = false
 
+	reset := false
 	if t.fileInfo == nil || !os.SameFile(t.fileInfo, info) {
+		reset = t.fileInfo != nil
 		t.fileInfo = info
 		t.offset = 0
 		t.partial = nil
+		t.clearAnchorLocked()
 	} else if info.Size() < t.offset {
-		// Same identity but shorter content: truncation/restart. Never join old
-		// partial bytes with post-truncation bytes. If it truncates and regrows
-		// past the offset before this poll, size and identity cannot detect it.
+		// Same identity but shorter content: truncation/restart.
+		reset = true
 		t.offset = 0
 		t.partial = nil
+		t.clearAnchorLocked()
+	} else if !t.anchorMatchesPathLocked(t.path) {
+		// The same identity may have truncated and regrown beyond the old offset
+		// between polls. A bounded byte anchor detects the lost continuity.
+		reset = true
+		t.offset = 0
+		t.partial = nil
+		t.clearAnchorLocked()
 	}
 
 	file, err := os.Open(t.path)
 	if err != nil {
 		t.state = TailerWaitingForFile
-		return nil
+		return nil, reset
 	}
 	defer file.Close()
 
 	openedInfo, err := file.Stat()
 	if err != nil || !openedInfo.Mode().IsRegular() {
 		t.state = TailerWaitingForFile
-		return nil
+		return nil, reset
 	}
 	if t.fileInfo == nil || !os.SameFile(t.fileInfo, openedInfo) {
+		reset = reset || t.fileInfo != nil
 		t.fileInfo = openedInfo
 		t.offset = 0
 		t.partial = nil
+		t.clearAnchorLocked()
 	} else if openedInfo.Size() < t.offset {
+		reset = true
 		t.offset = 0
 		t.partial = nil
+		t.clearAnchorLocked()
+	} else if !t.anchorMatchesFileLocked(file) {
+		reset = true
+		t.offset = 0
+		t.partial = nil
+		t.clearAnchorLocked()
 	}
 	if _, err := file.Seek(t.offset, io.SeekStart); err != nil {
 		t.state = TailerWaitingForFile
-		return nil
+		return nil, reset
 	}
 
 	lines := []Line{}
@@ -213,12 +271,14 @@ func (t *Tailer) pollLocked() []Line {
 		}
 		if readErr != nil {
 			t.state = TailerWaitingForFile
-			return lines
+			t.setAnchorFromFileLocked(file)
+			return lines, reset
 		}
 	}
 	t.fileInfo = openedInfo
+	t.setAnchorFromFileLocked(file)
 	t.state = TailerTailing
-	return lines
+	return lines, reset
 }
 
 func (t *Tailer) resetActiveLocked() {
@@ -227,11 +287,67 @@ func (t *Tailer) resetActiveLocked() {
 	t.fileInfo = nil
 	t.offset = 0
 	t.partial = nil
+	t.clearAnchorLocked()
 	if t.path == "" {
 		t.state = TailerWaitingForPath
 	} else {
 		t.state = TailerWaitingForFile
 	}
+}
+
+func (t *Tailer) clearAnchorLocked() {
+	t.anchorOffset = 0
+	t.anchor = nil
+}
+
+func (t *Tailer) anchorMatchesPathLocked(path string) bool {
+	if len(t.anchor) == 0 {
+		return true
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return true
+	}
+	defer file.Close()
+	return t.anchorMatchesFileLocked(file)
+}
+
+func (t *Tailer) anchorMatchesFileLocked(file *os.File) bool {
+	if len(t.anchor) == 0 {
+		return true
+	}
+	actual := make([]byte, len(t.anchor))
+	if _, err := file.ReadAt(actual, t.anchorOffset); err != nil {
+		return false
+	}
+	return bytes.Equal(actual, t.anchor)
+}
+
+func (t *Tailer) setAnchorFromPathLocked(path string) {
+	file, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	t.setAnchorFromFileLocked(file)
+}
+
+func (t *Tailer) setAnchorFromFileLocked(file *os.File) {
+	start := t.offset - tailerContinuityAnchorSize
+	if start < 0 {
+		start = 0
+	}
+	length := t.offset - start
+	if length == 0 {
+		t.clearAnchorLocked()
+		return
+	}
+	anchor := make([]byte, length)
+	if _, err := file.ReadAt(anchor, start); err != nil {
+		return
+	}
+	t.anchorOffset = start
+	t.anchor = anchor
 }
 
 func (t *Tailer) consumeLocked(chunk []byte) []Line {

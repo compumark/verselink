@@ -40,14 +40,16 @@ internal Quantum Travel event parsing. A9 adds internal Party join, leave, and
 disbanded-event parsing with only the minimal pending operation needed for
 multi-line observations. A10 adds local, platform-neutral reduction of the 13
 P0 events into current session, location, ship, Quantum, Party, and timing
-state. There is still no session restore, backend, API, or end-user runtime
-integration.
+state. A11 adds local current-session restoration and restart handling: it
+replays only the latest `player_login` session and continues from an exact
+live-tail byte offset while resetting local state on log restarts. There is
+still no backend, API, or end-user runtime integration.
 
 ## Planned direction
 
 Later milestones may add further parsing, platform adapters, diagnostics, and a
-future VerseLink API client. None of those features are part of A10. Session
-restore and restart reconstruction remain separate A11 work.
+future VerseLink API client. A11 remains local core behavior only: there is no
+backend, API integration, end-user runtime integration, or persistent state.
 
 The security boundary is explicit. VerseLink Telemetry will not use process
 memory reading, DLL injection, kernel drivers, packet sniffing, keyboard hooks,
