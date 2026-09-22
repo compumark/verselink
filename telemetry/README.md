@@ -28,7 +28,10 @@ go vet ./...
 go run ./cmd/verselink-telemetry
 ```
 
-The current executable prints its identity and build defaults. A3 adds an
+The B1 executable now performs the first local Windows runtime integration.
+After printing its identity and build information it locates `Game.log`,
+restores the latest current login session, starts the existing live tailer, and
+prints privacy-safe diagnostics when meaningful state changes. A3 adds an
 internal, read-only Windows `Game.log` locator for later callers. A4 adds an
 internal, read-only live line tailer: it emits only newly appended complete raw
 lines, buffers partial writes, and accepts an explicit path-change hook. A5
@@ -72,8 +75,41 @@ runtime UI work remain outside Milestone A.
 
 Later milestones may add further parsing, platform adapters, an end-user
 diagnostics experience, and a future VerseLink API client. A12 remains local
-core and test behavior only: there is no backend, API integration, end-user
-runtime integration, or persistent state.
+core and test behavior only: there is no backend, API integration, or
+persistent state.
+
+## First Windows runtime test
+
+Build and run from a Windows terminal:
+
+```powershell
+cd telemetry
+go build -o verselink-telemetry.exe ./cmd/verselink-telemetry
+.\verselink-telemetry.exe
+```
+
+The executable remains a foreground console application in B1. It performs
+one bounded, read-only `Game.log` discovery pass, restores the most recent
+current login session, then continues live monitoring. Successful startup
+prints the selected path, discovery strategy, restore metadata, and a local
+diagnostics summary. Further diagnostics appear only when meaningful structured
+state changes, such as ship, Quantum Travel, Party count, location, or a source
+reset. It never prints raw `Game.log` lines, GEIDs, or Party member names.
+
+If automatic discovery cannot find Star Citizen, set an optional one-process
+manual path before launching:
+
+```powershell
+$env:VERSELINK_GAME_LOG_PATH = 'C:\Program Files\Roberts Space Industries\StarCitizen\LIVE\Game.log'
+.\verselink-telemetry.exe
+```
+
+Stop the program with `Ctrl+C`. This cancels the local Session cleanly; it does
+not create a service, a child process, a persistent lock, or telemetry state
+files.
+
+B1 does not include a tray icon, settings UI, autostart, installer, updater,
+VerseLink account pairing, API upload, or MobiGlass integration.
 
 The security boundary is explicit. VerseLink Telemetry will not use process
 memory reading, DLL injection, kernel drivers, packet sniffing, keyboard hooks,

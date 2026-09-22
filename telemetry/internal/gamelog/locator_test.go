@@ -50,6 +50,19 @@ func (f fakeFileSystem) OpenRead(path string) (io.Closer, error) {
 func readable(path string) map[string]fakeNode { return map[string]fakeNode{path: {exists: true, regular: true, readable: true}} }
 func fixtureFS(nodes map[string]fakeNode, dirs map[string][]DirectoryEntry) fakeFileSystem { return fakeFileSystem{nodes: nodes, dirs: dirs} }
 
+func disableAutomaticStrategies(config Config) Config {
+	config.LauncherLogPaths = []string{`C:\test-isolation\missing-launcher.log`}
+	config.ProcessQuery = func() (string, error) { return "", errors.New("process discovery disabled for test") }
+	config.KnownRoots = []string{`C:\test-isolation\missing-known-root`}
+	return config
+}
+
+func disableAllEarlierStrategies(config Config) Config {
+	config = disableAutomaticStrategies(config)
+	config.RegistryRoots = func() ([]string, error) { return nil, errors.New("registry discovery disabled for test") }
+	return config
+}
+
 func TestLocatorStrategyPrecedence(t *testing.T) {
 	launcher := `C:\Users\Test\AppData\rsilauncher\logs\log.log`
 	launcherGameLog := `C:\RSI\StarCitizen\LIVE\Game.log`
@@ -86,7 +99,10 @@ func TestLocatorPrecedenceAfterEarlierStrategiesFail(t *testing.T) {
 		nodes[knownLog] = fakeNode{exists: true, regular: true, readable: true}
 		nodes[registryLog] = fakeNode{exists: true, regular: true, readable: true}
 		nodes[manualLog] = fakeNode{exists: true, regular: true, readable: true}
-		result := NewLocator(Config{FileSystem: fixtureFS(nodes, map[string][]DirectoryEntry{knownRoot: {{Name: "LIVE", IsDir: true}}, registryRoot: {{Name: "LIVE", IsDir: true}}}), KnownRoots: []string{knownRoot}, ManualPath: manualLog, ProcessQuery: func() (string, error) { return `C:\RSI\StarCitizen\LIVE\Bin64\StarCitizen.exe`, nil }, RegistryRoots: func() ([]string, error) { return []string{registryRoot}, nil }}).Locate()
+		config := disableAutomaticStrategies(Config{FileSystem: fixtureFS(nodes, map[string][]DirectoryEntry{knownRoot: {{Name: "LIVE", IsDir: true}}, registryRoot: {{Name: "LIVE", IsDir: true}}}), KnownRoots: []string{knownRoot}, ManualPath: manualLog, RegistryRoots: func() ([]string, error) { return []string{registryRoot}, nil }})
+		config.KnownRoots = []string{knownRoot}
+		config.ProcessQuery = func() (string, error) { return `C:\RSI\StarCitizen\LIVE\Bin64\StarCitizen.exe`, nil }
+		result := NewLocator(config).Locate()
 		if result.Strategy != StrategyRunningProcess { t.Fatalf("got %#v", result) }
 	})
 
@@ -94,14 +110,16 @@ func TestLocatorPrecedenceAfterEarlierStrategiesFail(t *testing.T) {
 		nodes := readable(knownLog)
 		nodes[registryLog] = fakeNode{exists: true, regular: true, readable: true}
 		nodes[manualLog] = fakeNode{exists: true, regular: true, readable: true}
-		result := NewLocator(Config{FileSystem: fixtureFS(nodes, map[string][]DirectoryEntry{knownRoot: {{Name: "LIVE", IsDir: true}}, registryRoot: {{Name: "LIVE", IsDir: true}}}), KnownRoots: []string{knownRoot}, ManualPath: manualLog, RegistryRoots: func() ([]string, error) { return []string{registryRoot}, nil }}).Locate()
+		config := disableAutomaticStrategies(Config{FileSystem: fixtureFS(nodes, map[string][]DirectoryEntry{knownRoot: {{Name: "LIVE", IsDir: true}}, registryRoot: {{Name: "LIVE", IsDir: true}}}), KnownRoots: []string{knownRoot}, ManualPath: manualLog, RegistryRoots: func() ([]string, error) { return []string{registryRoot}, nil }})
+		config.KnownRoots = []string{knownRoot}
+		result := NewLocator(config).Locate()
 		if result.Strategy != StrategyKnownLocation { t.Fatalf("got %#v", result) }
 	})
 
 	t.Run("registry wins manual", func(t *testing.T) {
 		nodes := readable(registryLog)
 		nodes[manualLog] = fakeNode{exists: true, regular: true, readable: true}
-		result := NewLocator(Config{FileSystem: fixtureFS(nodes, map[string][]DirectoryEntry{registryRoot: {{Name: "LIVE", IsDir: true}}}), ManualPath: manualLog, RegistryRoots: func() ([]string, error) { return []string{registryRoot}, nil }}).Locate()
+		result := NewLocator(disableAutomaticStrategies(Config{FileSystem: fixtureFS(nodes, map[string][]DirectoryEntry{registryRoot: {{Name: "LIVE", IsDir: true}}}), ManualPath: manualLog, RegistryRoots: func() ([]string, error) { return []string{registryRoot}, nil }})).Locate()
 		if result.Strategy != StrategyRegistry { t.Fatalf("got %#v", result) }
 	})
 }
@@ -195,11 +213,11 @@ func TestKnownLocationsFixedAndArbitraryChannelsAreDeterministic(t *testing.T) {
 func TestRegistryHintsAndFailures(t *testing.T) {
 	root := `C:\Roberts Space Industries\StarCitizen`; candidate := `C:\Roberts Space Industries\StarCitizen\LIVE\Game.log`
 	nodes := readable(candidate)
-	result := NewLocator(Config{FileSystem: fixtureFS(nodes, map[string][]DirectoryEntry{root: {{Name: "LIVE", IsDir: true}}}), RegistryRoots: func() ([]string, error) { return []string{root}, nil }}).Locate()
+	result := NewLocator(disableAutomaticStrategies(Config{FileSystem: fixtureFS(nodes, map[string][]DirectoryEntry{root: {{Name: "LIVE", IsDir: true}}}), RegistryRoots: func() ([]string, error) { return []string{root}, nil }})).Locate()
 	if result.Strategy != StrategyRegistry || result.Path != candidate { t.Fatalf("got %#v", result) }
-	result = NewLocator(Config{FileSystem: fixtureFS(nil, nil), RegistryRoots: func() ([]string, error) { return nil, errors.New("reg missing") }}).Locate()
+	result = NewLocator(disableAutomaticStrategies(Config{FileSystem: fixtureFS(nil, nil), RegistryRoots: func() ([]string, error) { return nil, errors.New("reg missing") }})).Locate()
 	if result.Found() || !hasAttempt(result, StrategyRegistry, OutcomeUnavailable) { t.Fatalf("expected registry failure diagnostics: %#v", result) }
-	result = NewLocator(Config{FileSystem: fixtureFS(nil, nil), RegistryRoots: func() ([]string, error) { return []string{"unrelated output"}, nil }}).Locate()
+	result = NewLocator(disableAutomaticStrategies(Config{FileSystem: fixtureFS(nil, nil), RegistryRoots: func() ([]string, error) { return []string{"unrelated output"}, nil }})).Locate()
 	if result.Found() || !hasAttempt(result, StrategyRegistry, OutcomeNoCandidate) { t.Fatalf("expected unusable registry diagnostics: %#v", result) }
 }
 
@@ -269,7 +287,7 @@ func TestManualPathValidation(t *testing.T) {
 		{"wrong_file_name", `C:\manual\other.log`, fakeNode{exists: true, regular: true, readable: true}, false, OutcomeNoCandidate},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			result := NewLocator(Config{FileSystem: fixtureFS(map[string]fakeNode{test.path: test.node}, nil), ManualPath: test.path}).Locate()
+			result := NewLocator(disableAllEarlierStrategies(Config{FileSystem: fixtureFS(map[string]fakeNode{test.path: test.node}, nil), ManualPath: test.path})).Locate()
 			if result.Found() != test.found || !hasAttempt(result, StrategyManual, test.outcome) { t.Fatalf("got %#v", result) }
 		})
 	}
@@ -279,7 +297,7 @@ func TestGameLogFilenameIsCaseInsensitive(t *testing.T) {
 	for _, name := range []string{"Game.log", "GAME.LOG", "game.log", "Game.Log"} {
 		t.Run(name, func(t *testing.T) {
 			path := `C:\manual\` + name
-			result := NewLocator(Config{FileSystem: fixtureFS(readable(path), nil), ManualPath: path}).Locate()
+			result := NewLocator(disableAllEarlierStrategies(Config{FileSystem: fixtureFS(readable(path), nil), ManualPath: path})).Locate()
 			if !result.Found() || result.Strategy != StrategyManual { t.Fatalf("got %#v", result) }
 		})
 	}
@@ -287,12 +305,12 @@ func TestGameLogFilenameIsCaseInsensitive(t *testing.T) {
 
 func TestSuccessfulReadOnlyOpenIsSufficientWhenCloseFails(t *testing.T) {
 	path := `C:\manual\Game.log`
-	result := NewLocator(Config{FileSystem: fixtureFS(map[string]fakeNode{path: {exists: true, regular: true, readable: true, closeFails: true}}, nil), ManualPath: path}).Locate()
+	result := NewLocator(disableAllEarlierStrategies(Config{FileSystem: fixtureFS(map[string]fakeNode{path: {exists: true, regular: true, readable: true, closeFails: true}}, nil), ManualPath: path})).Locate()
 	if !result.Found() || result.Strategy != StrategyManual { t.Fatalf("got %#v", result) }
 }
 
 func TestFailureResultIncludesAllStrategies(t *testing.T) {
-	result := NewLocator(Config{FileSystem: fixtureFS(nil, nil), LauncherLogPaths: []string{"missing.log"}, ProcessQuery: func() (string, error) { return "", errors.New("failed") }, RegistryRoots: func() ([]string, error) { return nil, errors.New("failed") }}).Locate()
+	result := NewLocator(disableAllEarlierStrategies(Config{FileSystem: fixtureFS(nil, nil), LauncherLogPaths: []string{"missing.log"}, ProcessQuery: func() (string, error) { return "", errors.New("failed") }, RegistryRoots: func() ([]string, error) { return nil, errors.New("failed") }})).Locate()
 	if result.Found() { t.Fatalf("unexpected success: %#v", result) }
 	for _, strategy := range []DiscoveryStrategy{StrategyLauncherLog, StrategyRunningProcess, StrategyKnownLocation, StrategyRegistry, StrategyManual} {
 		if !hasStrategy(result, strategy) { t.Fatalf("missing %s diagnostics: %#v", strategy, result.Attempts) }

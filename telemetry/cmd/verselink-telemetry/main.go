@@ -1,11 +1,18 @@
 package main
 
 import (
+	"context"
 	"fmt"
-
-	"github.com/compumark/verselink-telemetry/internal/diagnostics"
+	"os"
+	"os/signal"
 )
 
 func main() {
-	fmt.Println(diagnostics.Banner(diagnostics.BuildMetadata{}))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	if err := Run(ctx, os.Stdout, RuntimeConfig{}); err != nil {
+		fmt.Fprintln(os.Stderr, "VerseLink Telemetry runtime failed:", err)
+		os.Exit(1)
+	}
 }
