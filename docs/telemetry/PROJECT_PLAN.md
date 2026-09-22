@@ -33,7 +33,7 @@ Goal: prove that a local client can reliably find, tail, parse, and reduce Star 
 | A6 | Location event parser | COMPLETE |
 | A7 | Ship event parser | COMPLETE |
 | A8 | Quantum Travel event parser | COMPLETE |
-| A9 | Party event parser | TODO |
+| A9 | Party event parser | COMPLETE |
 | A10 | Telemetry state reducer | TODO |
 | A11 | Session restore / restart handling | TODO |
 | A12 | Regression corpus and diagnostics | TODO |

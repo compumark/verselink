@@ -94,6 +94,15 @@ they do not resolve it. `qt_arrived` has an empty data map and never infers a
 destination. The parser retains no Quantum state: correlation of an arrival
 with an earlier target belongs to the future A10 reducer.
 
+A9 treats Party join and leave notifications as two-line observations. A Party
+header only arms one pending join or leave operation and emits nothing; a
+matching continuation emits an event using the continuation timestamp and then
+clears that pending operation. Recognized unrelated events and wrong opposing
+continuations clear it, while unmatched lines leave it unchanged; a newer Party
+header replaces the prior operation. `party_disbanded` is a single-line event
+with an empty data map that also clears pending state. This is minimal parser
+correlation, not Party membership state; party reduction belongs to A10.
+
 ## Suggested standalone repository layout
 
 ```text
