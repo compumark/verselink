@@ -31,7 +31,7 @@ Goal: prove that a local client can reliably find, tail, parse, and reduce Star 
 | A4 | Robust Game.log tailer | COMPLETE |
 | A5 | Session event parser | COMPLETE |
 | A6 | Location event parser | COMPLETE |
-| A7 | Ship event parser | IN REVIEW |
+| A7 | Ship event parser | COMPLETE |
 | A8 | Quantum Travel event parser | TODO |
 | A9 | Party event parser | TODO |
 | A10 | Telemetry state reducer | TODO |
