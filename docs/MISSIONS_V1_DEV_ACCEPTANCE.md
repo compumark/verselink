@@ -5,33 +5,60 @@ Status: **PENDING DEV ACCEPTANCE**
 
 Use this checklist before closing Mission Planning V1 (M1, M2, M3). Record the DEV URL, deployed SHA, desktop browser, mobile width, test account/group, and tested Stanton, Nyx, and Pyro themes. This is a DEV-environment checklist; production behavior has not been accepted by this document.
 
+## Environment
+
+- [ ] DEV URL: ____________________
+- [ ] Deployed SHA: ____________________
+- [ ] Desktop browser: ____________________
+- [ ] Mobile / responsive width: ____________________
+- [ ] Stanton theme
+- [ ] Nyx theme
+- [ ] Pyro theme
+
 ## Primary flow
 
-- [ ] Create a mission.
-- [ ] Create a CHECKLIST task.
-- [ ] Create an ITEM task with target 9.
-- [ ] Assign a task.
-- [ ] Reassign a task.
-- [ ] Unassign a task.
-- [ ] Complete and reopen the checklist task.
-- [ ] Contribute 3, then the remaining 6; verify contribution history and mission completion/reopen.
-- [ ] Verify mission notifications.
-- [ ] Verify task notifications.
-- [ ] Verify mission deep links, task deep links, refresh, and browser Back/Forward.
-- [ ] Verify member removal and former-member display.
-- [ ] Verify desktop and mobile layout at 680 px and 960 px.
-- [ ] Verify keyboard dialog operation: initial focus, Tab/Shift+Tab loop, Escape, validation rerender, and focus return.
-- [ ] Verify Stanton, Nyx, and Pyro theme switching.
+- [ ] Create Mission
+- [ ] Create CHECKLIST task
+- [ ] Create ITEM task with target 9
+- [ ] Assign task
+- [ ] Reassign task
+- [ ] Unassign task
+- [ ] Complete CHECKLIST
+- [ ] Reopen CHECKLIST
+- [ ] Contribute 3
+- [ ] Contribute remaining 6
+- [ ] Verify contribution history
+- [ ] Verify Mission becomes completed
+- [ ] Add new open task
+- [ ] Verify Mission reopens
+- [ ] Verify Mission notification
+- [ ] Verify Task notification
+- [ ] Verify Mission deep link
+- [ ] Verify Task deep link
+- [ ] Refresh Mission view
+- [ ] Browser Back
+- [ ] Browser Forward
+- [ ] Remove member
+- [ ] Verify former-member display
+- [ ] Verify desktop layout
+- [ ] Verify mobile layout
+- [ ] Verify keyboard dialog operation
+- [ ] Verify Stanton theme
+- [ ] Verify Nyx theme
+- [ ] Verify Pyro theme
 
 ## Failure flow
 
-- [ ] Invalid mission link shows a neutral alert state.
-- [ ] Stale task link stays on the mission and reports that the task is unavailable.
-- [ ] Removed group or mission access shows a neutral alert state.
-- [ ] API/network failure is understandable and offers the relevant retry action.
-- [ ] Validation error preserves the entered dialog values.
-- [ ] Over-target contribution conflict is understandable.
-- [ ] No groups, no missions, no matching missions, and no tasks render correctly.
+- [ ] Invalid Mission link
+- [ ] Stale Task link
+- [ ] Access removed
+- [ ] API/network failure
+- [ ] Validation error
+- [ ] Over-target conflict
+- [ ] No groups
+- [ ] No Missions
+- [ ] No matching Missions
+- [ ] No tasks
 
 ## Automated evidence
 

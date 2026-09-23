@@ -33,6 +33,15 @@ test('mission navigation restores useful focus without disrupting refreshes', ()
   assert.match(source, /dialogActiveField = select\.name/);
 });
 
+test('dialog return focus waits for its target and preserves create navigation focus', () => {
+  assert.match(source, /const restoreDialogFocus = selector =>/);
+  assert.match(source, /const target = selector && mountedRoot\?\.querySelector\(selector\)/);
+  assert.match(source, /if \(!target\) return false/);
+  assert.match(source, /dialogReturnFocus = '';/);
+  assert.match(source, /restoreDialogFocus\(restoreFocus\)/);
+  assert.match(source, /if \(focusTarget\) dialogReturnFocus = ''/);
+});
+
 test('mission readiness CSS and state panels preserve accessible small-screen behavior', () => {
   assert.doesNotMatch(source, /aria-live="polite"/);
   assert.match(source, /button:hover:not\(:disabled\)/);
