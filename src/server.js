@@ -1828,6 +1828,66 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { orders: result.rows.map((order) => ({ ...order, status: normalizeOrderStatus(order) })) });
     }
 
+    const taskResponseColumns = "id,mission_id,type,title,description,assigned_to,target_quantity,unit,status,sort_order,created_at,updated_at,completed_at";
+    const loadMissionAccess = async (missionId, appUserId, db = pool) => (await db.query(
+      `SELECT m.id,m.group_id,m.created_by,gm.role
+       FROM missions m
+       LEFT JOIN group_members gm ON gm.group_id=m.group_id AND gm.app_user_id=$2
+       WHERE m.id=$1`,
+      [missionId, appUserId]
+    )).rows[0] || null;
+    const canManageMission = (mission, current) => Boolean(current.is_admin || mission.created_by === current.id || mission.role === "owner");
+    const loadTaskProgress = async (db, missionId, taskId = null) => (await db.query(
+      `SELECT t.id,t.mission_id,t.type,t.title,t.description,t.assigned_to,t.target_quantity,t.unit,t.status,t.sort_order,t.created_at,t.updated_at,t.completed_at,
+         CASE WHEN t.type='item' THEN COALESCE(c.current_quantity,0) ELSE NULL END AS current_quantity,
+         CASE WHEN t.type='item' THEN GREATEST(t.target_quantity-COALESCE(c.current_quantity,0),0) ELSE NULL END AS remaining_quantity,
+         ROUND(CASE WHEN t.type='checklist' THEN CASE WHEN t.status='completed' THEN 100::numeric ELSE 0::numeric END
+           ELSE LEAST(COALESCE(c.current_quantity,0)/t.target_quantity*100,100::numeric) END,2) AS progress_percent
+       FROM mission_tasks t
+       LEFT JOIN LATERAL (SELECT COALESCE(SUM(quantity),0) AS current_quantity FROM mission_task_contributions WHERE task_id=t.id) c ON true
+       WHERE t.mission_id=$1 AND ($2::uuid IS NULL OR t.id=$2)
+       ORDER BY t.sort_order ASC,t.created_at ASC,t.id ASC`,
+      [missionId, taskId]
+    )).rows;
+    const loadMissionProgress = async (db, missionId) => (await db.query(
+      `SELECT m.id,m.group_id,m.created_by,m.title,m.description,m.status,m.created_at,m.updated_at,m.completed_at,
+         COALESCE(p.active_task_count,0)::int AS active_task_count,COALESCE(p.progress_percent,0) AS progress_percent
+       FROM missions m
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*)::int AS active_task_count,
+           ROUND(COALESCE(AVG(CASE WHEN t.type='checklist' THEN CASE WHEN t.status='completed' THEN 100::numeric ELSE 0::numeric END
+             ELSE LEAST(COALESCE(c.current_quantity,0)/t.target_quantity*100,100::numeric) END),0),2) AS progress_percent
+         FROM mission_tasks t
+         LEFT JOIN LATERAL (SELECT COALESCE(SUM(quantity),0) AS current_quantity FROM mission_task_contributions WHERE task_id=t.id) c ON true
+         WHERE t.mission_id=m.id AND t.status<>'cancelled'
+       ) p ON true
+       WHERE m.id=$1`,
+      [missionId]
+    )).rows[0] || null;
+    const recalculateMissionStatus = async (db, missionId) => {
+      await db.query("SELECT id FROM missions WHERE id=$1 FOR UPDATE", [missionId]);
+      await db.query(
+        `WITH task_progress AS (
+           SELECT t.id,CASE WHEN t.type='checklist' THEN CASE WHEN t.status='completed' THEN 100::numeric ELSE 0::numeric END
+             ELSE LEAST(COALESCE(SUM(c.quantity),0)/t.target_quantity*100,100::numeric) END AS progress_percent
+           FROM mission_tasks t LEFT JOIN mission_task_contributions c ON c.task_id=t.id
+           WHERE t.mission_id=$1 AND t.status<>'cancelled' GROUP BY t.id,t.type,t.status,t.target_quantity
+         ), summary AS (
+           SELECT COUNT(*)::int AS active_task_count,COUNT(*) FILTER (WHERE progress_percent=100)::int AS completed_task_count,
+             COUNT(*) FILTER (WHERE progress_percent>0)::int AS progressed_task_count FROM task_progress
+         )
+         UPDATE missions m SET
+           status=CASE WHEN m.status='cancelled' THEN m.status WHEN s.active_task_count=0 THEN 'open'
+             WHEN s.completed_task_count=s.active_task_count THEN 'completed' WHEN s.progressed_task_count>0 THEN 'in_progress' ELSE 'open' END,
+           completed_at=CASE WHEN m.status='cancelled' THEN m.completed_at
+             WHEN s.active_task_count>0 AND s.completed_task_count=s.active_task_count THEN COALESCE(m.completed_at,now()) ELSE NULL END,
+           updated_at=CASE WHEN m.status='cancelled' THEN m.updated_at ELSE now() END
+         FROM summary s WHERE m.id=$1`,
+        [missionId]
+      );
+      return loadMissionProgress(db, missionId);
+    };
+
     if (url.pathname === "/api/missions") {
       const current = await getCurrentAppUser(req);
       if (!current) return json(res, 401, { error: "login required" });
@@ -1841,7 +1901,18 @@ const server = createServer(async (req, res) => {
         const access = await pool.query("SELECT 1 FROM group_members WHERE group_id=$1 AND app_user_id=$2", [groupId, current.id]);
         if (!access.rowCount) return json(res, 403, { error: "group member required" });
         const result = await pool.query(
-          "SELECT id,group_id,created_by,title,description,status,created_at,updated_at,completed_at FROM missions WHERE group_id=$1 ORDER BY created_at DESC,id DESC",
+          `SELECT m.id,m.group_id,m.created_by,m.title,m.description,m.status,m.created_at,m.updated_at,m.completed_at,
+             COALESCE(p.active_task_count,0)::int AS active_task_count,COALESCE(p.progress_percent,0) AS progress_percent
+           FROM missions m
+           LEFT JOIN LATERAL (
+             SELECT COUNT(*)::int AS active_task_count,
+               ROUND(COALESCE(AVG(CASE WHEN t.type='checklist' THEN CASE WHEN t.status='completed' THEN 100::numeric ELSE 0::numeric END
+                 ELSE LEAST(COALESCE(c.current_quantity,0)/t.target_quantity*100,100::numeric) END),0),2) AS progress_percent
+             FROM mission_tasks t
+             LEFT JOIN LATERAL (SELECT COALESCE(SUM(quantity),0) AS current_quantity FROM mission_task_contributions WHERE task_id=t.id) c ON true
+             WHERE t.mission_id=m.id AND t.status<>'cancelled'
+           ) p ON true
+           WHERE m.group_id=$1 ORDER BY m.created_at DESC,m.id DESC`,
           [groupId]
         );
         return json(res, 200, { missions: result.rows });
@@ -1882,8 +1953,8 @@ const server = createServer(async (req, res) => {
       const row = mission.rows[0];
       if (req.method === "GET") {
         if (!row.role) return json(res, 404, { error: "mission not found" });
-        const { role, ...response } = row;
-        return json(res, 200, { mission: response });
+        const [response, tasks] = await Promise.all([loadMissionProgress(pool, missionId), loadTaskProgress(pool, missionId)]);
+        return json(res, 200, { mission: { ...response, tasks } });
       }
 
       if (!row.role && !current.is_admin) return json(res, 404, { error: "mission not found" });
@@ -1915,17 +1986,9 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { mission: updated.rows[0] });
     }
 
-    const loadMissionAccess = async (missionId, appUserId) => (await pool.query(
-      `SELECT m.id,m.group_id,m.created_by,gm.role
-       FROM missions m
-       LEFT JOIN group_members gm ON gm.group_id=m.group_id AND gm.app_user_id=$2
-       WHERE m.id=$1`,
-      [missionId, appUserId]
-    )).rows[0] || null;
-    const canManageMission = (mission, current) => Boolean(current.is_admin || mission.created_by === current.id || mission.role === "owner");
-    const taskResponseColumns = "id,mission_id,type,title,description,assigned_to,target_quantity,unit,status,sort_order,created_at,updated_at,completed_at";
     const taskCreateMatch = url.pathname.match(/^\/api\/missions\/([^/]+)\/tasks$/);
     const taskPatchMatch = url.pathname.match(/^\/api\/missions\/([^/]+)\/tasks\/([^/]+)$/);
+    const contributionMatch = url.pathname.match(/^\/api\/missions\/([^/]+)\/tasks\/([^/]+)\/contributions$/);
 
     if ((taskCreateMatch && req.method === "POST") || (taskPatchMatch && req.method === "PATCH")) {
       const current = await getCurrentAppUser(req);
@@ -1934,8 +1997,6 @@ const server = createServer(async (req, res) => {
       if (!uuidPattern.test(missionId)) return json(res, 400, { error: "invalid mission" });
       const mission = await loadMissionAccess(missionId, current.id);
       if (!mission || (!mission.role && !current.is_admin)) return json(res, 404, { error: "mission not found" });
-      if (!canManageMission(mission, current)) return json(res, 403, { error: "mission creator, group owner, or app admin required" });
-
       let data;
       try { data = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: "invalid JSON" }); }
       if (!data || typeof data !== "object" || Array.isArray(data)) return json(res, 400, { error: "invalid task" });
@@ -1953,6 +2014,7 @@ const server = createServer(async (req, res) => {
       const normalizeUnit = (unit) => unit === null ? null : (typeof unit === "string" && unit.trim().length > 0 && unit.length <= 50 ? unit.trim() : undefined);
 
       if (taskCreateMatch) {
+        if (!canManageMission(mission, current)) return json(res, 403, { error: "mission creator, group owner, or app admin required" });
         const allowedFields = new Set(["type", "title", "description", "assigned_to", "target_quantity", "unit", "sort_order"]);
         if (Object.keys(data).some((field) => !allowedFields.has(field))) return json(res, 400, { error: "invalid task fields" });
         const type = data.type;
@@ -1967,38 +2029,118 @@ const server = createServer(async (req, res) => {
         const targetQuantity = type === 'item' ? Number(data.target_quantity) : null;
         if (type === 'item' && (!Number.isFinite(targetQuantity) || targetQuantity <= 0)) return json(res, 400, { error: "item tasks require a positive target quantity" });
         if (!await validateAssignee(assignedTo)) return json(res, 400, { error: "assignee must be an active group member" });
-        const created = await pool.query(
-          `INSERT INTO mission_tasks (mission_id,type,title,description,assigned_to,target_quantity,unit,status,sort_order)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,'open',$8) RETURNING ${taskResponseColumns}`,
-          [missionId, type, title, description, assignedTo, targetQuantity, unit, sortOrder]
-        );
-        return json(res, 201, { task: created.rows[0] });
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          const created = await client.query(
+            `INSERT INTO mission_tasks (mission_id,type,title,description,assigned_to,target_quantity,unit,status,sort_order)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,'open',$8) RETURNING id`,
+            [missionId, type, title, description, assignedTo, targetQuantity, unit, sortOrder]
+          );
+          const missionResponse = await recalculateMissionStatus(client, missionId);
+          const taskResponse = (await loadTaskProgress(client, missionId, created.rows[0].id))[0];
+          await client.query("COMMIT");
+          return json(res, 201, { task: taskResponse, mission: missionResponse });
+        } catch (error) { await client.query("ROLLBACK").catch(() => {}); throw error; }
+        finally { client.release(); }
       }
 
       const taskId = taskPatchMatch[2];
       if (!uuidPattern.test(taskId)) return json(res, 400, { error: "invalid task" });
-      const allowedFields = new Set(["title", "description", "assigned_to", "target_quantity", "unit", "sort_order"]);
-      if (!Object.keys(data).length || Object.keys(data).some((field) => !allowedFields.has(field))) return json(res, 400, { error: "only task metadata can be changed" });
-      const task = await pool.query(`SELECT ${taskResponseColumns} FROM mission_tasks WHERE id=$1 AND mission_id=$2`, [taskId, missionId]);
-      if (!task.rowCount) return json(res, 404, { error: "task not found" });
-      const existing = task.rows[0];
-      const title = Object.hasOwn(data, "title") ? (typeof data.title === "string" ? data.title.trim() : "") : existing.title;
-      const description = Object.hasOwn(data, "description") ? data.description : existing.description;
-      const assignedTo = Object.hasOwn(data, "assigned_to") ? data.assigned_to : existing.assigned_to;
-      const targetQuantity = Object.hasOwn(data, "target_quantity") ? Number(data.target_quantity) : (existing.target_quantity === null ? null : Number(existing.target_quantity));
-      const unit = Object.hasOwn(data, "unit") ? normalizeUnit(data.unit) : existing.unit;
-      const sortOrder = Object.hasOwn(data, "sort_order") ? data.sort_order : existing.sort_order;
-      if (!validText(title) || !validateDescription(description) || unit === undefined || !Number.isInteger(sortOrder)) return json(res, 400, { error: "invalid task" });
-      if (existing.type === 'checklist' && (Object.hasOwn(data, "target_quantity") || targetQuantity !== null || unit !== null)) return json(res, 400, { error: "checklist tasks cannot have quantity or unit" });
-      if (existing.type === 'item' && (!Number.isFinite(targetQuantity) || targetQuantity <= 0)) return json(res, 400, { error: "item tasks require a positive target quantity" });
-      if (Object.hasOwn(data, "assigned_to") && !await validateAssignee(assignedTo)) return json(res, 400, { error: "assignee must be an active group member" });
-      const values = [title, description, assignedTo, existing.type === 'item' ? targetQuantity : null, unit, sortOrder, taskId, missionId];
-      const updated = await pool.query(
-        `UPDATE mission_tasks SET title=$1,description=$2,assigned_to=$3,target_quantity=$4,unit=$5,sort_order=$6,updated_at=now()
-         WHERE id=$7 AND mission_id=$8 RETURNING ${taskResponseColumns}`,
-        values
-      );
-      return json(res, 200, { task: updated.rows[0] });
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const task = await client.query(`SELECT ${taskResponseColumns} FROM mission_tasks WHERE id=$1 AND mission_id=$2 FOR UPDATE`, [taskId, missionId]);
+        if (!task.rowCount) { await client.query("ROLLBACK"); return json(res, 404, { error: "task not found" }); }
+        const existing = task.rows[0];
+        if (Object.hasOwn(data, "status")) {
+          if (Object.keys(data).length !== 1) { await client.query("ROLLBACK"); return json(res, 400, { error: "status changes must be status-only" }); }
+          if (existing.type !== "checklist") { await client.query("ROLLBACK"); return json(res, 400, { error: "item status is server-managed" }); }
+          if (existing.status === "cancelled") { await client.query("ROLLBACK"); return json(res, 409, { error: "cancelled checklist cannot be changed" }); }
+          if (!["open", "completed"].includes(data.status)) { await client.query("ROLLBACK"); return json(res, 400, { error: "invalid checklist status" }); }
+          if (!canManageMission(mission, current) && existing.assigned_to !== current.id) { await client.query("ROLLBACK"); return json(res, 403, { error: "task assignee or mission manager required" }); }
+          await client.query("UPDATE mission_tasks SET status=$1,completed_at=CASE WHEN $1='completed' THEN COALESCE(completed_at,now()) ELSE NULL END,updated_at=now() WHERE id=$2 AND mission_id=$3", [data.status, taskId, missionId]);
+        } else {
+          if (!canManageMission(mission, current)) { await client.query("ROLLBACK"); return json(res, 403, { error: "mission creator, group owner, or app admin required" }); }
+          const allowedFields = new Set(["title", "description", "assigned_to", "target_quantity", "unit", "sort_order"]);
+          if (!Object.keys(data).length || Object.keys(data).some((field) => !allowedFields.has(field))) { await client.query("ROLLBACK"); return json(res, 400, { error: "only task metadata can be changed" }); }
+          const title = Object.hasOwn(data, "title") ? (typeof data.title === "string" ? data.title.trim() : "") : existing.title;
+          const description = Object.hasOwn(data, "description") ? data.description : existing.description;
+          const assignedTo = Object.hasOwn(data, "assigned_to") ? data.assigned_to : existing.assigned_to;
+          const targetQuantity = Object.hasOwn(data, "target_quantity") ? Number(data.target_quantity) : (existing.target_quantity === null ? null : Number(existing.target_quantity));
+          const unit = Object.hasOwn(data, "unit") ? normalizeUnit(data.unit) : existing.unit;
+          const sortOrder = Object.hasOwn(data, "sort_order") ? data.sort_order : existing.sort_order;
+          if (!validText(title) || !validateDescription(description) || unit === undefined || !Number.isInteger(sortOrder)) { await client.query("ROLLBACK"); return json(res, 400, { error: "invalid task" }); }
+          if (existing.type === 'checklist' && (Object.hasOwn(data, "target_quantity") || targetQuantity !== null || unit !== null)) { await client.query("ROLLBACK"); return json(res, 400, { error: "checklist tasks cannot have quantity or unit" }); }
+          if (existing.type === 'item' && (!Number.isFinite(targetQuantity) || targetQuantity <= 0)) { await client.query("ROLLBACK"); return json(res, 400, { error: "item tasks require a positive target quantity" }); }
+          if (Object.hasOwn(data, "assigned_to") && !await validateAssignee(assignedTo)) { await client.query("ROLLBACK"); return json(res, 400, { error: "assignee must be an active group member" }); }
+          if (existing.type === 'item') {
+            const targetCheck = await client.query("SELECT COALESCE(SUM(quantity),0) <= $2::numeric AS valid FROM mission_task_contributions WHERE task_id=$1", [taskId, targetQuantity]);
+            if (!targetCheck.rows[0].valid) { await client.query("ROLLBACK"); return json(res, 409, { error: "target quantity cannot be below current quantity" }); }
+          }
+          const values = [title, description, assignedTo, existing.type === 'item' ? targetQuantity : null, unit, sortOrder, taskId, missionId];
+          await client.query(
+            `WITH contribution_total AS (SELECT COALESCE(SUM(quantity),0) AS current_quantity FROM mission_task_contributions WHERE task_id=$7)
+             UPDATE mission_tasks SET title=$1,description=$2,assigned_to=$3,target_quantity=$4,unit=$5,sort_order=$6,
+               status=CASE WHEN type='item' AND contribution_total.current_quantity=0 THEN 'open'
+                 WHEN type='item' AND contribution_total.current_quantity>=$4 THEN 'completed'
+                 WHEN type='item' THEN 'in_progress' ELSE status END,
+               completed_at=CASE WHEN type='item' AND contribution_total.current_quantity>=$4 THEN COALESCE(completed_at,now())
+                 WHEN type='item' THEN NULL ELSE completed_at END,updated_at=now()
+             FROM contribution_total WHERE id=$7 AND mission_id=$8`,
+            values
+          );
+        }
+        const missionResponse = await recalculateMissionStatus(client, missionId);
+        const taskResponse = (await loadTaskProgress(client, missionId, taskId))[0];
+        await client.query("COMMIT");
+        return json(res, 200, { task: taskResponse, mission: missionResponse });
+      } catch (error) { await client.query("ROLLBACK").catch(() => {}); throw error; }
+      finally { client.release(); }
+    }
+
+    if (contributionMatch && req.method === "POST") {
+      const current = await getCurrentAppUser(req);
+      if (!current) return json(res, 401, { error: "login required" });
+      const [, missionId, taskId] = contributionMatch;
+      if (!uuidPattern.test(missionId)) return json(res, 400, { error: "invalid mission" });
+      if (!uuidPattern.test(taskId)) return json(res, 400, { error: "invalid task" });
+      const mission = await loadMissionAccess(missionId, current.id);
+      if (!mission || (!mission.role && !current.is_admin)) return json(res, 404, { error: "mission not found" });
+      let data;
+      try { data = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: "invalid JSON" }); }
+      if (!data || typeof data !== "object" || Array.isArray(data) || Object.keys(data).length !== 1 || !Object.hasOwn(data, "quantity") || typeof data.quantity !== "number" || !Number.isFinite(data.quantity) || data.quantity <= 0) return json(res, 400, { error: "invalid contribution" });
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const task = await client.query(`SELECT ${taskResponseColumns} FROM mission_tasks WHERE id=$1 AND mission_id=$2 FOR UPDATE`, [taskId, missionId]);
+        if (!task.rowCount) { await client.query("ROLLBACK"); return json(res, 404, { error: "task not found" }); }
+        const existing = task.rows[0];
+        if (existing.type !== "item") { await client.query("ROLLBACK"); return json(res, 400, { error: "contributions require an item task" }); }
+        if (existing.status === "cancelled") { await client.query("ROLLBACK"); return json(res, 409, { error: "cancelled item cannot receive contributions" }); }
+        if (!canManageMission(mission, current) && existing.assigned_to !== current.id) { await client.query("ROLLBACK"); return json(res, 403, { error: "task assignee or mission manager required" }); }
+        const total = await client.query(
+          `SELECT COALESCE(SUM(quantity),0) AS current_quantity,
+             COALESCE(SUM(quantity),0)+$2::numeric <= $3::numeric AS within_target
+           FROM mission_task_contributions WHERE task_id=$1`,
+          [taskId, data.quantity, existing.target_quantity]
+        );
+        if (!total.rows[0].within_target) { await client.query("ROLLBACK"); return json(res, 409, { error: "contribution exceeds target quantity" }); }
+        await client.query("INSERT INTO mission_task_contributions (task_id,app_user_id,quantity) VALUES ($1,$2,$3)", [taskId, current.id, data.quantity]);
+        await client.query(
+          `WITH contribution_total AS (SELECT COALESCE(SUM(quantity),0) AS current_quantity FROM mission_task_contributions WHERE task_id=$1)
+           UPDATE mission_tasks SET status=CASE WHEN contribution_total.current_quantity=0 THEN 'open'
+             WHEN contribution_total.current_quantity>=target_quantity THEN 'completed' ELSE 'in_progress' END,
+             completed_at=CASE WHEN contribution_total.current_quantity>=target_quantity THEN COALESCE(completed_at,now()) ELSE NULL END,updated_at=now()
+           FROM contribution_total WHERE id=$1 AND mission_id=$2`,
+          [taskId, missionId]
+        );
+        const missionResponse = await recalculateMissionStatus(client, missionId);
+        const taskResponse = (await loadTaskProgress(client, missionId, taskId))[0];
+        await client.query("COMMIT");
+        return json(res, 201, { task: taskResponse, mission: missionResponse });
+      } catch (error) { await client.query("ROLLBACK").catch(() => {}); throw error; }
+      finally { client.release(); }
     }
 
     const miningAccess = async (appUserId, groupId) => (await pool.query("SELECT gm.group_id,gm.role FROM group_members gm WHERE gm.app_user_id=$1 AND gm.group_id=$2", [appUserId, groupId])).rows[0];
