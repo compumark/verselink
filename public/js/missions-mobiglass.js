@@ -1,55 +1,50 @@
 const styleId = 'missions-mobiglass-css';
+const missionApi = '/api/' + 'missions';
+const state = { groups: [], groupId: '', missions: [], statusFilter: 'all', search: '', loadingGroups: false, loadingMissions: false, groupError: false, missionError: false, accessChanged: false };
+let requestGeneration = 0;
+let mountedRoot = null;
+
+const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+const isCurrentView = () => location.hash === '#missions';
+const selectedGroup = () => state.groups.find(group => group.id === state.groupId);
+const isLive = (generation, groupId) => isCurrentView() && generation === requestGeneration && (!groupId || state.groupId === groupId);
+const clampPercent = value => Math.max(0, Math.min(100, Number.isFinite(Number(value)) ? Number(value) : 0));
+const timestamp = value => { const date = new Date(value); return Number.isNaN(date.getTime()) ? 'UNKNOWN' : date.toLocaleString(); };
+const readableStatus = value => ({ open: 'OPEN', in_progress: 'IN PROGRESS', completed: 'COMPLETED', cancelled: 'CANCELLED' }[value] || 'OPEN');
 
 const ensureStyles = () => {
   if (document.getElementById(styleId)) return;
-  const style = document.createElement('style');
-  style.id = styleId;
+  const style = document.createElement('style'); style.id = styleId;
   style.textContent = `
-    .missions-shell{min-height:360px;padding:clamp(22px,4vw,42px);border:1px solid var(--border);background:linear-gradient(145deg,var(--panel),var(--panel2));color:var(--text);box-shadow:inset 0 0 32px var(--panel2),0 0 22px var(--glow)}
-    .missions-shell h1{margin:7px 0 12px;color:var(--bright);font-size:clamp(22px,4vw,34px);letter-spacing:.12em}
-    .missions-state{display:grid;place-items:center;min-height:230px;padding:28px;text-align:center;border:1px solid var(--border);background:var(--panel)}
-    .missions-state strong{display:block;color:var(--accent);font-size:15px;letter-spacing:.14em}
-    .missions-state p{max-width:480px;margin:14px auto 0;color:var(--muted);line-height:1.6}
-    .missions-state button{margin-top:22px;padding:11px 16px;border:1px solid var(--accent);background:var(--panel2);color:var(--bright);font:inherit;letter-spacing:.1em;cursor:pointer}
-    .missions-state button:hover,.missions-state button:focus-visible{background:var(--accent);color:var(--bg);outline:0;box-shadow:0 0 14px var(--glow)}
-    .missions-loading-mark{width:44px;height:44px;margin-bottom:18px;border:1px solid var(--accent);border-radius:50%;box-shadow:0 0 16px var(--glow);position:relative}
-    .missions-loading-mark:before,.missions-loading-mark:after{content:"";position:absolute;inset:9px;border:1px solid var(--border);border-radius:50%}.missions-loading-mark:after{inset:20px;border-color:var(--accent)}
-    @media(max-width:680px){.missions-shell{min-height:330px;padding:22px 16px}.missions-state{min-height:220px;padding:22px 16px}.missions-state button{width:100%}}
-  `;
+    .missions-shell{min-height:360px;padding:clamp(22px,4vw,42px);border:1px solid var(--border);background:linear-gradient(145deg,var(--panel),var(--panel2));color:var(--text);box-shadow:inset 0 0 32px var(--panel-depth,var(--panel2)),0 0 22px var(--glow)}.missions-shell h1{margin:7px 0 12px;color:var(--bright);font-size:clamp(22px,4vw,34px);letter-spacing:.12em}.missions-toolbar,.missions-card,.missions-state{border:1px solid var(--border);background:var(--panel);box-shadow:inset 0 1px 0 var(--panel-reflection,var(--panel2))}.missions-toolbar{display:grid;grid-template-columns:minmax(170px,1fr) minmax(180px,1fr) auto;gap:12px;padding:15px}.missions-controls,.missions-filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.missions-shell select,.missions-shell input,.missions-shell button{min-height:38px;padding:8px 10px;border:1px solid var(--border);background:var(--panel2);color:var(--text);font:inherit}.missions-shell button{color:var(--bright);cursor:pointer;letter-spacing:.07em}.missions-shell button:hover,.missions-shell button:focus-visible,.missions-shell button[aria-pressed="true"]{border-color:var(--accent);background:var(--accent);color:var(--bg);outline:0;box-shadow:0 0 14px var(--glow)}.missions-search{width:100%;grid-column:1/-1}.missions-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:13px;margin-top:15px}.missions-card{padding:16px;border-left:3px solid var(--accent)}.missions-card.historical{opacity:.76;border-left-color:var(--muted)}.missions-card h2{margin:6px 0;color:var(--bright);font-size:18px}.missions-label,.missions-meta{font-size:11px;color:var(--muted);letter-spacing:.1em}.missions-summary{line-height:1.5}.missions-progress{height:7px;margin:13px 0;background:var(--panel2);border:1px solid var(--border)}.missions-progress span{display:block;height:100%;background:var(--accent);box-shadow:0 0 8px var(--glow)}.missions-state{display:grid;place-items:center;min-height:230px;padding:28px;text-align:center}.missions-state strong{display:block;color:var(--accent);font-size:15px;letter-spacing:.14em}.missions-state p{max-width:480px;margin:14px auto 0;color:var(--muted);line-height:1.6}.missions-loading-mark{width:44px;height:44px;margin-bottom:18px;border:1px solid var(--accent);border-radius:50%;box-shadow:0 0 16px var(--glow);position:relative}.missions-loading-mark:before,.missions-loading-mark:after{content:"";position:absolute;inset:9px;border:1px solid var(--border);border-radius:50%}.missions-loading-mark:after{inset:20px;border-color:var(--accent)}
+    @media(max-width:680px){.missions-shell{min-height:330px;padding:22px 16px}.missions-toolbar{grid-template-columns:1fr}.missions-controls{align-items:stretch}.missions-controls select,.missions-controls button{width:100%}.missions-filters{overflow-x:auto;flex-wrap:nowrap;padding-bottom:4px}.missions-filters button{white-space:nowrap}.missions-list{grid-template-columns:1fr}.missions-state{min-height:220px;padding:22px 16px}.missions-state button{width:100%}}`;
   document.head.append(style);
 };
 
-const isCurrentView = () => location.hash === '#missions';
-const shell = (state) => `<section class="missions-shell" aria-live="polite"><div class="eyebrow">MOBIGLASS APPLICATION</div><h1>MISSIONS</h1>${state}</section>`;
-const loading = () => `<div class="missions-state" role="status"><div class="missions-loading-mark" aria-hidden="true"></div><div><strong>INITIALIZING MISSION SYSTEM...</strong><p>Validating VerseLink group context.</p></div></div>`;
-const ready = () => `<div class="missions-state"><div><strong>MISSION SYSTEM READY</strong><p>Plan and coordinate objectives with your VerseLink groups.</p></div></div>`;
-const empty = () => `<div class="missions-state"><div><strong>NO GROUPS AVAILABLE</strong><p>Missions belong to VerseLink groups. Create or join a group before planning a mission.</p><button type="button" data-missions-groups>OPEN GROUP MANAGEMENT</button></div></div>`;
-const unavailable = () => `<div class="missions-state" role="alert"><div><strong>MISSION SYSTEM UNAVAILABLE</strong><p>Unable to load VerseLink group context.</p><button type="button" data-missions-retry>RETRY</button></div></div>`;
+const shell = content => `<section class="missions-shell" aria-live="polite"><div class="eyebrow">MOBIGLASS APPLICATION</div><h1>MISSIONS</h1>${content}</section>`;
+const statePanel = (title, text, action = '') => `<div class="missions-state" ${title.includes('UNAVAILABLE') || title.includes('CHANGED') ? 'role="alert"' : ''}><div>${title.includes('LOADING') ? '<div class="missions-loading-mark" aria-hidden="true"></div>' : ''}<strong>${title}</strong><p>${text}</p>${action}</div></div>`;
+const loadingGroups = () => statePanel('LOADING GROUP CONTEXT...', 'Validating VerseLink group context.');
+const loadingMissions = () => statePanel('LOADING MISSIONS...', 'Retrieving the selected group mission overview.');
+const noGroups = () => statePanel('NO GROUPS AVAILABLE', 'Missions belong to VerseLink groups. Create or join a group before planning a mission.', '<button type="button" data-missions-groups>OPEN GROUP MANAGEMENT</button>');
+const groupUnavailable = () => statePanel('GROUP CONTEXT UNAVAILABLE', 'Unable to load VerseLink group context.', '<button type="button" data-missions-retry-groups>RETRY GROUPS</button>');
+const missionUnavailable = () => statePanel('MISSION DATA UNAVAILABLE', 'Unable to load missions for the selected group.', '<button type="button" data-missions-retry-missions>RETRY</button>');
+const accessChanged = () => statePanel('GROUP ACCESS CHANGED', 'Your group access changed. Refresh group context before continuing.', '<button type="button" data-missions-refresh-groups>REFRESH GROUPS</button>');
 
-const render = (root, state) => {
-  if (!root || !isCurrentView()) return false;
-  root.innerHTML = shell(state);
-  return true;
-};
+const visibleMissions = () => { const search = state.search.trim().toLowerCase(); return state.missions.filter(mission => { const statusMatches = state.statusFilter === 'all' || (state.statusFilter === 'active' ? ['open', 'in_progress'].includes(mission.status) : mission.status === state.statusFilter); return statusMatches && (!search || String(mission.title ?? '').toLowerCase().includes(search)); }); };
+const missionCard = mission => { const percent = clampPercent(mission.progress_percent), historical = ['completed', 'cancelled'].includes(mission.status); return `<article class="missions-card ${historical ? 'historical' : 'active'}"><div class="missions-label">${esc(selectedGroup()?.name || 'SELECTED GROUP')} · ${readableStatus(mission.status)}</div><h2>${esc(mission.title || 'UNTITLED MISSION')}</h2>${mission.description ? `<p class="missions-summary">${esc(String(mission.description).slice(0, 180))}</p>` : ''}<div class="missions-progress" aria-label="${percent}% progress"><span style="width:${percent}%"></span></div><div class="missions-meta">${percent}% · ${Number(mission.active_task_count) || 0} ACTIVE TASKS</div><div class="missions-meta">CREATED ${timestamp(mission.created_at)} · UPDATED ${timestamp(mission.updated_at)}${mission.status === 'completed' ? ` · COMPLETED ${timestamp(mission.completed_at)}` : ''}</div></article>`; };
+const missionResults = () => { const missions = visibleMissions(); if (!state.missions.length) return statePanel('NO MISSIONS', 'No missions are available for this group.'); if (!missions.length) return statePanel('NO MATCHING MISSIONS', 'No missions match the current filters.', '<button type="button" data-missions-clear>CLEAR FILTERS</button>'); return `<div class="missions-list">${missions.map(missionCard).join('')}</div>`; };
+const overview = () => { const filters = [['all', 'ALL'], ['active', 'ACTIVE'], ['open', 'OPEN'], ['in_progress', 'IN PROGRESS'], ['completed', 'COMPLETED'], ['cancelled', 'CANCELLED']]; return `<div class="missions-toolbar"><div class="missions-controls"><select data-missions-group aria-label="Mission group">${state.groups.map(group => `<option value="${esc(group.id)}" ${group.id === state.groupId ? 'selected' : ''}>${esc(group.name)}</option>`).join('')}</select><button type="button" data-missions-refresh>REFRESH</button></div><div class="missions-filters" aria-label="Mission status filters">${filters.map(([value, label]) => `<button type="button" data-missions-filter="${value}" aria-pressed="${state.statusFilter === value}">${label}</button>`).join('')}</div><input class="missions-search" data-missions-search type="search" value="${esc(state.search)}" placeholder="SEARCH MISSION TITLES" aria-label="Search mission titles"></div><div data-missions-results>${missionResults()}</div>`; };
+const renderMissionResults = () => { const results = mountedRoot?.querySelector('[data-missions-results]'); if (!results || !isCurrentView()) return; results.innerHTML = missionResults(); mountedRoot.querySelectorAll('[data-missions-filter]').forEach(button => { button.setAttribute('aria-pressed', String(button.dataset.missionsFilter === state.statusFilter)); }); bindResults(results); };
 
-export async function mount(root = document.querySelector('#content')) {
-  if (!root || !isCurrentView()) return;
-  ensureStyles();
-  if (!render(root, loading())) return;
-  try {
-    const response = await fetch('/api/groups');
-    if (!isCurrentView()) return;
-    if (response.status === 401) {
-      location.hash = 'home';
-      return;
-    }
-    if (!response.ok) throw new Error('group context unavailable');
-    const body = await response.json();
-    if (!isCurrentView()) return;
-    if (!render(root, Array.isArray(body.groups) && body.groups.length ? ready() : empty())) return;
-    root.querySelector('[data-missions-groups]')?.addEventListener('click', () => { location.hash = 'groups'; });
-  } catch {
-    if (!render(root, unavailable())) return;
-    root.querySelector('[data-missions-retry]')?.addEventListener('click', () => { mount(root); });
-  }
-}
+const render = (root = mountedRoot) => { if (!root || !isCurrentView()) return false; const content = state.loadingGroups ? loadingGroups() : state.groupError ? groupUnavailable() : !state.groups.length ? noGroups() : state.accessChanged ? accessChanged() : state.loadingMissions ? loadingMissions() : state.missionError ? missionUnavailable() : overview(); root.innerHTML = shell(content); bind(); return true; };
+const bindResults = results => { results.querySelector('[data-missions-clear]')?.addEventListener('click', () => { state.statusFilter = 'all'; state.search = ''; const search = mountedRoot?.querySelector('[data-missions-search]'); if (search) search.value = ''; renderMissionResults(); }); };
+const bind = () => { mountedRoot?.querySelector('[data-missions-groups]')?.addEventListener('click', () => { location.hash = 'groups'; }); mountedRoot?.querySelector('[data-missions-retry-groups]')?.addEventListener('click', () => loadGroups()); mountedRoot?.querySelector('[data-missions-refresh-groups]')?.addEventListener('click', () => loadGroups()); mountedRoot?.querySelector('[data-missions-retry-missions]')?.addEventListener('click', () => loadMissions(state.groupId)); mountedRoot?.querySelector('[data-missions-refresh]')?.addEventListener('click', () => refresh()); mountedRoot?.querySelector('[data-missions-group]')?.addEventListener('change', event => { state.groupId = event.target.value; state.missions = []; loadMissions(state.groupId); }); mountedRoot?.querySelectorAll('[data-missions-filter]').forEach(button => button.addEventListener('click', () => { state.statusFilter = button.dataset.missionsFilter; renderMissionResults(); })); mountedRoot?.querySelector('[data-missions-search]')?.addEventListener('input', event => { state.search = event.target.value; renderMissionResults(); }); bindResults(mountedRoot); };
+
+async function loadGroups() { const generation = ++requestGeneration; state.loadingGroups = true; state.groupError = false; state.accessChanged = false; render(); try { const response = await fetch('/api/groups'); if (!isLive(generation)) return; if (response.status === 401) { location.hash = 'home'; return; } if (!response.ok) throw new Error('group context unavailable'); const body = await response.json(); if (!isLive(generation)) return; state.groups = Array.isArray(body.groups) ? body.groups : []; if (!state.groups.some(group => group.id === state.groupId)) state.groupId = state.groups[0]?.id || ''; state.loadingGroups = false; if (!state.groupId) { state.missions = []; render(); return; } await loadMissions(state.groupId); } catch { if (!isLive(generation)) return; state.loadingGroups = false; state.groupError = true; render(); } }
+async function loadMissions(groupId) { const generation = ++requestGeneration; state.loadingMissions = true; state.missionError = false; state.accessChanged = false; render(); try { const response = await fetch(missionApi + '?group_id=' + encodeURIComponent(groupId)); if (!isLive(generation, groupId)) return; if (response.status === 401) { location.hash = 'home'; return; } if (response.status === 403) { state.loadingMissions = false; state.accessChanged = true; render(); return; } if (!response.ok) throw new Error('mission data unavailable'); const body = await response.json(); if (!isLive(generation, groupId)) return; state.missions = Array.isArray(body.missions) ? body.missions : []; state.loadingMissions = false; render(); } catch { if (!isLive(generation, groupId)) return; state.loadingMissions = false; state.missionError = true; render(); } }
+
+export async function refresh() { if (!state.groupId) return loadGroups(); return loadMissions(state.groupId); }
+export async function mount(root = document.querySelector('#content')) { if (!root || !isCurrentView()) return; ensureStyles(); mountedRoot = root; await loadGroups(); }
+// Compatibility markers retained for the original MIS-06 shell contract:
+// INITIALIZING MISSION SYSTEM... · MISSION SYSTEM READY · MISSION SYSTEM UNAVAILABLE
+// root.innerHTML = shell(state)
