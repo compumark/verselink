@@ -549,6 +549,86 @@ test('mission backend works through real HTTP and PostgreSQL', { skip: !database
       assert.equal(response.status, 200);
       assert.equal((await pool.query('SELECT assigned_to FROM mission_tasks WHERE id=$1', [untouched])).rows[0].assigned_to, users.outsider);
     });
+
+    await t.test('mission lifecycle survives former-owner hard delete through real HTTP and PostgreSQL', async () => {
+      const creator = randomUUID(), successor = randomUUID(), admin = randomUUID(), groupId = randomUUID();
+      await pool.query("INSERT INTO app_users (id,email,display_name,account_status,is_admin) VALUES ($1,$2,'Former owner','active',false),($3,$4,'Successor','active',false),($5,$6,'Lifecycle admin','active',true)", [creator, `creator-${creator}@example.test`, successor, `successor-${successor}@example.test`, admin, `admin-${admin}@example.test`]);
+      await pool.query("INSERT INTO blueprint_groups (id,name,created_by) VALUES ($1,'Transferred lifecycle group',$2)", [groupId, creator]);
+      await pool.query("INSERT INTO group_members (group_id,app_user_id,role) VALUES ($1,$2,'owner'),($1,$3,'member')", [groupId, creator, successor]);
+      const creatorSession = await createSession(pool, pepper, creator), adminSession = await createSession(pool, pepper, admin);
+      const missionResponse = await json(creatorSession, 'POST', '/api/missions', { group_id: groupId, title: 'Former owner survives' });
+      assert.equal(missionResponse.status, 201);
+      assert.equal((await form(creatorSession, '/api/groups/transfer-owner', { group_id: groupId, member_id: successor })).status, 200);
+      assert.equal((await form(adminSession, '/api/admin/users/delete', { user_id: creator })).status, 200);
+      assert.equal((await pool.query('SELECT 1 FROM app_users WHERE id=$1', [creator])).rowCount, 0);
+      assert.equal((await pool.query('SELECT created_by FROM blueprint_groups WHERE id=$1', [groupId])).rows[0].created_by, null);
+      assert.equal((await pool.query("SELECT role FROM group_members WHERE group_id=$1 AND app_user_id=$2", [groupId, successor])).rows[0].role, 'owner');
+      assert.equal((await pool.query('SELECT created_by FROM missions WHERE id=$1', [missionResponse.body.mission.id])).rows[0].created_by, null);
+    });
+
+    await t.test('mission lifecycle rejects self status changes without cleanup side effects', async () => {
+      await pool.query('UPDATE app_users SET is_admin=true WHERE id=$1', [users.owner]);
+      const task = (await createTask(coreMission.id, { type: 'checklist', title: 'Self guard', assigned_to: users.owner })).task;
+      assert.equal((await form(sessions.owner, '/api/admin/users/status', { user_id: users.owner, status: 'blocked' })).status, 400);
+      assert.equal((await pool.query('SELECT account_status FROM app_users WHERE id=$1', [users.owner])).rows[0].account_status, 'active');
+      assert.equal((await pool.query('SELECT assigned_to FROM mission_tasks WHERE id=$1', [task.id])).rows[0].assigned_to, users.owner);
+    });
+
+    await t.test('mission lifecycle clears active assignments for blocked and deleted accounts', async () => {
+      for (const status of ['blocked', 'deleted']) {
+        const userId = randomUUID(), groupId = randomUUID(), adminId = randomUUID();
+        await pool.query("INSERT INTO app_users (id,email,display_name,account_status,is_admin) VALUES ($1,$2,'Lifecycle user','active',false),($3,$4,'Lifecycle admin','active',true)", [userId, `${userId}@example.test`, adminId, `${adminId}@example.test`]);
+        await pool.query("INSERT INTO blueprint_groups (id,name,created_by) VALUES ($1,'Lifecycle status group',$2)", [groupId, users.owner]);
+        await pool.query("INSERT INTO group_members (group_id,app_user_id,role) VALUES ($1,$2,'owner'),($1,$3,'member')", [groupId, users.owner, userId]);
+        const userSession = await createSession(pool, pepper, userId), adminSession = await createSession(pool, pepper, adminId);
+        const mission = (await json(sessions.owner, 'POST', '/api/missions', { group_id: groupId, title: `Status ${status}` })).body.mission;
+        const open = (await createTask(mission.id, { type: 'checklist', title: 'Open', assigned_to: userId })).task;
+        const completed = (await createTask(mission.id, { type: 'checklist', title: 'Done', assigned_to: userId })).task;
+        await pool.query("UPDATE mission_tasks SET status='completed',completed_at=now() WHERE id=$1", [completed.id]);
+        assert.equal((await form(adminSession, '/api/admin/users/status', { user_id: userId, status })).status, 200);
+        const rows = await pool.query('SELECT id,assigned_to FROM mission_tasks WHERE id=ANY($1::uuid[])', [[open.id, completed.id]]);
+        const byId = new Map(rows.rows.map(row => [row.id, row.assigned_to])); assert.equal(byId.get(open.id), null); assert.equal(byId.get(completed.id), userId);
+        assert.equal((await request(`/api/missions/${mission.id}`, { session: userSession })).status, 401);
+        assert.equal((await pool.query("SELECT 1 FROM app_notifications WHERE kind='mission_task_unassigned' AND app_user_id=$1", [userId])).rowCount, 0);
+        if (status === 'blocked') { assert.equal((await form(adminSession, '/api/admin/users/status', { user_id: userId, status: 'active' })).status, 200); assert.equal((await pool.query('SELECT assigned_to FROM mission_tasks WHERE id=$1', [open.id])).rows[0].assigned_to, null); }
+      }
+    });
+
+    await t.test('mission lifecycle cascades current-owner hard and explicit group deletion', async () => {
+      for (const mode of ['hard-delete', 'group-delete']) {
+        const ownerId = randomUUID(), adminId = randomUUID(), groupId = randomUUID();
+        await pool.query("INSERT INTO app_users (id,email,display_name,account_status,is_admin) VALUES ($1,$2,'Cascade owner','active',false),($3,$4,'Cascade admin','active',true)", [ownerId, `${ownerId}@example.test`, adminId, `${adminId}@example.test`]);
+        await pool.query("INSERT INTO blueprint_groups (id,name,created_by) VALUES ($1,'Cascade group',$2)", [groupId, ownerId]); await pool.query("INSERT INTO group_members (group_id,app_user_id,role) VALUES ($1,$2,'owner')", [groupId, ownerId]);
+        const ownerSession = await createSession(pool, pepper, ownerId), adminSession = await createSession(pool, pepper, adminId);
+        const mission = (await json(ownerSession, 'POST', '/api/missions', { group_id: groupId, title: `Cascade ${mode}` })).body.mission;
+        const task = (await json(ownerSession, 'POST', `/api/missions/${mission.id}/tasks`, { type: 'item', title: 'Contribution', target_quantity: 2, unit: 'SCU' })).body.task;
+        await pool.query("INSERT INTO mission_task_contributions (task_id,app_user_id,quantity) VALUES ($1,$2,1)", [task.id, ownerId]);
+        await pool.query("INSERT INTO app_notifications (app_user_id,kind,title,message,mission_id,mission_task_id) VALUES ($1,'mission_task_completed','Mission','Cascade',$2,$3),($1,'system','Other','Keep',NULL,NULL)", [adminId, mission.id, task.id]);
+        const response = mode === 'hard-delete' ? await form(adminSession, '/api/admin/users/delete', { user_id: ownerId }) : await form(ownerSession, '/api/groups/delete', { group_id: groupId }); assert.equal(response.status, 200);
+        assert.equal((await pool.query('SELECT 1 FROM blueprint_groups WHERE id=$1', [groupId])).rowCount, 0); assert.equal((await pool.query('SELECT 1 FROM missions WHERE id=$1', [mission.id])).rowCount, 0);
+        assert.equal((await pool.query('SELECT 1 FROM app_notifications WHERE mission_id=$1', [mission.id])).rowCount, 0); assert.equal((await pool.query("SELECT 1 FROM app_notifications WHERE app_user_id=$1 AND kind='system'", [adminId])).rowCount, 1);
+      }
+    });
+
+    await t.test('mission ownership transfer updates manager authorization', async () => {
+      const owner = randomUUID(), successor = randomUUID(), creator = randomUUID(), groupId = randomUUID();
+      await pool.query("INSERT INTO app_users (id,email,display_name,account_status,is_admin) VALUES ($1,$2,'Owner A','active',false),($3,$4,'Owner B','active',false),($5,$6,'Creator C','active',false)", [owner, `${owner}@example.test`, successor, `${successor}@example.test`, creator, `${creator}@example.test`]);
+      await pool.query("INSERT INTO blueprint_groups (id,name,created_by) VALUES ($1,'Transfer authorization group',$2)", [groupId, owner]);
+      await pool.query("INSERT INTO group_members (group_id,app_user_id,role) VALUES ($1,$2,'owner'),($1,$3,'member'),($1,$4,'member')", [groupId, owner, successor, creator]);
+      const ownerSession = await createSession(pool, pepper, owner), successorSession = await createSession(pool, pepper, successor), creatorSession = await createSession(pool, pepper, creator);
+      const mission = (await json(creatorSession, 'POST', '/api/missions', { group_id: groupId, title: 'Created by C' })).body.mission;
+      const task = (await json(ownerSession, 'POST', `/api/missions/${mission.id}/tasks`, { type: 'checklist', title: 'Owner managed task' })).body.task;
+      assert.equal((await json(ownerSession, 'PATCH', `/api/missions/${mission.id}`, { title: 'A before transfer' })).status, 200);
+      assert.equal((await json(ownerSession, 'PATCH', `/api/missions/${mission.id}/tasks/${task.id}`, { title: 'A task before transfer' })).status, 200);
+      assert.equal((await form(ownerSession, '/api/groups/transfer-owner', { group_id: groupId, member_id: successor })).status, 200);
+      const roles = await pool.query('SELECT app_user_id,role FROM group_members WHERE group_id=$1 AND app_user_id=ANY($2::uuid[])', [groupId, [owner, successor]]); const byUser = new Map(roles.rows.map(row => [row.app_user_id, row.role])); assert.equal(byUser.get(successor), 'owner'); assert.equal(byUser.get(owner), 'member');
+      assert.equal((await json(successorSession, 'PATCH', `/api/missions/${mission.id}`, { title: 'B after transfer' })).status, 200);
+      assert.equal((await json(successorSession, 'PATCH', `/api/missions/${mission.id}/tasks/${task.id}`, { title: 'B task after transfer' })).status, 200);
+      assert.equal((await json(ownerSession, 'PATCH', `/api/missions/${mission.id}`, { title: 'A denied' })).status, 403);
+      assert.equal((await json(ownerSession, 'PATCH', `/api/missions/${mission.id}/tasks/${task.id}`, { title: 'A task denied' })).status, 403);
+      const creatorMission = (await json(ownerSession, 'POST', '/api/missions', { group_id: groupId, title: 'Created by A' })).body.mission;
+      assert.equal((await json(ownerSession, 'PATCH', `/api/missions/${creatorMission.id}`, { title: 'Creator exception' })).status, 200);
+    });
   } finally {
     if (pool) {
       await resetMissionTestDatabase(pool).catch(() => {});
