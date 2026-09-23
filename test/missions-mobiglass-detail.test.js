@@ -23,11 +23,18 @@ test('detail reads exactly one mission and handles neutral read states', () => {
 
 test('detail renders server-provided mission and task values without client ordering or progress calculations', () => {
   for (const field of ['mission.tasks', 'active_task_count', 'target_quantity', 'current_quantity', 'remaining_quantity', 'progress_percent', 'completed_at']) assert.ok(source.includes(field));
-  assert.match(source, /memberName\(mission, taskAssignee\(task\)\) \|\| 'UNASSIGNED'/);
+  assert.match(source, /taskAssigneeLabel\(mission, task\)/);
   assert.match(source, /task\.type === 'item'/);
   assert.match(source, /task\.status === 'cancelled'/);
   assert.doesNotMatch(source, /tasks\.sort\(/);
   assert.match(source, /const formatQuantity/);
+});
+
+test('historical task assignments remain distinct from unassigned tasks', () => {
+  assert.match(source, /const taskAssigneeLabel/);
+  assert.match(source, /!userId \? 'UNASSIGNED'/);
+  assert.match(source, /memberName\(mission, userId\) \|\| 'FORMER MEMBER'/);
+  assert.doesNotMatch(source, /memberName\(mission, userId\) \|\| 'UNASSIGNED'/);
 });
 
 test('detail refreshes the selected mission and keeps the search focus fix intact', () => {
