@@ -61,3 +61,24 @@ test('browser history reevaluates locators without pushing a new state', () => {
   const handler = source.match(/window\.addEventListener\('popstate',[\s\S]*?\n/)?.[0] || '';
   assert.doesNotMatch(handler, /setMissionLocation/);
 });
+
+test('copyable mission and task links reuse the established locator contract without navigation', () => {
+  assert.match(source, /const buildMissionDeepLink = \(\{ groupId, missionId, taskId = '' \}\) =>/);
+  assert.match(source, /url\.searchParams\.set\('group_id', groupId\)/);
+  assert.match(source, /url\.searchParams\.set\('mission_id', missionId\)/);
+  assert.match(source, /if \(taskId\) url\.searchParams\.set\('task_id', taskId\); else url\.searchParams\.delete\('task_id'\)/);
+  assert.match(source, /url\.searchParams\.delete\('order_id'\)/);
+  assert.match(source, /url\.hash = 'missions'/);
+  assert.match(source, /data-mission-copy-link/);
+  assert.match(source, /data-task-copy-link/);
+  assert.match(source, /navigator\.clipboard\?\.writeText/);
+  const copyHandler = source.slice(source.indexOf('async function copyMissionLink'), source.indexOf("document.addEventListener('change'"));
+  assert.doesNotMatch(copyHandler, /history\.(?:pushState|replaceState)/);
+});
+
+test('copy actions expose accessible success and failure states', () => {
+  assert.match(source, /MISSION LINK COPIED/);
+  assert.match(source, /TASK LINK COPIED/);
+  assert.match(source, /COPY FAILED/);
+  assert.match(source, /status\.error \? 'alert' : 'status'/);
+});

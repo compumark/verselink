@@ -35,6 +35,12 @@ Use this checklist before closing Mission Planning V1 (M1, M2, M3). Record the D
 - [ ] Verify Task notification
 - [ ] Verify Mission deep link
 - [ ] Verify Task deep link
+- [ ] Copy Mission Link
+- [ ] Open copied Mission Link in fresh tab
+- [ ] Copy Task Link
+- [ ] Open copied Task Link in fresh tab
+- [ ] Verify compact Assignment controls
+- [ ] Verify compact Contribution controls
 - [ ] Refresh Mission view
 - [ ] Browser Back
 - [ ] Browser Forward
