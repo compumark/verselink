@@ -4,12 +4,15 @@ import { readFile } from 'node:fs/promises';
 
 const source = await readFile(new URL('../public/js/missions-mobiglass.js', import.meta.url), 'utf8');
 
-test('mission overview opens a read-only detail view without a detail hash route', () => {
+test('mission overview opens a read-only detail view with a stable query locator', () => {
   assert.match(source, /data-mission-open/);
   assert.match(source, /selectedMissionId/);
   assert.match(source, /const backToMissions/);
   assert.match(source, /data-mission-back/);
-  assert.doesNotMatch(source, /#missions\/|#mission\/|\?mission=/);
+  assert.match(source, /missionLocatorFromUrl/);
+  assert.match(source, /mission_id/);
+  assert.match(source, /group_id/);
+  assert.match(source, /history\[mode === 'replace' \? 'replaceState' : 'pushState'\]/);
 });
 
 test('detail reads exactly one mission and handles neutral read states', () => {

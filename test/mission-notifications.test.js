@@ -50,11 +50,18 @@ test('notification API adds mission context without removing order context', () 
   assert.match(route, /WHERE n\.app_user_id=\$1/);
 });
 
-test('existing notification center safely renders mission context without mission navigation', () => {
+test('notification center renders mission context and keeps mission navigation distinct from orders', () => {
   assert.match(ui, /MISSION · \$\{esc\(n\.mission_title\)\}/);
   assert.match(ui, /TASK · \$\{esc\(n\.mission_task_title\)\}/);
+  assert.match(ui, /pendingMissionNavigation=/);
+  assert.match(ui, /mission_id/);
+  assert.match(ui, /mission_task_id/);
+  assert.match(ui, /url\.hash='missions'/);
+  assert.match(ui, /const alreadyMissions=location\.hash==='#missions'/);
+  assert.match(ui, /if\(alreadyMissions\)import\('\/js\/missions-mobiglass\.js'\)\.then\(m=>m\.mount\(\)\);else window\.dispatchEvent\(new HashChangeEvent\('hashchange'\)\)/);
+  assert.match(ui, /history\.pushState\(null,'',url\)/);
+  assert.doesNotMatch(ui, /location\.reload/);
   assert.match(ui, /pendingOrderNavigation=n\.order_id/);
-  assert.doesNotMatch(ui, /pendingMissionNavigation|mission_id URL|task_id URL|location\.hash=['"]#missions/);
   assert.match(ui, /markNotificationRead/);
   assert.match(ui, /notification-badge/);
   assert.match(ui, /NOTIFICATION_POLL_INTERVAL_MS/);
