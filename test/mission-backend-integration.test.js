@@ -549,6 +549,30 @@ test('mission backend works through real HTTP and PostgreSQL', { skip: !database
       assert.equal(response.status, 200);
       assert.equal((await pool.query('SELECT assigned_to FROM mission_tasks WHERE id=$1', [untouched])).rows[0].assigned_to, users.outsider);
     });
+
+    await t.test('mission lifecycle survives former-owner hard delete through real HTTP and PostgreSQL', async () => {
+      const creator = randomUUID(), successor = randomUUID(), admin = randomUUID(), groupId = randomUUID();
+      await pool.query("INSERT INTO app_users (id,email,display_name,account_status,is_admin) VALUES ($1,$2,'Former owner','active',false),($3,$4,'Successor','active',false),($5,$6,'Lifecycle admin','active',true)", [creator, `creator-${creator}@example.test`, successor, `successor-${successor}@example.test`, admin, `admin-${admin}@example.test`]);
+      await pool.query("INSERT INTO blueprint_groups (id,name,created_by) VALUES ($1,'Transferred lifecycle group',$2)", [groupId, creator]);
+      await pool.query("INSERT INTO group_members (group_id,app_user_id,role) VALUES ($1,$2,'owner'),($1,$3,'member')", [groupId, creator, successor]);
+      const creatorSession = await createSession(pool, pepper, creator), adminSession = await createSession(pool, pepper, admin);
+      const missionResponse = await json(creatorSession, 'POST', '/api/missions', { group_id: groupId, title: 'Former owner survives' });
+      assert.equal(missionResponse.status, 201);
+      assert.equal((await form(creatorSession, '/api/groups/transfer-owner', { group_id: groupId, member_id: successor })).status, 200);
+      assert.equal((await form(adminSession, '/api/admin/users/delete', { user_id: creator })).status, 200);
+      assert.equal((await pool.query('SELECT 1 FROM app_users WHERE id=$1', [creator])).rowCount, 0);
+      assert.equal((await pool.query('SELECT created_by FROM blueprint_groups WHERE id=$1', [groupId])).rows[0].created_by, null);
+      assert.equal((await pool.query("SELECT role FROM group_members WHERE group_id=$1 AND app_user_id=$2", [groupId, successor])).rows[0].role, 'owner');
+      assert.equal((await pool.query('SELECT created_by FROM missions WHERE id=$1', [missionResponse.body.mission.id])).rows[0].created_by, null);
+    });
+
+    await t.test('mission lifecycle rejects self status changes without cleanup side effects', async () => {
+      await pool.query('UPDATE app_users SET is_admin=true WHERE id=$1', [users.owner]);
+      const task = (await createTask(coreMission.id, { type: 'checklist', title: 'Self guard', assigned_to: users.owner })).task;
+      assert.equal((await form(sessions.owner, '/api/admin/users/status', { user_id: users.owner, status: 'blocked' })).status, 400);
+      assert.equal((await pool.query('SELECT account_status FROM app_users WHERE id=$1', [users.owner])).rows[0].account_status, 'active');
+      assert.equal((await pool.query('SELECT assigned_to FROM mission_tasks WHERE id=$1', [task.id])).rows[0].assigned_to, users.owner);
+    });
   } finally {
     if (pool) {
       await resetMissionTestDatabase(pool).catch(() => {});
