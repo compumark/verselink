@@ -1003,6 +1003,11 @@ const unassignOpenMissionTasksForFormerMember = async (db, groupId, appUserId) =
      AND t.status IN ('open','in_progress')`,
   [groupId, appUserId]
 );
+const unassignOpenMissionTasksForInactiveUser = async (db, appUserId) => db.query(
+  `UPDATE mission_tasks SET assigned_to=NULL,updated_at=now()
+   WHERE assigned_to=$1 AND status IN ('open','in_progress')`,
+  [appUserId]
+);
 
 const getConnectedServiceUser = async (client, tokenHash) => {
   const connection = await client.query(
@@ -2597,9 +2602,8 @@ const server = createServer(async (req, res) => {
       const current = await getCurrentAppUser(req); if (!current?.is_admin) return json(res, 403, { error: "app admin required" });
       const params = new URLSearchParams(await readBody(req)); const userId = params.get("user_id"), status = params.get("status");
       if (!/^[0-9a-f-]{36}$/i.test(userId || "") || !["active", "blocked", "deleted"].includes(status)) return json(res, 400, { error: "invalid user or status" });
-      await pool.query("UPDATE app_users SET account_status=$1 WHERE id=$2 AND id<>$3", [status, userId, current.id]);
-      if (status !== "active") await pool.query("DELETE FROM dashboard_sessions WHERE app_user_id=$1", [userId]);
-      return json(res, 200, { ok: true });
+      const client = await pool.connect();
+      try { await client.query("BEGIN"); await client.query("UPDATE app_users SET account_status=$1 WHERE id=$2 AND id<>$3", [status, userId, current.id]); if (status !== "active") { await client.query("DELETE FROM dashboard_sessions WHERE app_user_id=$1", [userId]); await unassignOpenMissionTasksForInactiveUser(client, userId); } await client.query("COMMIT"); return json(res, 200, { ok: true }); } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
     }
 
     if (req.method === "POST" && url.pathname === "/api/admin/users/delete") {
@@ -2610,7 +2614,7 @@ const server = createServer(async (req, res) => {
       try {
         await client.query("BEGIN");
         await client.query("DELETE FROM dashboard_sessions WHERE app_user_id = $1", [userId]);
-        await client.query("DELETE FROM blueprint_groups WHERE created_by = $1", [userId]);
+        await client.query("DELETE FROM blueprint_groups g WHERE EXISTS (SELECT 1 FROM group_members gm WHERE gm.group_id=g.id AND gm.app_user_id=$1 AND gm.role='owner')", [userId]);
         await client.query("DELETE FROM group_members WHERE app_user_id = $1", [userId]);
         await client.query("INSERT INTO revoked_sink_tokens (token_hash, reason) SELECT token_hash, 'user deleted' FROM scmdb_connections WHERE app_user_id = $1 ON CONFLICT (token_hash) DO NOTHING", [userId]);
         await client.query("DELETE FROM scmdb_connections WHERE app_user_id = $1", [userId]);

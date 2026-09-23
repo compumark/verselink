@@ -40,11 +40,16 @@ test('historical task assignments remain distinct from unassigned tasks', () => 
   assert.doesNotMatch(source, /memberName\(mission, userId\) \|\| 'UNASSIGNED'/);
 });
 
-test('detail refreshes the selected mission and keeps the search focus fix intact', () => {
-  assert.match(source, /if \(state\.selectedMissionId\) return loadMissionDetail\(state\.selectedMissionId\)/);
+test('detail refreshes group context before the selected mission and keeps the search focus fix intact', () => {
+  assert.match(source, /if \(state\.selectedMissionId\) \{ const missionId = state\.selectedMissionId, groupId = state\.groupId; await loadGroups\(groupId\)/);
   assert.match(source, /data-mission-refresh/);
   const handler = source.match(/data-missions-search\]'\)\?\.addEventListener\('input', event => \{[^}]+\}/)?.[0] || '';
   assert.match(handler, /renderMissionResults\(\)/);
   assert.doesNotMatch(handler, /\brender\(\)|fetch\(|innerHTML/);
   assert.doesNotMatch(source, /location\.reload/);
+});
+
+test('creator labels distinguish active members, former members, and hard-deleted users', () => {
+  assert.match(source, /const missionCreatorLabel = mission => !mission\?\.created_by \? 'FORMER USER' : memberName\(mission, mission\.created_by\) \|\| 'FORMER MEMBER'/);
+  assert.doesNotMatch(source, /memberName\(mission, mission\.created_by\) \|\| 'UNKNOWN'/);
 });

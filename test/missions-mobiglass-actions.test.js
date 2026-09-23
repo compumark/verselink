@@ -74,7 +74,7 @@ test('successful actions refresh authoritative detail and overview', () => {
   assert.match(source, /await loadMissionDetail\(missionId\)/);
   assert.match(source, /const missionId = state\.selectedMissionId, groupId = state\.groupId/);
   assert.match(source, /state\.selectedMissionId === missionId && state\.groupId === groupId/);
-  assert.match(source, /await loadMissions\(groupId\)/);
+  assert.match(source, /await loadGroups\(groupId\)/);
   assert.match(source, /await refreshAfterTaskMutation\(\)/);
   assert.doesNotMatch(source, /location\.reload/);
 });
@@ -83,6 +83,7 @@ test('action feedback handles authentication, authorization, disappearance and c
   for (const label of ['ASSIGNMENT UPDATED', 'TASK COMPLETED', 'TASK REOPENED', 'CONTRIBUTION ADDED', 'ACTION NOT PERMITTED', 'TASK OR MISSION NO LONGER AVAILABLE']) assert.ok(source.includes(label));
   assert.match(source, /response\.status === 401/);
   assert.match(source, /\[403,404,409\]\.includes\(error\.status\)/);
+  assert.match(source, /if \(\[403,404,409\]\.includes\(error\.status\)\) await loadGroups\(state\.groupId\)/);
   assert.match(source, /error: error\.message, success: '', draft/);
   assert.match(source, /state\.taskActions = \{ \.\.\.state\.taskActions, \[key\]:/);
 });
