@@ -71,8 +71,8 @@ test('cancelled item metadata patches preserve status and completion timestamp',
 
 test('task creation and every progress mutation recalculate mission status', () => {
   assert.ok(progress.includes('const recalculateMissionStatus'));
-  assert.ok(progress.includes('SELECT id FROM missions WHERE id=$1 FOR UPDATE'));
-  assert.ok(progress.includes('const missionResponse = await recalculateMissionStatus(client, missionId)'));
+  assert.ok(progress.includes('SELECT id,status FROM missions WHERE id=$1 FOR UPDATE'));
+  assert.ok(progress.includes('await notifyMissionCompletion(client, await recalculateMissionStatus(client, missionId), current)'));
   assert.ok(progress.includes('return json(res, 201, { task: taskResponse, mission: missionResponse })'));
   assert.ok(progress.includes('return json(res, 200, { task: taskResponse, mission: missionResponse })'));
 });

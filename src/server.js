@@ -322,7 +322,22 @@ CREATE TABLE IF NOT EXISTS app_notifications (
   created_at timestamptz NOT NULL DEFAULT now(),
   read_at timestamptz
 );
+ALTER TABLE app_notifications ADD COLUMN IF NOT EXISTS mission_id uuid;
+ALTER TABLE app_notifications ADD COLUMN IF NOT EXISTS mission_task_id uuid;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='app_notifications_mission_fk') THEN
+    ALTER TABLE app_notifications ADD CONSTRAINT app_notifications_mission_fk FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='app_notifications_mission_task_fk') THEN
+    ALTER TABLE app_notifications ADD CONSTRAINT app_notifications_mission_task_fk FOREIGN KEY (mission_task_id) REFERENCES mission_tasks(id) ON DELETE CASCADE;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='app_notifications_mission_task_context_check') THEN
+    ALTER TABLE app_notifications ADD CONSTRAINT app_notifications_mission_task_context_check CHECK (mission_task_id IS NULL OR mission_id IS NOT NULL);
+  END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS app_notifications_user_idx ON app_notifications(app_user_id, read_at, created_at DESC);
+CREATE INDEX IF NOT EXISTS app_notifications_mission_idx ON app_notifications(mission_id);
+CREATE INDEX IF NOT EXISTS app_notifications_mission_task_idx ON app_notifications(mission_task_id);
 ALTER TABLE app_users ADD COLUMN IF NOT EXISTS is_admin boolean NOT NULL DEFAULT false;
 ALTER TABLE app_users ADD COLUMN IF NOT EXISTS account_status text NOT NULL DEFAULT 'active';
 ALTER TABLE app_users ADD COLUMN IF NOT EXISTS verselink_name text;
@@ -1839,8 +1854,36 @@ const server = createServer(async (req, res) => {
     }
 
     const taskResponseColumns = "id,mission_id,type,title,description,assigned_to,target_quantity,unit,status,sort_order,created_at,updated_at,completed_at";
+    const missionActorName = current => current.verselink_name || current.display_name || "A member";
+    const insertMissionNotification = async (db, { recipientId, actorId, groupId, kind, title, message, missionId, taskId = null }) => {
+      if (!recipientId || recipientId === actorId) return 0;
+      const inserted = await db.query(
+        `INSERT INTO app_notifications (app_user_id,kind,title,message,mission_id,mission_task_id)
+         SELECT u.id,$4,$5,$6,$7,$8 FROM app_users u
+         JOIN group_members gm ON gm.app_user_id=u.id AND gm.group_id=$3
+         WHERE u.id=$1 AND u.id<>$2 AND u.account_status='active' RETURNING id`,
+        [recipientId, actorId, groupId, kind, title, message, missionId, taskId]
+      );
+      return inserted.rowCount;
+    };
+    const insertMissionCompletionNotifications = async (db, mission, current) => {
+      const actor = missionActorName(current);
+      return db.query(
+        `INSERT INTO app_notifications (app_user_id,kind,title,message,mission_id)
+         SELECT DISTINCT candidates.app_user_id,'mission_completed','MISSION COMPLETED',$1,$2
+         FROM (
+           SELECT m.created_by AS app_user_id FROM missions m WHERE m.id=$2
+           UNION SELECT t.assigned_to FROM mission_tasks t WHERE t.mission_id=$2 AND t.status<>'cancelled' AND t.assigned_to IS NOT NULL
+           UNION SELECT owner_member.app_user_id FROM group_members owner_member WHERE owner_member.group_id=$3 AND owner_member.role='owner'
+         ) candidates
+         JOIN group_members gm ON gm.group_id=$3 AND gm.app_user_id=candidates.app_user_id
+         JOIN app_users u ON u.id=candidates.app_user_id AND u.account_status='active'
+         WHERE candidates.app_user_id IS NOT NULL AND candidates.app_user_id<>$4`,
+        [`${mission.title} · ${actor} completed the mission`, mission.id, mission.group_id, current.id]
+      );
+    };
     const loadMissionAccess = async (missionId, appUserId, db = pool) => (await db.query(
-      `SELECT m.id,m.group_id,m.created_by,gm.role
+      `SELECT m.id,m.group_id,m.created_by,m.title,gm.role
        FROM missions m
        LEFT JOIN group_members gm ON gm.group_id=m.group_id AND gm.app_user_id=$2
        WHERE m.id=$1`,
@@ -1875,7 +1918,8 @@ const server = createServer(async (req, res) => {
       [missionId]
     )).rows[0] || null;
     const recalculateMissionStatus = async (db, missionId) => {
-      await db.query("SELECT id FROM missions WHERE id=$1 FOR UPDATE", [missionId]);
+      const locked = await db.query("SELECT id,status FROM missions WHERE id=$1 FOR UPDATE", [missionId]);
+      const previousStatus = locked.rows[0]?.status || null;
       await db.query(
         `WITH task_progress AS (
            SELECT t.id,CASE WHEN t.type='checklist' THEN CASE WHEN t.status='completed' THEN 100::numeric ELSE 0::numeric END
@@ -1895,7 +1939,12 @@ const server = createServer(async (req, res) => {
          FROM summary s WHERE m.id=$1`,
         [missionId]
       );
-      return loadMissionProgress(db, missionId);
+      const mission = await loadMissionProgress(db, missionId);
+      return { mission, previousStatus, completedNow: previousStatus !== 'completed' && mission?.status === 'completed' };
+    };
+    const notifyMissionCompletion = async (db, recalculation, current) => {
+      if (recalculation.completedNow) await insertMissionCompletionNotifications(db, recalculation.mission, current);
+      return recalculation.mission;
     };
 
     if (url.pathname === "/api/missions") {
@@ -2063,7 +2112,12 @@ const server = createServer(async (req, res) => {
              VALUES ($1,$2,$3,$4,$5,$6,$7,'open',$8) RETURNING id`,
             [missionId, type, title, description, assignedTo, targetQuantity, unit, sortOrder]
           );
-          const missionResponse = await recalculateMissionStatus(client, missionId);
+          if (assignedTo) await insertMissionNotification(client, {
+            recipientId: assignedTo, actorId: current.id, groupId: mission.group_id, kind: 'mission_task_assigned',
+            title: 'MISSION TASK ASSIGNED', message: `${mission.title} · ${title} · ${missionActorName(current)} assigned you`,
+            missionId, taskId: created.rows[0].id
+          });
+          const missionResponse = await notifyMissionCompletion(client, await recalculateMissionStatus(client, missionId), current);
           const taskResponse = (await loadTaskProgress(client, missionId, created.rows[0].id))[0];
           await client.query("COMMIT");
           return json(res, 201, { task: taskResponse, mission: missionResponse });
@@ -2079,6 +2133,8 @@ const server = createServer(async (req, res) => {
         const task = await client.query(`SELECT ${taskResponseColumns} FROM mission_tasks WHERE id=$1 AND mission_id=$2 FOR UPDATE`, [taskId, missionId]);
         if (!task.rowCount) { await client.query("ROLLBACK"); return json(res, 404, { error: "task not found" }); }
         const existing = task.rows[0];
+        let assignmentChange = null;
+        let checklistChange = null;
         if (Object.hasOwn(data, "status")) {
           if (Object.keys(data).length !== 1) { await client.query("ROLLBACK"); return json(res, 400, { error: "status changes must be status-only" }); }
           if (existing.type !== "checklist") { await client.query("ROLLBACK"); return json(res, 400, { error: "item status is server-managed" }); }
@@ -2086,6 +2142,7 @@ const server = createServer(async (req, res) => {
           if (!["open", "completed"].includes(data.status)) { await client.query("ROLLBACK"); return json(res, 400, { error: "invalid checklist status" }); }
           if (!canManageMission(mission, current) && existing.assigned_to !== current.id) { await client.query("ROLLBACK"); return json(res, 403, { error: "task assignee or mission manager required" }); }
           await client.query("UPDATE mission_tasks SET status=$1,completed_at=CASE WHEN $1='completed' THEN COALESCE(completed_at,now()) ELSE NULL END,updated_at=now() WHERE id=$2 AND mission_id=$3", [data.status, taskId, missionId]);
+          if (existing.status !== data.status) checklistChange = { previous: existing.status, next: data.status };
         } else {
           if (!canManageMission(mission, current)) { await client.query("ROLLBACK"); return json(res, 403, { error: "mission creator, group owner, or app admin required" }); }
           const allowedFields = new Set(["title", "description", "assigned_to", "target_quantity", "unit", "sort_order"]);
@@ -2118,8 +2175,27 @@ const server = createServer(async (req, res) => {
              FROM contribution_total WHERE id=$7 AND mission_id=$8`,
             values
           );
+          if (Object.hasOwn(data, "assigned_to") && existing.assigned_to !== assignedTo) assignmentChange = { previous: existing.assigned_to, next: assignedTo, title };
         }
-        const missionResponse = await recalculateMissionStatus(client, missionId);
+        const actor = missionActorName(current);
+        if (assignmentChange?.next) await insertMissionNotification(client, {
+          recipientId: assignmentChange.next, actorId: current.id, groupId: mission.group_id,
+          kind: assignmentChange.previous ? 'mission_task_reassigned' : 'mission_task_assigned',
+          title: assignmentChange.previous ? 'MISSION TASK REASSIGNED' : 'MISSION TASK ASSIGNED',
+          message: `${mission.title} · ${assignmentChange.title} · ${actor} assigned you`, missionId, taskId
+        });
+        if (assignmentChange?.previous) await insertMissionNotification(client, {
+          recipientId: assignmentChange.previous, actorId: current.id, groupId: mission.group_id,
+          kind: 'mission_task_unassigned', title: 'MISSION TASK UNASSIGNED',
+          message: `${mission.title} · ${assignmentChange.title} · ${actor} removed your assignment`, missionId, taskId
+        });
+        if (checklistChange && existing.assigned_to) await insertMissionNotification(client, {
+          recipientId: existing.assigned_to, actorId: current.id, groupId: mission.group_id,
+          kind: checklistChange.next === 'completed' ? 'mission_task_completed' : 'mission_task_reopened',
+          title: checklistChange.next === 'completed' ? 'MISSION TASK COMPLETED' : 'MISSION TASK REOPENED',
+          message: `${mission.title} · ${existing.title} · ${actor} ${checklistChange.next === 'completed' ? 'completed' : 'reopened'} the task`, missionId, taskId
+        });
+        const missionResponse = await notifyMissionCompletion(client, await recalculateMissionStatus(client, missionId), current);
         const taskResponse = (await loadTaskProgress(client, missionId, taskId))[0];
         await client.query("COMMIT");
         return json(res, 200, { task: taskResponse, mission: missionResponse });
@@ -2163,7 +2239,13 @@ const server = createServer(async (req, res) => {
            FROM contribution_total WHERE id=$1 AND mission_id=$2`,
           [taskId, missionId]
         );
-        const missionResponse = await recalculateMissionStatus(client, missionId);
+        if (existing.assigned_to) await insertMissionNotification(client, {
+          recipientId: existing.assigned_to, actorId: current.id, groupId: mission.group_id,
+          kind: 'mission_item_contribution', title: 'MISSION ITEM CONTRIBUTION',
+          message: `${mission.title} · ${existing.title} · ${missionActorName(current)} added ${data.quantity}${existing.unit ? ` ${existing.unit}` : ''}`,
+          missionId, taskId
+        });
+        const missionResponse = await notifyMissionCompletion(client, await recalculateMissionStatus(client, missionId), current);
         const taskResponse = (await loadTaskProgress(client, missionId, taskId))[0];
         await client.query("COMMIT");
         return json(res, 201, { task: taskResponse, mission: missionResponse });
@@ -2405,7 +2487,16 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/notifications") {
       const context = await getSessionContext(req); if (!context?.appUserId) return json(res, 401, { error: "login required" });
-      const result = await pool.query("SELECT n.id,n.kind,n.title,n.message,n.order_id,n.created_at,n.read_at,o.order_number,o.group_id FROM app_notifications n LEFT JOIN material_orders o ON o.id=n.order_id WHERE n.app_user_id=$1 ORDER BY n.created_at DESC LIMIT 50", [context.appUserId]);
+      const result = await pool.query(
+        `SELECT n.id,n.kind,n.title,n.message,n.order_id,n.mission_id,n.mission_task_id,n.created_at,n.read_at,
+           o.order_number,COALESCE(o.group_id,m.group_id) AS group_id,m.title AS mission_title,mt.title AS mission_task_title
+         FROM app_notifications n
+         LEFT JOIN material_orders o ON o.id=n.order_id
+         LEFT JOIN missions m ON m.id=n.mission_id
+         LEFT JOIN mission_tasks mt ON mt.id=n.mission_task_id AND mt.mission_id=n.mission_id
+         WHERE n.app_user_id=$1 ORDER BY n.created_at DESC LIMIT 50`,
+        [context.appUserId]
+      );
       return json(res, 200, { notifications: result.rows });
     }
 
