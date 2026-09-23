@@ -4,20 +4,29 @@ import { readFile } from 'node:fs/promises';
 
 const source = await readFile(new URL('../public/js/missions-mobiglass.js', import.meta.url), 'utf8');
 
-test('task actions use a dedicated state and prevent duplicate requests', () => {
-  assert.match(source, /taskAction: \{ key: '', pending: false, error: '', success: '', draft: '' \}/);
-  assert.match(source, /if \(state\.taskAction\.pending && state\.taskAction\.key === key\) return/);
-  assert.match(source, /pending \? 'disabled' : ''/);
+test('task actions are isolated by key and block only duplicate requests', () => {
+  assert.match(source, /taskActions: \{\}/);
+  assert.match(source, /const actionKey = \(taskId, kind\) => `\$\{taskId\}:\$\{kind\}`/);
+  assert.match(source, /const taskActionFor = \(taskId, kind\) => state\.taskActions\[actionKey\(taskId, kind\)\] \|\| \{\}/);
+  assert.match(source, /const isTaskPending = taskId => Object\.entries\(state\.taskActions\)\.some/);
+  assert.match(source, /if \(existing\.pending\) return/);
+  assert.match(source, /state\.taskActions = \{ \.\.\.state\.taskActions, \[key\]:/);
+  assert.match(source, /Object\.entries\(state\.taskActions\)\.filter/);
 });
 
-test('assignment is manager-only, same-group, supports unassign and historical display', () => {
+test('former-member assignment requires an explicit selection before it can mutate', () => {
   assert.match(source, /const assignment = manage \?/);
   assert.match(source, /members = groupFor\(mission\)\?\.members \|\| \[\]/);
-  assert.match(source, /<option value="">UNASSIGNED<\/option>/);
-  assert.match(source, /<option selected disabled>FORMER MEMBER<\/option>/);
+  assert.match(source, /<option value="__former__"/);
+  assert.match(source, /disabled>FORMER MEMBER<\/option>/);
+  assert.match(source, /assignmentBlocked = former && assignmentDraft === undefined/);
+  assert.match(source, /pending \|\| assignmentBlocked \? 'disabled' : ''/);
   assert.match(source, /APPLY ASSIGNMENT/);
-  assert.match(source, /new FormData\(assignment\)\.get\('assignee'\) \|\| null/);
-  assert.match(source, /\{ \[assignmentField\]: new FormData\(assignment\)\.get\('assignee'\) \|\| null \}/);
+  assert.match(source, /selected === '__former__'/);
+  assert.match(source, /former && taskActionFor\(taskId, 'assignment'\)\.draft === undefined/);
+  assert.match(source, /\{ \[assignmentField\]: selected \|\| null \}/);
+  assert.match(source, /draft: assignment\.value/);
+  assert.doesNotMatch(source, /\{ \[assignmentField\]: '__former__'/);
 });
 
 test('manager or current assignee may act on a task', () => {
@@ -54,7 +63,8 @@ test('action feedback handles authentication, authorization, disappearance and c
   for (const label of ['ASSIGNMENT UPDATED', 'TASK COMPLETED', 'TASK REOPENED', 'CONTRIBUTION ADDED', 'ACTION NOT PERMITTED', 'TASK OR MISSION NO LONGER AVAILABLE']) assert.ok(source.includes(label));
   assert.match(source, /response\.status === 401/);
   assert.match(source, /\[403,404,409\]\.includes\(error\.status\)/);
-  assert.match(source, /draft: kind === 'contribution' \? String\(payload\.quantity \?\? ''\) : ''/);
+  assert.match(source, /error: error\.message, success: '', draft/);
+  assert.match(source, /state\.taskActions = \{ \.\.\.state\.taskActions, \[key\]:/);
 });
 
 test('history preserves server order and renders safe read-only contributor data', () => {
