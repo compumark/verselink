@@ -171,7 +171,7 @@ test('mission backend works through real HTTP and PostgreSQL', { skip: !database
       })).task;
       const inactiveUser = randomUUID();
       await pool.query(
-        "INSERT INTO app_users (id,email,display_name,account_status) VALUES ($1,$2,'Inactive Candidate','inactive')",
+        "INSERT INTO app_users (id,email,display_name,account_status) VALUES ($1,$2,'Inactive Candidate','blocked')",
         [inactiveUser, `inactive-${inactiveUser}@example.test`]
       );
       await pool.query("INSERT INTO group_members (group_id,app_user_id,role) VALUES ($1,$2,'member')", [groups.a, inactiveUser]);
