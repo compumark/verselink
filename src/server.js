@@ -1963,7 +1963,23 @@ const server = createServer(async (req, res) => {
       const row = mission.rows[0];
       if (req.method === "GET") {
         if (!row.role) return json(res, 404, { error: "mission not found" });
-        const [response, tasks] = await Promise.all([loadMissionProgress(pool, missionId), loadTaskProgress(pool, missionId)]);
+        const [response, taskRows, contributions] = await Promise.all([
+          loadMissionProgress(pool, missionId),
+          loadTaskProgress(pool, missionId),
+          pool.query(`SELECT c.id,c.task_id,c.app_user_id,c.quantity,c.created_at,
+            COALESCE(u.verselink_name,u.display_name) AS contributor_name
+            FROM mission_task_contributions c
+            JOIN mission_tasks t ON t.id=c.task_id
+            LEFT JOIN app_users u ON u.id=c.app_user_id
+            WHERE t.mission_id=$1 ORDER BY c.created_at ASC,c.id ASC`, [missionId])
+        ]);
+        const contributionsByTask = new Map();
+        for (const contribution of contributions.rows) {
+          const history = contributionsByTask.get(contribution.task_id) || [];
+          history.push(contribution);
+          contributionsByTask.set(contribution.task_id, history);
+        }
+        const tasks = taskRows.map((task) => ({ ...task, contributions: contributionsByTask.get(task.id) || [] }));
         return json(res, 200, { mission: { ...response, tasks } });
       }
 

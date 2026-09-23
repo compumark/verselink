@@ -137,6 +137,36 @@ test('mission backend works through real HTTP and PostgreSQL', { skip: !database
       assert.equal((await json(sessions.owner, 'POST', `/api/missions/${unknownMission}/tasks/${unknownTask}/contributions`, { quantity: 1 })).status, 404);
     });
 
+    await t.test('returns ordered contribution history in authorized mission detail', async () => {
+      const mission = await createMission('Contribution history detail');
+      const task = (await createTask(mission.id, {
+        type: 'item', title: 'Shared delivery', assigned_to: users.assignee,
+        target_quantity: 10, unit: 'SCU'
+      })).task;
+
+      let response = await json(sessions.owner, 'POST', `/api/missions/${mission.id}/tasks/${task.id}/contributions`, { quantity: 1.25 });
+      assert.equal(response.status, 201);
+
+      response = await request(`/api/missions/${mission.id}`, { session: sessions.member });
+      assert.equal(response.status, 200);
+      let detailTask = response.body.mission.tasks.find((candidate) => candidate.id === task.id);
+      assert.deepEqual(detailTask.contributions.map((entry) => Number(entry.quantity)), [1.25]);
+      assert.equal(detailTask.contributions[0].app_user_id, users.owner);
+      assert.equal(detailTask.contributions[0].contributor_name, 'Mission Owner');
+
+      response = await json(sessions.assignee, 'POST', `/api/missions/${mission.id}/tasks/${task.id}/contributions`, { quantity: 2.5 });
+      assert.equal(response.status, 201);
+      response = await request(`/api/missions/${mission.id}`, { session: sessions.member });
+      assert.equal(response.status, 200);
+      detailTask = response.body.mission.tasks.find((candidate) => candidate.id === task.id);
+      assert.deepEqual(detailTask.contributions.map((entry) => Number(entry.quantity)), [1.25, 2.5]);
+      assert.deepEqual(detailTask.contributions.map((entry) => entry.app_user_id), [users.owner, users.assignee]);
+      assert.deepEqual(detailTask.contributions.map((entry) => entry.contributor_name), ['Mission Owner', 'Mission Assignee']);
+      assert.ok(detailTask.contributions.every((entry) => entry.id && entry.task_id === task.id && entry.created_at));
+
+      assert.equal((await request(`/api/missions/${mission.id}`, { session: sessions.outsider })).status, 404);
+    });
+
     await t.test('runs the checklist, item, completion, and reopen flow end to end', async () => {
       let response = await json(sessions.assignee, 'PATCH', `/api/missions/${coreMission.id}/tasks/${checklistTask.id}`, { status: 'completed' });
       assert.equal(response.status, 200);
