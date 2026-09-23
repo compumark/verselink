@@ -57,6 +57,10 @@ test('notification center renders mission context and keeps mission navigation d
   assert.match(ui, /mission_id/);
   assert.match(ui, /mission_task_id/);
   assert.match(ui, /url\.hash='missions'/);
+  assert.match(ui, /const alreadyMissions=location\.hash==='#missions'/);
+  assert.match(ui, /if\(alreadyMissions\)import\('\/js\/missions-mobiglass\.js'\)\.then\(m=>m\.mount\(\)\);else window\.dispatchEvent\(new HashChangeEvent\('hashchange'\)\)/);
+  assert.match(ui, /history\.pushState\(null,'',url\)/);
+  assert.doesNotMatch(ui, /location\.reload/);
   assert.match(ui, /pendingOrderNavigation=n\.order_id/);
   assert.match(ui, /markNotificationRead/);
   assert.match(ui, /notification-badge/);
