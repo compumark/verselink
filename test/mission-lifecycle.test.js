@@ -16,6 +16,8 @@ test('non-active account status atomically clears only active mission assignment
   assert.match(source, /const unassignOpenMissionTasksForInactiveUser/);
   assert.match(source, /WHERE assigned_to=\$1 AND status IN \('open','in_progress'\)/);
   assert.match(route, /BEGIN/);
+  assert.match(route, /UPDATE app_users SET account_status=\$1 WHERE id=\$2 AND id<>\$3 RETURNING id/);
+  assert.match(route, /if \(!updated\.rowCount\) \{ await client\.query\("ROLLBACK"\); return json\(res, 400/);
   assert.match(route, /DELETE FROM dashboard_sessions/);
   assert.match(route, /unassignOpenMissionTasksForInactiveUser\(client, userId\)/);
   assert.match(route, /COMMIT/);
@@ -27,4 +29,5 @@ test('hard delete removes groups only for the current owner, not historical crea
   assert.match(route, /DELETE FROM blueprint_groups g WHERE EXISTS/);
   assert.match(route, /gm\.app_user_id=\$1 AND gm\.role='owner'/);
   assert.doesNotMatch(route, /DELETE FROM blueprint_groups WHERE created_by/);
+  assert.match(route, /UPDATE blueprint_groups SET created_by=NULL WHERE created_by=\$1/);
 });

@@ -88,6 +88,13 @@ test('action feedback handles authentication, authorization, disappearance and c
   assert.match(source, /state\.taskActions = \{ \.\.\.state\.taskActions, \[key\]:/);
 });
 
+test('dialog lifecycle access failures close stale manager UI and refresh group context', () => {
+  const dialog = source.slice(source.indexOf('async function submitDialog'), source.indexOf('async function openMission'));
+  assert.match(dialog, /Object\.assign\(new Error\(body\.error \|\| 'REQUEST FAILED'\), \{ status: response\.status \}\)/);
+  assert.match(dialog, /if \(\[403,404\]\.includes\(error\.status\)\) \{ state\.dialog = null; await loadGroups\(state\.groupId\); return; \}/);
+  assert.match(dialog, /if \(state\.dialog\) \{ state\.dialog\.error = error\.message; render\(\); \}/);
+});
+
 test('history preserves server order and renders safe read-only contributor data', () => {
   for (const label of ['CONTRIBUTIONS', 'FORMER USER', 'contributor_name', 'entry.quantity', 'entry.created_at']) assert.ok(source.includes(label));
   assert.match(source, /historyRows\.map\(entry =>/);

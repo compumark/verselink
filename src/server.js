@@ -2603,7 +2603,7 @@ const server = createServer(async (req, res) => {
       const params = new URLSearchParams(await readBody(req)); const userId = params.get("user_id"), status = params.get("status");
       if (!/^[0-9a-f-]{36}$/i.test(userId || "") || !["active", "blocked", "deleted"].includes(status)) return json(res, 400, { error: "invalid user or status" });
       const client = await pool.connect();
-      try { await client.query("BEGIN"); await client.query("UPDATE app_users SET account_status=$1 WHERE id=$2 AND id<>$3", [status, userId, current.id]); if (status !== "active") { await client.query("DELETE FROM dashboard_sessions WHERE app_user_id=$1", [userId]); await unassignOpenMissionTasksForInactiveUser(client, userId); } await client.query("COMMIT"); return json(res, 200, { ok: true }); } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+      try { await client.query("BEGIN"); const updated = await client.query("UPDATE app_users SET account_status=$1 WHERE id=$2 AND id<>$3 RETURNING id", [status, userId, current.id]); if (!updated.rowCount) { await client.query("ROLLBACK"); return json(res, 400, { error: "user not available" }); } if (status !== "active") { await client.query("DELETE FROM dashboard_sessions WHERE app_user_id=$1", [userId]); await unassignOpenMissionTasksForInactiveUser(client, userId); } await client.query("COMMIT"); return json(res, 200, { ok: true }); } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
     }
 
     if (req.method === "POST" && url.pathname === "/api/admin/users/delete") {
@@ -2615,6 +2615,7 @@ const server = createServer(async (req, res) => {
         await client.query("BEGIN");
         await client.query("DELETE FROM dashboard_sessions WHERE app_user_id = $1", [userId]);
         await client.query("DELETE FROM blueprint_groups g WHERE EXISTS (SELECT 1 FROM group_members gm WHERE gm.group_id=g.id AND gm.app_user_id=$1 AND gm.role='owner')", [userId]);
+        await client.query("UPDATE blueprint_groups SET created_by=NULL WHERE created_by=$1", [userId]);
         await client.query("DELETE FROM group_members WHERE app_user_id = $1", [userId]);
         await client.query("INSERT INTO revoked_sink_tokens (token_hash, reason) SELECT token_hash, 'user deleted' FROM scmdb_connections WHERE app_user_id = $1 ON CONFLICT (token_hash) DO NOTHING", [userId]);
         await client.query("DELETE FROM scmdb_connections WHERE app_user_id = $1", [userId]);
