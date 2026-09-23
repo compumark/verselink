@@ -22,3 +22,23 @@ test('mission dialogs retain native keyboard-modal focus safety', () => {
   assert.match(source, /event\.key === 'Escape'/);
   assert.match(source, /state\.mutationPending/);
 });
+
+test('mission navigation restores useful focus without disrupting refreshes', () => {
+  assert.match(source, /data-mission-detail-focus/);
+  assert.match(source, /target\?\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(source, /target\?\.scrollIntoView/);
+  assert.match(source, /focusTarget = options\.focusTarget !== false/);
+  assert.match(source, /focusTarget: true/);
+  assert.match(source, /dialogReturnFocus = trigger\.hasAttribute\('data-mission-create'\)/);
+  assert.match(source, /dialogActiveField = select\.name/);
+});
+
+test('mission readiness CSS and state panels preserve accessible small-screen behavior', () => {
+  assert.doesNotMatch(source, /aria-live="polite"/);
+  assert.match(source, /button:hover:not\(:disabled\)/);
+  assert.match(source, /button:hover:disabled/);
+  assert.match(source, /@media\(max-width:960px\)/);
+  assert.match(source, /title === 'MISSION NOT FOUND'/);
+  assert.match(source, /role="status"/);
+  assert.match(source, /role="alert"/);
+});
