@@ -51,3 +51,11 @@ test('mission readiness CSS and state panels preserve accessible small-screen be
   assert.match(source, /role="status"/);
   assert.match(source, /role="alert"/);
 });
+
+test('task action controls use compact desktop sizing and flexible mobile controls', () => {
+  assert.match(source, /\.mission-task-actions input,\.mission-task-actions select,\.mission-task-actions button\{min-height:33px;padding:6px 9px\}/);
+  assert.match(source, /\.mission-task-actions select\{width:clamp\(150px,16vw,180px\)\}/);
+  assert.match(source, /\[data-task-contribution\] input\{width:90px\}/);
+  assert.match(source, /\.mission-task-actions form\{display:flex;align-items:flex-end;flex-wrap:wrap;gap:8px;min-width:0\}/);
+  assert.match(source, /@media\(max-width:680px\)\{\.mission-task-actions,.mission-task-actions form\{display:grid;grid-template-columns:1fr\}/);
+});
