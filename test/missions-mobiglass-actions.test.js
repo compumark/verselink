@@ -3,6 +3,24 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const source = await readFile(new URL('../public/js/missions-mobiglass.js', import.meta.url), 'utf8');
+const section = (start, end) => source.slice(source.indexOf(start), source.indexOf(end));
+
+test('group, mission-list, and mission-detail reads use independent freshness generations', () => {
+  for (const counter of ['groupRequestGeneration', 'missionListRequestGeneration', 'missionDetailRequestGeneration']) assert.match(source, new RegExp(`let ${counter} = 0`));
+  assert.doesNotMatch(source, /let requestGeneration = 0/);
+  const groups = section('async function loadGroups()', 'async function loadMissions(');
+  const list = section('async function loadMissions(', 'async function submitDialog(');
+  const detail = section('async function loadMissionDetail(', 'async function refreshAfterTaskMutation(');
+  assert.match(groups, /\+\+groupRequestGeneration/);
+  assert.doesNotMatch(groups, /missionListRequestGeneration|missionDetailRequestGeneration/);
+  assert.match(list, /\+\+missionListRequestGeneration/);
+  assert.match(list, /isMissionListRequestLive\(generation, groupId\)/);
+  assert.doesNotMatch(list, /groupRequestGeneration|missionDetailRequestGeneration/);
+  assert.match(detail, /\+\+missionDetailRequestGeneration/);
+  assert.match(detail, /isMissionDetailRequestLive\(generation, missionId\)/);
+  assert.doesNotMatch(detail, /groupRequestGeneration|missionListRequestGeneration/);
+  assert.match(source, /const backToMissions = \(\) => \{ \+\+missionDetailRequestGeneration/);
+});
 
 test('task actions are isolated by key and block only duplicate requests', () => {
   assert.match(source, /taskActions: \{\}/);
@@ -54,7 +72,9 @@ test('item contribution accepts positive decimals and guards remaining quantity'
 test('successful actions refresh authoritative detail and overview', () => {
   assert.match(source, /async function refreshAfterTaskMutation\(\)/);
   assert.match(source, /await loadMissionDetail\(missionId\)/);
-  assert.match(source, /await loadMissions\(state\.groupId\)/);
+  assert.match(source, /const missionId = state\.selectedMissionId, groupId = state\.groupId/);
+  assert.match(source, /state\.selectedMissionId === missionId && state\.groupId === groupId/);
+  assert.match(source, /await loadMissions\(groupId\)/);
   assert.match(source, /await refreshAfterTaskMutation\(\)/);
   assert.doesNotMatch(source, /location\.reload/);
 });
