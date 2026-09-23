@@ -60,8 +60,13 @@ test('item status and target changes remain server-authoritative', () => {
   assert.ok(progress.includes("WHEN contribution_total.current_quantity>=target_quantity THEN 'completed' ELSE 'in_progress'"));
   assert.ok(progress.includes('target quantity cannot be below current quantity'));
   assert.ok(progress.includes('COALESCE(SUM(quantity),0) <= $2::numeric AS valid'));
-  assert.ok(progress.includes('completed_at=CASE WHEN type=\'item\''));
+  assert.ok(progress.includes("WHEN type='item' THEN NULL ELSE completed_at END"));
   assert.ok(progress.includes('new Set(["title", "description", "assigned_to", "target_quantity", "unit", "sort_order"])'));
+});
+
+test('cancelled item metadata patches preserve status and completion timestamp', () => {
+  assert.ok(progress.includes("WHEN status='cancelled' THEN status"));
+  assert.ok(progress.includes("WHEN status='cancelled' THEN completed_at"));
 });
 
 test('task creation and every progress mutation recalculate mission status', () => {

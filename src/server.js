@@ -2082,10 +2082,12 @@ const server = createServer(async (req, res) => {
           await client.query(
             `WITH contribution_total AS (SELECT COALESCE(SUM(quantity),0) AS current_quantity FROM mission_task_contributions WHERE task_id=$7)
              UPDATE mission_tasks SET title=$1,description=$2,assigned_to=$3,target_quantity=$4,unit=$5,sort_order=$6,
-               status=CASE WHEN type='item' AND contribution_total.current_quantity=0 THEN 'open'
+               status=CASE WHEN status='cancelled' THEN status
+                 WHEN type='item' AND contribution_total.current_quantity=0 THEN 'open'
                  WHEN type='item' AND contribution_total.current_quantity>=$4 THEN 'completed'
                  WHEN type='item' THEN 'in_progress' ELSE status END,
-               completed_at=CASE WHEN type='item' AND contribution_total.current_quantity>=$4 THEN COALESCE(completed_at,now())
+               completed_at=CASE WHEN status='cancelled' THEN completed_at
+                 WHEN type='item' AND contribution_total.current_quantity>=$4 THEN COALESCE(completed_at,now())
                  WHEN type='item' THEN NULL ELSE completed_at END,updated_at=now()
              FROM contribution_total WHERE id=$7 AND mission_id=$8`,
             values
