@@ -89,3 +89,13 @@ test('Missions has its own currentColor waypoint icon and no classic page', asyn
   await assert.rejects(stat(new URL('../public/missions.html', import.meta.url)), { code: 'ENOENT' });
   await assert.rejects(stat(new URL('../public/mission.html', import.meta.url)), { code: 'ENOENT' });
 });
+
+test('Missions launcher uses a scoped optical correction without changing shared icon slots or nav icons', () => {
+  assert.match(shellSource, /\.home-apps \[data-app=missions\] \.app-icon\{transform:scale\(1\.28\);transform-origin:center\}/);
+  assert.match(shellSource, /\.app-icon\{width:48px;height:48px;/);
+  assert.ok(shellSource.includes("data-app=\"missions\"><i class=\"app-icon\""));
+  assert.ok(shellSource.includes("/assets/icons/missions.svg"));
+  assert.ok(shellSource.includes("class=\"nav-icon\""));
+  assert.ok(serverSource.includes('missions.svg'));
+  assert.doesNotMatch(shellSource, /\.nav-icon[^}]*transform:scale/);
+});
