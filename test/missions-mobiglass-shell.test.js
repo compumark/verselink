@@ -63,6 +63,24 @@ test('Missions shell is theme-safe, responsive, and safe across repeated mounts'
   assert.ok(missionsSource.includes('root.innerHTML = shell(state)'));
 });
 
+test('Missions header uses the provided app PNG while retaining the compact SVG icon', async () => {
+  const header = missionsSource.slice(missionsSource.indexOf('const shell ='), missionsSource.indexOf('const statePanel'));
+  const brandStyles = missionsSource.slice(missionsSource.indexOf('const missionBrandStyles'), missionsSource.indexOf('const missionDialogStyles'));
+  const logo = await readFile(new URL('../public/assets/apps/missions.png', import.meta.url));
+  assert.deepEqual([...logo.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+  assert.match(header, /class="missions-brand"/);
+  assert.match(header, /class="missions-logo" src="\/assets\/apps\/missions\.png" alt="Missions"/);
+  assert.match(header, /class="missions-brand-copy"/);
+  assert.ok(header.indexOf('missions-logo') < header.indexOf('<h1>MISSIONS</h1>'));
+  assert.equal((header.match(/<h1>MISSIONS<\/h1>/g) || []).length, 1);
+  assert.match(brandStyles, /\.missions-brand\{display:flex;align-items:center;gap:16px;margin-bottom:20px\}/);
+  assert.match(brandStyles, /flex:0 0 88px;width:88px;height:88px;object-fit:contain;filter:drop-shadow\(0 0 12px var\(--glow\)\)/);
+  assert.match(brandStyles, /flex-basis:64px;width:64px;height:64px/);
+  assert.doesNotMatch(brandStyles, /#[0-9a-f]{3,8}\b/i);
+  assert.ok(serverSource.includes('"/assets/apps/missions.png"'));
+  assert.ok(shellSource.includes("/assets/icons/missions.svg"));
+});
+
 test('Missions has its own currentColor waypoint icon and no classic page', async () => {
   assert.match(iconSource, /viewBox="0 0 64 64"/);
   assert.match(iconSource, /stroke="currentColor"/);

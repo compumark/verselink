@@ -2639,7 +2639,7 @@ const server = createServer(async (req, res) => {
       return res.end(content);
     }
 
-    if (req.method === "GET" && ["/assets/apps/inventory.png", "/assets/apps/orders.png", "/assets/apps/groups.png", "/assets/apps/admin_center.png", "/assets/apps/blueprints-empty.png", "/assets/apps/blueprint-image-unavailable.png", "/assets/apps/materials.png"].includes(url.pathname)) {
+    if (req.method === "GET" && ["/assets/apps/inventory.png", "/assets/apps/orders.png", "/assets/apps/groups.png", "/assets/apps/admin_center.png", "/assets/apps/blueprints-empty.png", "/assets/apps/blueprint-image-unavailable.png", "/assets/apps/materials.png", "/assets/apps/missions.png"].includes(url.pathname)) {
       const content = await readFile(join(publicDir, "assets", "apps", url.pathname.split("/").pop()));
       res.writeHead(200, { "content-type": "image/png", "cache-control": "public, max-age=86400" });
       return res.end(content);
