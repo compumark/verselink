@@ -25,7 +25,7 @@ test('mission list requires a valid group and deterministic member-scoped orderi
   assert.match(list, /group_id required/);
   assert.match(list, /uuidPattern\.test\(groupId\)/);
   assert.match(list, /group member required/);
-  assert.match(list, /WHERE group_id=\$1 ORDER BY created_at DESC,id DESC/);
+  assert.match(list, /WHERE m\.group_id=\$1 ORDER BY m\.created_at DESC,m\.id DESC/);
 });
 
 test('mission details do not leak across groups', () => {

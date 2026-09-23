@@ -30,10 +30,11 @@ test('limits direct mission tasks to valid checklist and item combinations', asy
 
 test('stores positive item progress as separate contribution history', async () => {
   const source = await schema();
+  const taskSchema = source.slice(source.indexOf('CREATE TABLE IF NOT EXISTS mission_tasks ('), source.indexOf('CREATE INDEX IF NOT EXISTS mission_tasks_mission_idx'));
   assert.match(source, /task_id uuid NOT NULL REFERENCES mission_tasks\(id\) ON DELETE CASCADE/);
   assert.match(source, /app_user_id uuid REFERENCES app_users\(id\) ON DELETE SET NULL/);
   assert.match(source, /quantity numeric NOT NULL CHECK \(quantity > 0\)/);
-  assert.doesNotMatch(source, /mission_tasks[\s\S]*?current_quantity/);
+  assert.doesNotMatch(taskSchema, /current_quantity/);
 });
 
 test('creates indexes for mission, task, and contribution lookups', async () => {
