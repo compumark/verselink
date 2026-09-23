@@ -9,10 +9,22 @@ const [serverSource, shellSource, missionsSource, iconSource] = await Promise.al
   readFile(new URL('../public/assets/icons/missions.svg', import.meta.url), 'utf8')
 ]);
 
-test('Missions extends the existing Mobiglass launcher, view set, and bottom navigation', () => {
-  assert.ok(serverSource.includes('data-app="missions"'));
-  assert.ok(serverSource.includes('Plan and coordinate group objectives'));
-  assert.ok(serverSource.includes('data-view="missions" title="Missions" aria-label="Missions"'));
+test('Missions launcher is authored in the shell and survives server transformation exactly once', () => {
+  const count = (source, needle) => source.split(needle).length - 1;
+  const tradeMaxApp = 'data-app="trademax"';
+  const missionsApp = 'data-app="missions"';
+  const tradeMaxNav = `<button data-view="trademax" title="TradeMax"><i class="nav-icon" style="--icon:url('/assets/icons/connection.svg')"></i></button>`;
+  const missionsNav = `<button data-view="missions" title="Missions" aria-label="Missions"><i class="nav-icon" style="--icon:url('/assets/icons/missions.svg')"></i></button>`;
+  const serverMissionsNav = String.raw`<button data-view="missions" title="Missions" aria-label="Missions"><i class="nav-icon" style="--icon:url(\'/assets/icons/missions.svg\')"></i></button>`;
+  assert.equal(count(shellSource, missionsApp), 1);
+  assert.ok(shellSource.indexOf(tradeMaxApp) < shellSource.indexOf(missionsApp));
+  assert.ok(shellSource.includes('Plan and coordinate group objectives'));
+  assert.equal(count(serverSource, missionsApp), 0);
+  assert.equal(count(shellSource, 'data-view="missions"'), 0);
+  assert.ok(serverSource.includes(serverMissionsNav));
+  const renderedShell = shellSource.replace(tradeMaxNav, missionsNav + tradeMaxNav);
+  assert.equal(count(renderedShell, missionsApp), 1);
+  assert.equal(count(renderedShell, 'data-view="missions"'), 1);
   assert.ok(serverSource.includes("'groups','missions','trademax','material'"));
   assert.ok(shellSource.includes("if(v!=='home'&&!user)v='home'"));
   assert.ok(shellSource.includes("window.addEventListener('hashchange',()=>setView(location.hash.slice(1)||'home'))"));
