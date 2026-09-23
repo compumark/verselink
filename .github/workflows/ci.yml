@@ -12,6 +12,22 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      TEST_DATABASE_URL: postgres://verselink:verselink@localhost:5432/verselink_test
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: verselink_test
+          POSTGRES_USER: verselink
+          POSTGRES_PASSWORD: verselink
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Check out repository
         uses: actions/checkout@v5

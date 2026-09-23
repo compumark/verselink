@@ -79,6 +79,7 @@ const configuredAdminUserIds = (() => {
 const changelogSource = readFileSync(join(publicDir, "changelog.html"), "utf8");
 const appCommit = String(process.env.APP_COMMIT || process.env.GIT_COMMIT || "unknown").trim() || "unknown";
 const appEnvironment = String(process.env.APP_ENVIRONMENT || "Production UI").trim() || "Production UI";
+const isTestRuntime = process.env.NODE_ENV === "test";
 const notifyNewUserRegistration = createDiscordAdminNotifier({ botToken: process.env.DISCORD_BOT_TOKEN, adminUserId: process.env.DISCORD_ADMIN_USER_ID, environment: appEnvironment });
 const appVersion = String(process.env.APP_VERSION || changelogSource.match(/data-release-kind="stable"\s+data-version="([^"]+)"/)?.[1]?.trim() || "unknown").trim() || "unknown";
 // Mobiglass view compatibility marker: 'changelog','about'
@@ -978,6 +979,15 @@ const getCurrentAppUser = async (req) => {
   }
   return user;
 };
+
+const unassignOpenMissionTasksForFormerMember = async (db, groupId, appUserId) => db.query(
+  `UPDATE mission_tasks t
+   SET assigned_to=NULL,updated_at=now()
+   FROM missions m
+   WHERE t.mission_id=m.id AND m.group_id=$1 AND t.assigned_to=$2
+     AND t.status IN ('open','in_progress')`,
+  [groupId, appUserId]
+);
 
 const getConnectedServiceUser = async (client, tokenHash) => {
   const connection = await client.query(
@@ -2907,7 +2917,15 @@ const server = createServer(async (req, res) => {
       const context = await getSessionContext(req); if (!context?.appUserId) return json(res, 401, { error: "login required" });
       const params = new URLSearchParams(await readBody(req)); const groupId = params.get("group_id");
       if (!/^[0-9a-f-]{36}$/i.test(groupId || "")) return json(res, 400, { error: "invalid group" });
-      await pool.query("DELETE FROM group_members WHERE group_id = $1 AND app_user_id = $2 AND role <> 'owner'", [groupId, context.appUserId]); return json(res, 200, { ok: true });
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const removed = await client.query("DELETE FROM group_members WHERE group_id = $1 AND app_user_id = $2 AND role <> 'owner' RETURNING app_user_id", [groupId, context.appUserId]);
+        if (removed.rowCount) await unassignOpenMissionTasksForFormerMember(client, groupId, context.appUserId);
+        await client.query("COMMIT");
+        return json(res, 200, { ok: true });
+      } catch (error) { await client.query("ROLLBACK").catch(() => {}); throw error; }
+      finally { client.release(); }
     }
 
     if (req.method === "POST" && url.pathname === "/api/groups/transfer-owner") {
@@ -2948,7 +2966,15 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/api/groups/remove-member") {
       const context = await getSessionContext(req); if (!context?.appUserId) return json(res, 401, { error: "login required" });
       const params = new URLSearchParams(await readBody(req)); const groupId = params.get("group_id"), memberId = params.get("member_id");
-      const current = await getCurrentAppUser(req); await pool.query(`DELETE FROM group_members WHERE group_id = $1 AND app_user_id = $2 AND role <> 'owner' AND ($4 OR group_id IN (SELECT gm.group_id FROM group_members gm WHERE gm.app_user_id = $3 AND gm.role = 'owner'))`, [groupId, memberId, context.appUserId, Boolean(current?.is_admin)]); return json(res, 200, { ok: true });
+      const current = await getCurrentAppUser(req); const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const removed = await client.query(`DELETE FROM group_members WHERE group_id = $1 AND app_user_id = $2 AND role <> 'owner' AND ($4 OR group_id IN (SELECT gm.group_id FROM group_members gm WHERE gm.app_user_id = $3 AND gm.role = 'owner')) RETURNING app_user_id`, [groupId, memberId, context.appUserId, Boolean(current?.is_admin)]);
+        if (removed.rowCount) await unassignOpenMissionTasksForFormerMember(client, groupId, memberId);
+        await client.query("COMMIT");
+        return json(res, 200, { ok: true });
+      } catch (error) { await client.query("ROLLBACK").catch(() => {}); throw error; }
+      finally { client.release(); }
     }
 
     if (req.method === "POST" && url.pathname === "/api/groups/delete") {
@@ -2985,13 +3011,15 @@ const server = createServer(async (req, res) => {
     return json(res, status, { error: status === 413 ? "payload too large" : "service unavailable" });
   }
 });
-ensureSchema().then(() => syncReferenceData()).then(() => {
+ensureSchema().then(() => isTestRuntime ? undefined : syncReferenceData()).then(() => {
   server.listen(port, "0.0.0.0", () => {
     logger.system("server.started", { app_environment: appEnvironment, app_version: appVersion, app_commit: appCommit, effective_log_level: logger.getState().effective_level, log_directory: logDirectory, retention_days: logger.getState().retention_days, port });
     logger.cleanupRetention();
-    scheduleInviteCleanup();
-    syncWikiImages();
-    syncWikiMaterials();
+    if (!isTestRuntime) {
+      scheduleInviteCleanup();
+      syncWikiImages();
+      syncWikiMaterials();
+    }
   });
 }).catch((error) => {
   logger.error("database.initialization.failed", error);
