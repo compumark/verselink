@@ -77,6 +77,137 @@ test('mission backend works through real HTTP and PostgreSQL', { skip: !database
     let checklistTask;
     let itemTask;
 
+    await t.test('creates mission collaboration notifications transactionally for active group recipients', async () => {
+      const schema = await pool.query(
+        `SELECT column_name FROM information_schema.columns
+         WHERE table_name='app_notifications' AND column_name IN ('mission_id','mission_task_id') ORDER BY column_name`
+      );
+      assert.deepEqual(schema.rows.map((row) => row.column_name), ['mission_id', 'mission_task_id']);
+      const constraints = await pool.query(
+        `SELECT conname,confdeltype FROM pg_constraint
+         WHERE conname IN ('app_notifications_mission_fk','app_notifications_mission_task_fk') ORDER BY conname`
+      );
+      assert.equal(constraints.rowCount, 2);
+      assert.ok(constraints.rows.every((row) => row.confdeltype === 'c'));
+
+      await pool.query('DELETE FROM app_notifications');
+      const assignmentMission = await createMission('Notification assignment');
+      const assigned = (await createTask(assignmentMission.id, {
+        type: 'checklist', title: 'Assigned checklist', assigned_to: users.assignee
+      })).task;
+      let notifications = await pool.query(
+        'SELECT app_user_id,kind,mission_id,mission_task_id FROM app_notifications ORDER BY created_at,id'
+      );
+      assert.deepEqual(notifications.rows, [{
+        app_user_id: users.assignee, kind: 'mission_task_assigned',
+        mission_id: assignmentMission.id, mission_task_id: assigned.id
+      }]);
+      let response = await request('/api/notifications', { session: sessions.assignee });
+      assert.equal(response.status, 200);
+      assert.equal(response.body.notifications[0].mission_id, assignmentMission.id);
+      assert.equal(response.body.notifications[0].mission_task_id, assigned.id);
+      assert.equal(response.body.notifications[0].mission_title, 'Notification assignment');
+      assert.equal(response.body.notifications[0].mission_task_title, 'Assigned checklist');
+      assert.equal(response.body.notifications[0].group_id, groups.a);
+      assert.equal((await request('/api/notifications', { session: sessions.member })).body.notifications.length, 0);
+
+      await pool.query('DELETE FROM app_notifications');
+      response = await json(sessions.owner, 'PATCH', `/api/missions/${assignmentMission.id}/tasks/${assigned.id}`, { assigned_to: users.member });
+      assert.equal(response.status, 200);
+      notifications = await pool.query('SELECT app_user_id,kind FROM app_notifications ORDER BY kind,app_user_id');
+      assert.deepEqual(new Set(notifications.rows.map((row) => `${row.app_user_id}:${row.kind}`)), new Set([
+        `${users.member}:mission_task_reassigned`, `${users.assignee}:mission_task_unassigned`
+      ]));
+
+      const selfTask = (await createTask(assignmentMission.id, {
+        type: 'checklist', title: 'Owner self assignment', assigned_to: users.owner
+      })).task;
+      assert.equal((await pool.query("SELECT 1 FROM app_notifications WHERE app_user_id=$1 AND kind='mission_task_assigned'", [users.owner])).rowCount, 0);
+      await pool.query('DELETE FROM app_notifications');
+      response = await json(sessions.owner, 'PATCH', `/api/missions/${assignmentMission.id}/tasks/${selfTask.id}`, { assigned_to: users.owner });
+      assert.equal(response.status, 200);
+      assert.equal((await pool.query('SELECT 1 FROM app_notifications')).rowCount, 0);
+      response = await json(sessions.owner, 'PATCH', `/api/missions/${assignmentMission.id}/tasks/${selfTask.id}`, { assigned_to: null });
+      assert.equal(response.status, 200);
+      assert.equal((await pool.query('SELECT 1 FROM app_notifications')).rowCount, 0);
+
+      await pool.query('DELETE FROM app_notifications');
+      response = await json(sessions.owner, 'PATCH', `/api/missions/${assignmentMission.id}/tasks/${assigned.id}`, { status: 'completed' });
+      assert.equal(response.status, 200);
+      assert.equal((await pool.query("SELECT COUNT(*)::int AS count FROM app_notifications WHERE app_user_id=$1 AND kind='mission_task_completed'", [users.member])).rows[0].count, 1);
+      response = await json(sessions.owner, 'PATCH', `/api/missions/${assignmentMission.id}/tasks/${assigned.id}`, { status: 'open' });
+      assert.equal(response.status, 200);
+      assert.equal((await pool.query("SELECT COUNT(*)::int AS count FROM app_notifications WHERE app_user_id=$1 AND kind='mission_task_reopened'", [users.member])).rows[0].count, 1);
+      response = await json(sessions.owner, 'PATCH', `/api/missions/${assignmentMission.id}/tasks/${assigned.id}`, { status: 'open' });
+      assert.equal(response.status, 200);
+      assert.equal((await pool.query("SELECT COUNT(*)::int AS count FROM app_notifications WHERE app_user_id=$1 AND kind='mission_task_reopened'", [users.member])).rows[0].count, 1);
+
+      const contributionMission = await createMission('Notification contribution');
+      const contributionTask = (await createTask(contributionMission.id, {
+        type: 'item', title: 'Bring ore', assigned_to: users.assignee, target_quantity: 5, unit: 'SCU'
+      })).task;
+      await pool.query('DELETE FROM app_notifications');
+      response = await json(sessions.owner, 'POST', `/api/missions/${contributionMission.id}/tasks/${contributionTask.id}/contributions`, { quantity: 3 });
+      assert.equal(response.status, 201);
+      assert.equal((await pool.query("SELECT COUNT(*)::int AS count FROM app_notifications WHERE app_user_id=$1 AND kind='mission_item_contribution'", [users.assignee])).rows[0].count, 1);
+      response = await json(sessions.assignee, 'POST', `/api/missions/${contributionMission.id}/tasks/${contributionTask.id}/contributions`, { quantity: 1 });
+      assert.equal(response.status, 201);
+      assert.equal((await pool.query("SELECT COUNT(*)::int AS count FROM app_notifications WHERE kind='mission_item_contribution'")).rows[0].count, 1);
+      response = await json(sessions.owner, 'POST', `/api/missions/${contributionMission.id}/tasks/${contributionTask.id}/contributions`, { quantity: 2 });
+      assert.equal(response.status, 409);
+      assert.equal((await pool.query("SELECT COUNT(*)::int AS count FROM app_notifications WHERE kind='mission_item_contribution'")).rows[0].count, 1);
+
+      const completionMission = await createMission('Completion recipient set');
+      const ownerTask = (await createTask(completionMission.id, {
+        type: 'checklist', title: 'Owner role overlap', assigned_to: users.owner
+      })).task;
+      assert.equal((await json(sessions.owner, 'PATCH', `/api/missions/${completionMission.id}/tasks/${ownerTask.id}`, { status: 'completed' })).status, 200);
+      const removedTask = (await createTask(completionMission.id, {
+        type: 'checklist', title: 'Former member candidate', assigned_to: users.member
+      })).task;
+      assert.equal((await json(sessions.owner, 'PATCH', `/api/missions/${completionMission.id}/tasks/${removedTask.id}`, { status: 'completed' })).status, 200);
+      const finalTask = (await createTask(completionMission.id, {
+        type: 'checklist', title: 'Final completion', assigned_to: users.assignee
+      })).task;
+      const inactiveUser = randomUUID();
+      await pool.query(
+        "INSERT INTO app_users (id,email,display_name,account_status) VALUES ($1,$2,'Inactive Candidate','blocked')",
+        [inactiveUser, `inactive-${inactiveUser}@example.test`]
+      );
+      await pool.query("INSERT INTO group_members (group_id,app_user_id,role) VALUES ($1,$2,'member')", [groups.a, inactiveUser]);
+      await pool.query(
+        "INSERT INTO mission_tasks (mission_id,type,title,assigned_to,status,completed_at) VALUES ($1,'checklist','Inactive completed task',$2,'completed',now())",
+        [completionMission.id, inactiveUser]
+      );
+      await pool.query('DELETE FROM app_notifications');
+      await pool.query('UPDATE app_users SET is_admin=true WHERE id=$1', [users.outsider]);
+      assert.equal((await form(sessions.owner, '/api/groups/remove-member', { group_id: groups.a, member_id: users.member })).status, 200);
+      response = await json(sessions.assignee, 'PATCH', `/api/missions/${completionMission.id}/tasks/${finalTask.id}`, { status: 'completed' });
+      assert.equal(response.status, 200);
+      assert.equal(response.body.mission.status, 'completed');
+      notifications = await pool.query("SELECT app_user_id,kind FROM app_notifications WHERE kind='mission_completed'");
+      assert.deepEqual(notifications.rows, [{ app_user_id: users.owner, kind: 'mission_completed' }]);
+      assert.equal((await pool.query('SELECT 1 FROM app_notifications WHERE app_user_id=$1', [users.member])).rowCount, 0);
+      assert.equal((await pool.query('SELECT 1 FROM app_notifications WHERE app_user_id=$1', [users.outsider])).rowCount, 0);
+      assert.equal((await pool.query('SELECT 1 FROM app_notifications WHERE app_user_id=$1', [inactiveUser])).rowCount, 0);
+      await pool.query('UPDATE app_users SET is_admin=false WHERE id=$1', [users.outsider]);
+
+      response = await json(sessions.assignee, 'PATCH', `/api/missions/${completionMission.id}/tasks/${finalTask.id}`, { status: 'open' });
+      assert.equal(response.status, 200);
+      response = await json(sessions.assignee, 'PATCH', `/api/missions/${completionMission.id}/tasks/${finalTask.id}`, { status: 'completed' });
+      assert.equal(response.status, 200);
+      assert.equal((await pool.query("SELECT COUNT(*)::int AS count FROM app_notifications WHERE app_user_id=$1 AND kind='mission_completed'", [users.owner])).rows[0].count, 2);
+      response = await json(sessions.assignee, 'PATCH', `/api/missions/${completionMission.id}/tasks/${finalTask.id}`, { status: 'completed' });
+      assert.equal(response.status, 200);
+      assert.equal((await pool.query("SELECT COUNT(*)::int AS count FROM app_notifications WHERE app_user_id=$1 AND kind='mission_completed'", [users.owner])).rows[0].count, 2);
+
+      await pool.query(
+        "INSERT INTO group_members (group_id,app_user_id,role) VALUES ($1,$2,'member') ON CONFLICT (group_id,app_user_id) DO NOTHING",
+        [groups.a, users.member]
+      );
+      await pool.query('DELETE FROM app_notifications');
+    });
+
     await t.test('authenticates real sessions and enforces API and group isolation', async () => {
       coreMission = await createMission('Backend integration flow');
       let response = await request(`/api/missions/${coreMission.id}`, { session: sessions.owner });
