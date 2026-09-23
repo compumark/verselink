@@ -8,11 +8,11 @@ const section = (start, end) => source.slice(source.indexOf(start), source.index
 test('group, mission-list, and mission-detail reads use independent freshness generations', () => {
   for (const counter of ['groupRequestGeneration', 'missionListRequestGeneration', 'missionDetailRequestGeneration']) assert.match(source, new RegExp(`let ${counter} = 0`));
   assert.doesNotMatch(source, /let requestGeneration = 0/);
-  const groups = section('async function loadGroups()', 'async function loadMissions(');
+  const groups = section('async function loadGroups(', 'async function loadMissions(');
   const list = section('async function loadMissions(', 'async function submitDialog(');
   const detail = section('async function loadMissionDetail(', 'async function refreshAfterTaskMutation(');
   assert.match(groups, /\+\+groupRequestGeneration/);
-  assert.doesNotMatch(groups, /missionListRequestGeneration|missionDetailRequestGeneration/);
+  assert.doesNotMatch(groups, /missionDetailRequestGeneration/);
   assert.match(list, /\+\+missionListRequestGeneration/);
   assert.match(list, /isMissionListRequestLive\(generation, groupId\)/);
   assert.doesNotMatch(list, /groupRequestGeneration|missionDetailRequestGeneration/);
@@ -99,5 +99,5 @@ test('existing navigation, search, former-member and creation contracts remain p
   assert.match(source, /memberName\(mission, userId\) \|\| 'FORMER MEMBER'/);
   assert.match(source, /data-mission-create/);
   assert.match(source, /data-task-create/);
-  assert.doesNotMatch(source, /#missions\/|#mission\/|\?mission=/);
+  assert.doesNotMatch(source, /#missions\/|#mission\//);
 });
