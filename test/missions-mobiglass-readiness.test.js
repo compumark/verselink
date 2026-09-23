@@ -12,3 +12,13 @@ test('missions memoize /api/me across remounts without changing authentication b
   assert.match(source, /finally \{ meRequest = null; \}/);
   assert.match(source, /response\.status === 401/);
 });
+
+test('mission dialogs retain native keyboard-modal focus safety', () => {
+  assert.match(source, /role="dialog" aria-modal="true" aria-labelledby="missions-dialog-title"/);
+  assert.match(source, /event\.key !== 'Tab'/);
+  assert.match(source, /button:not\(\[disabled\]\),input:not\(\[disabled\]\),select:not\(\[disabled\]\),textarea:not\(\[disabled\]\)/);
+  assert.match(source, /event\.shiftKey/);
+  assert.match(source, /focusable\.at\(-1\)/);
+  assert.match(source, /event\.key === 'Escape'/);
+  assert.match(source, /state\.mutationPending/);
+});
