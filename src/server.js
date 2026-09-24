@@ -1891,7 +1891,7 @@ const server = createServer(async (req, res) => {
       const actor = missionActorName(current);
       return db.query(
         `INSERT INTO app_notifications (app_user_id,kind,title,message,mission_id)
-         SELECT DISTINCT u.id,'mission_created','NEW MISSION',$1,$2
+         SELECT DISTINCT u.id,'mission_created','NEW MISSION',$1,$2::uuid
          FROM group_members gm
          JOIN app_users u ON u.id=gm.app_user_id
          WHERE gm.group_id=$3 AND u.account_status='active' AND u.id<>$4`,

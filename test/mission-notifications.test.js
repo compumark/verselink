@@ -33,6 +33,7 @@ test('mission-created notifications target only active group members other than 
   const helper = server.slice(server.indexOf('const insertMissionCreatedNotifications'), server.indexOf('const loadMissionAccess'));
   assert.match(helper, /INSERT INTO app_notifications \(app_user_id,kind,title,message,mission_id\)/);
   assert.match(helper, /SELECT DISTINCT u\.id,'mission_created','NEW MISSION'/);
+  assert.match(helper, /\$2::uuid/);
   assert.match(helper, /FROM group_members gm[\s\S]*JOIN app_users u ON u\.id=gm\.app_user_id/);
   assert.match(helper, /gm\.group_id=\$3 AND u\.account_status='active' AND u\.id<>\$4/);
   assert.match(helper, /missionActorName\(current\)/);
