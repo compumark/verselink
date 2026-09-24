@@ -20,24 +20,25 @@ VerseLink Telemetry
     +-- TelemetryEvent
     +-- TelemetryReducer
     +-- TelemetryState
-    +-- Diagnostics
-    +-- later: VerseLinkApiClient
-                    |
-                    | HTTPS
-                    v
-              VerseLink Server
-                    |
-                    +-- Device Auth
-                    +-- Event Ingest
-                    +-- Presence
-                    +-- Privacy
-                    +-- Location Resolver
-                    |
-                    v
-                PostgreSQL
-                    |
-                    v
-            MobiGlass Crew UI
+           |                 +-- Diagnostics (local)
+           v
+    Explicit schema-1 presence DTO
+           |
+         HTTPS
+           v
+    VerseLink Server
+      +-- Browser-authenticated pairing
+      +-- Per-device authentication/revocation
+      +-- Heartbeat (connection health)
+      +-- Presence snapshot (gameplay state)
+           |
+           v
+    telemetry_presence (latest snapshot per device)
+           |
+      later Phase D: privacy / sharing API
+           |
+           v
+    MobiGlass Crew UI
 ```
 
 ## Client language
@@ -319,24 +320,24 @@ state and can be formatted as a concise deterministic local summary. It does
 not include GEIDs, raw lines, event data maps, network delivery, backend/API
 integration, persistence, or an end-user diagnostics UI.
 
-## Server integration — later phase
+## VerseLink connection — Milestone C contract
 
-Planned endpoints:
+Milestone C is planned as a one-time pairing flow, dedicated revocable
+per-device Bearer credentials, a connection-health heartbeat, and an explicit
+versioned current-presence DTO. The local Go reducer remains authoritative for
+Game.log interpretation; the server receives neither raw logs nor an event
+stream. `telemetry_presence` stores only the latest accepted schema-1 snapshot
+per device. `telemetry_devices` and short-lived pairing records own device and
+pairing lifecycle. Phase C does not require `telemetry_events` or a telemetry
+status GET endpoint.
 
-```text
-POST   /api/telemetry/pair
-POST   /api/telemetry/events
-POST   /api/telemetry/heartbeat
-GET    /api/telemetry/status
-DELETE /api/telemetry/devices/:id
-```
-
-Planned persistence:
-
-- `telemetry_devices`
-- `telemetry_presence`
-- `telemetry_events`
-- location mapping table
+The normative endpoint, request/response, error, rate-limit, lifecycle,
+ordering/idempotency, and privacy contract is in
+[`CONNECTION_CONTRACT.md`](CONNECTION_CONTRACT.md). This architecture document
+summarizes that contract; it does not define a second copy of its field-level
+details. The endpoints are future work, not implemented routes, and must not
+be added to the general implemented-behavior reference in `docs/API.md` until
+their implementation ships.
 
 ## Privacy boundary
 
@@ -350,6 +351,11 @@ Server-side sharing controls must govern at least:
 - current ship,
 - QT destination,
 - party information.
+
+Server ingestion is not user-to-user sharing. Presence remains private to the
+owning account until Phase D defines explicit opt-in, field-level visibility,
+and server-side viewer authorization. The C1 schema initially excludes the
+player handle, ship owner, and Party identities; it permits Party count only.
 
 Future categories such as missions, medical state, crime, and economy require separate opt-in decisions.
 
