@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"syscall"
 	"unsafe"
+
+	"github.com/compumark/verselink-telemetry/internal/settings"
 )
 
 const (
@@ -133,12 +135,16 @@ type notifyIconData struct {
 }
 
 type windowsTray struct {
-	hwnd    uintptr
-	menu    uintptr
-	icon    notifyIconData
-	store   *statusStore
-	onExit  func()
-	removed bool
+	hwnd            uintptr
+	menu            uintptr
+	icon            notifyIconData
+	store           *statusStore
+	onExit          func()
+	removed         bool
+	settingsStore   settings.Store
+	settingsValue   settings.Settings
+	settingsWarning string
+	settingsWindow  *settingsWindow
 }
 
 func newWindowsTray(store *statusStore) (*windowsTray, error) {
@@ -212,6 +218,7 @@ func (t *windowsTray) buildMenu() error {
 		{mfSeparator, 0, ""},
 		{mfString | mfGray, statusMenuID, "Status: Starting"},
 		{mfString, diagnosticsMenuID, "Open diagnostics"},
+		{mfString, settingsMenuID, "Settings..."},
 		{mfSeparator, 0, ""},
 		{mfString, exitMenuID, "Exit"},
 	}
@@ -239,6 +246,12 @@ func (t *windowsTray) run() error {
 		if result == 0 {
 			return nil
 		}
+		if t.settingsWindow != nil {
+			consumed, _, _ := procIsDialogMessage.Call(t.settingsWindow.hwnd, uintptr(unsafe.Pointer(&msg)))
+			if consumed != 0 {
+				continue
+			}
+		}
 		procTranslateMessage.Call(uintptr(unsafe.Pointer(&msg)))
 		procDispatchMessage.Call(uintptr(unsafe.Pointer(&msg)))
 	}
@@ -254,6 +267,9 @@ func (t *windowsTray) postClose() {
 
 func (t *windowsTray) refreshStatus() {
 	text := statusText(t.store.Current())
+	if t.settingsWindow != nil {
+		t.settingsWindow.refreshSummary()
+	}
 	menuText, _ := syscall.UTF16PtrFromString("Status: " + text)
 	procModifyMenu.Call(t.menu, statusMenuID, mfByCommand|mfString|mfGray, statusMenuID, uintptr(unsafe.Pointer(menuText)))
 	copyUTF16(t.icon.Tip[:], "VerseLink Telemetry — "+text)
@@ -275,6 +291,8 @@ func (t *windowsTray) handleCommand(command uintptr) {
 	switch command {
 	case diagnosticsMenuID:
 		showNativeMessage("VerseLink Telemetry Diagnostics", diagnosticsText(t.store.Current()), mbOK|mbIconInfo)
+	case settingsMenuID:
+		t.openSettings()
 	case exitMenuID:
 		if t.onExit != nil {
 			t.onExit()
@@ -283,6 +301,10 @@ func (t *windowsTray) handleCommand(command uintptr) {
 }
 
 func (t *windowsTray) cleanup() {
+	if t.settingsWindow != nil {
+		procDestroyWindow.Call(t.settingsWindow.hwnd)
+		t.settingsWindow = nil
+	}
 	if !t.removed && t.hwnd != 0 {
 		procShellNotifyIcon.Call(nimDelete, uintptr(unsafe.Pointer(&t.icon)))
 		t.removed = true
@@ -301,6 +323,9 @@ func (t *windowsTray) cleanup() {
 func windowProcedure(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 	tray := activeTray
 	if tray != nil {
+		if tray.settingsWindow != nil && tray.settingsWindow.hwnd == hwnd && tray.handleSettingsMessage(hwnd, msg, wParam, lParam) {
+			return 0
+		}
 		switch msg {
 		case trayCallback:
 			if lParam == wmLButtonUp || lParam == wmRButtonUp {

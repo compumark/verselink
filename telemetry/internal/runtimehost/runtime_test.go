@@ -10,6 +10,7 @@ import (
 
 	"github.com/compumark/verselink-telemetry/internal/diagnostics"
 	"github.com/compumark/verselink-telemetry/internal/gamelog"
+	"github.com/compumark/verselink-telemetry/internal/settings"
 	"github.com/compumark/verselink-telemetry/internal/telemetry"
 )
 
@@ -266,6 +267,102 @@ func TestStatusEmitterIgnoresOneTimeRestoreMetadataAfterInitialDelivery(t *testi
 	}
 	if got := len(observer.snapshot()); got != 1 {
 		t.Fatalf("observer updates = %d, want 1", got)
+	}
+}
+
+func TestStatusEmitterDeduplicatesConfigurationWarnings(t *testing.T) {
+	observer := newRecordingObserver()
+	emitter := newStatusEmitter(observer)
+	status := Status{
+		Phase:   PhaseSessionActive,
+		Message: "Session active",
+		Configuration: ConfigurationStatus{
+			ConfiguredMode: settings.ModeManual,
+			Warning:        "Configured manual Game.log is unavailable; using automatic discovery",
+		},
+	}
+	if !emitter.Emit(status) {
+		t.Fatal("initial warning status was suppressed")
+	}
+	if emitter.Emit(status) {
+		t.Fatal("unchanged configuration warning was emitted repeatedly")
+	}
+	if got := len(observer.snapshot()); got != 1 {
+		t.Fatalf("observer updates = %d, want 1", got)
+	}
+}
+
+func TestGameLogConfigurationPriority(t *testing.T) {
+	autoResult := gamelog.LocateResult{Path: `O:\Roberts Space Industries\StarCitizen\LIVE\Game.log`, Strategy: gamelog.StrategyLauncherLog}
+	manualPath := `O:\Roberts Space Industries\StarCitizen\PTU\Game.log`
+	environmentPath := `O:\Roberts Space Industries\StarCitizen\EPTU\Game.log`
+	locator := &scriptedLocator{results: []gamelog.LocateResult{autoResult}}
+	valid := map[string]bool{manualPath: true, environmentPath: true}
+	validate := func(path string) error {
+		if !valid[path] {
+			return errors.New("invalid path")
+		}
+		return nil
+	}
+	storedManual := settings.Settings{Version: 1, GameLog: settings.GameLogConfig{Mode: settings.ModeManual, ManualPath: manualPath}}
+
+	got, config := resolveGameLog(locator, environmentPath, storedManual, ConfigurationStatus{ConfiguredMode: settings.ModeManual, ConfiguredManualPath: manualPath}, validate)
+	if got.Path != environmentPath || got.Strategy != gamelog.StrategyManual || config.Channel != "EPTU" {
+		t.Fatalf("environment override = %#v, %#v", got, config)
+	}
+	got, config = resolveGameLog(locator, "", storedManual, ConfigurationStatus{ConfiguredMode: settings.ModeManual, ConfiguredManualPath: manualPath}, validate)
+	if got.Path != manualPath || got.Strategy != gamelog.StrategyManual || config.Channel != "PTU" {
+		t.Fatalf("saved manual override = %#v, %#v", got, config)
+	}
+	got, config = resolveGameLog(locator, `O:\missing\override.txt`, storedManual, ConfigurationStatus{ConfiguredMode: settings.ModeManual, ConfiguredManualPath: manualPath}, validate)
+	if got.Path != manualPath || got.Strategy != gamelog.StrategyManual || config.Channel != "PTU" || !config.EnvironmentInvalid || config.ManualPathInvalid {
+		t.Fatalf("invalid environment override did not preserve valid saved manual setting: %#v, %#v", got, config)
+	}
+	auto := settings.Defaults()
+	got, config = resolveGameLog(locator, "", auto, ConfigurationStatus{ConfiguredMode: settings.ModeAuto}, validate)
+	if got.Path != autoResult.Path || got.Strategy != autoResult.Strategy || config.Channel != "LIVE" {
+		t.Fatalf("automatic discovery = %#v, %#v", got, config)
+	}
+}
+
+func TestInvalidPersistedManualPathFallsBackAndWarningSurvivesMonitoring(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	observer := newRecordingObserver()
+	manualPath := `O:\Missing\Game.log`
+	autoPath := `O:\Roberts Space Industries\StarCitizen\LIVE\Game.log`
+	session := &fakeSession{started: make(chan struct{}), diagnostics: gamelog.SessionDiagnostics{State: telemetry.TelemetryState{SessionActive: true}}}
+	settingsValue := settings.Settings{Version: 1, GameLog: settings.GameLogConfig{Mode: settings.ModeManual, ManualPath: manualPath}}
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, Config{
+			Locator:         &scriptedLocator{results: []gamelog.LocateResult{{Path: autoPath, Strategy: gamelog.StrategyKnownLocation}}},
+			NewSession:      sessionFactory(session, gamelog.RestoreInfo{}),
+			Observer:        observer,
+			StatusTicks:     make(chan time.Time),
+			GameLogSettings: settingsValue,
+			EnvironmentPath: `O:\missing-env.txt`,
+			ValidatePath: func(path string) error {
+				if path == manualPath || path == `O:\missing-env.txt` {
+					return errors.New("invalid")
+				}
+				return nil
+			},
+		})
+	}()
+	status := waitForPhase(t, observer.updates, PhaseSessionActive)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run() with invalid manual setting = %v", err)
+	}
+	if status.Configuration.ConfiguredMode != settings.ModeManual || status.Configuration.ConfiguredManualPath != manualPath {
+		t.Fatalf("configured manual setting was lost: %#v", status.Configuration)
+	}
+	if status.Configuration.EffectivePath != autoPath || status.Configuration.EffectiveStrategy != gamelog.StrategyKnownLocation || status.Configuration.Channel != "LIVE" {
+		t.Fatalf("automatic fallback not reported: %#v", status.Configuration)
+	}
+	if !strings.Contains(status.Configuration.Warning, "using automatic discovery") {
+		t.Fatalf("fallback warning missing: %#v", status.Configuration)
 	}
 }
 

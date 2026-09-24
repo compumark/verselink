@@ -97,8 +97,9 @@ diagnostics summary. Further diagnostics appear only when meaningful structured
 state changes, such as ship, Quantum Travel, Party count, location, or a source
 reset. It never prints raw `Game.log` lines, GEIDs, or Party member names.
 
-If automatic discovery cannot find Star Citizen, set an optional one-process
-manual path before launching:
+To provide a one-process development/admin override for the selected log,
+set `VERSELINK_GAME_LOG_PATH` before launching. This explicit override takes
+priority over saved tray settings and automatic discovery:
 
 ```powershell
 $env:VERSELINK_GAME_LOG_PATH = 'C:\Program Files\Roberts Space Industries\StarCitizen\LIVE\Game.log'
@@ -146,10 +147,45 @@ Travel state, Party count, and last event. Structured status snapshots remove
 Party member names and never contain raw `Game.log` lines, GEIDs, or raw event
 data maps. No diagnostics are uploaded or persisted.
 
-B2 does not provide persistent settings, a settings UI, a stored manual path,
-Windows autostart, a service, an installer/updater, account pairing, or network
-telemetry. Known live compatibility investigations for shard detection (#48)
-and ship-exit confirmation (#49) remain separate work.
+B2 itself did not provide persistent settings or a settings UI. Windows
+autostart, a service, an installer/updater, account pairing, and network
+telemetry remain out of scope. Known live compatibility investigations for
+shard detection (#48) and ship-exit confirmation (#49) remain separate work.
+
+## B3 local Game.log settings
+
+The Windows tray menu now includes **Settings...**. Settings are stored locally
+at `%LOCALAPPDATA%\VerseLink\Telemetry\settings.json`; no telemetry events,
+raw log lines, GEIDs, Party member names, credentials, or API secrets are saved
+there. The versioned settings file contains only the selected mode and, in
+manual mode, the Game.log path.
+
+Automatic discovery is the default when no settings file exists. In Settings,
+choose **Manual Game.log** and use **Browse...** to select a readable regular
+file named `Game.log`. The app validates the path read-only; selecting a folder,
+another filename, missing file, or unreadable file is rejected. Select
+**Automatic discovery** to clear the manual override. Changes are saved
+atomically and take effect after restarting VerseLink Telemetry.
+
+Game.log selection priority is:
+
+1. a valid `VERSELINK_GAME_LOG_PATH` environment override,
+2. a valid persisted manual path,
+3. the existing automatic locator strategy order.
+
+An invalid environment override does not stop telemetry or change saved
+settings. VerseLink next tries a valid saved manual path, if configured, and
+otherwise uses automatic discovery. An invalid saved manual path remains
+configured while the runtime falls back to automatic discovery. The tray status
+and diagnostics retain the relevant local warning alongside the effective path
+and strategy. A malformed or unsupported settings file uses automatic defaults,
+reports a warning, and is left untouched until the user saves a new
+configuration.
+
+The effective channel is derived from the path shape
+`...\StarCitizen\<channel>\Game.log`, so LIVE, PTU, EPTU, and future channel
+directory names can be shown without storing a separate channel setting.
+Settings are local only and are never uploaded.
 
 The security boundary is explicit. VerseLink Telemetry will not use process
 memory reading, DLL injection, kernel drivers, packet sniffing, keyboard hooks,
