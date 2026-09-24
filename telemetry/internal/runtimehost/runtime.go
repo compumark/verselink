@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/compumark/verselink-telemetry/internal/gamelog"
+	"github.com/compumark/verselink-telemetry/internal/settings"
 	"github.com/compumark/verselink-telemetry/internal/telemetry"
 )
 
@@ -36,6 +37,19 @@ type Status struct {
 	HasRestore     bool
 	Diagnostics    gamelog.SessionDiagnostics
 	HasDiagnostics bool
+	Configuration  ConfigurationStatus
+}
+
+type ConfigurationStatus struct {
+	ConfiguredMode       settings.Mode
+	ConfiguredManualPath string
+	EffectivePath        string
+	EffectiveStrategy    gamelog.DiscoveryStrategy
+	Channel              string
+	Warning              string
+	SettingsLoadWarning  bool
+	EnvironmentInvalid   bool
+	ManualPathInvalid    bool
 }
 
 type Observer interface {
@@ -67,7 +81,10 @@ type Config struct {
 	RetryUnavailable bool
 	StatusTicks      <-chan time.Time
 	RediscoveryTicks <-chan time.Time
-	ManualPath       string
+	GameLogSettings  settings.Settings
+	SettingsWarning  string
+	EnvironmentPath  string
+	ValidatePath     func(string) error
 }
 
 type ErrorKind string
@@ -104,13 +121,28 @@ func IsError(err error, kind ErrorKind) bool {
 }
 
 func Run(ctx context.Context, config Config) error {
+	gameLogSettings := config.GameLogSettings
+	if gameLogSettings.Version == 0 {
+		gameLogSettings = settings.Defaults()
+	}
+	gameLogSettings, normalizeErr := settings.Normalize(gameLogSettings)
+	loadWarning := config.SettingsWarning
+	if normalizeErr != nil {
+		gameLogSettings = settings.Defaults()
+		loadWarning = joinWarnings(loadWarning, normalizeErr.Error())
+	}
+	validatePath := config.ValidatePath
+	if validatePath == nil {
+		validatePath = func(path string) error { return gamelog.ValidateGameLogPath(path, nil) }
+	}
+	environmentPath := config.EnvironmentPath
+	if environmentPath == "" {
+		environmentPath = os.Getenv("VERSELINK_GAME_LOG_PATH")
+	}
+	configured := ConfigurationStatus{ConfiguredMode: gameLogSettings.GameLog.Mode, ConfiguredManualPath: gameLogSettings.GameLog.ManualPath, Warning: loadWarning, SettingsLoadWarning: loadWarning != ""}
 	locator := config.Locator
 	if locator == nil {
-		manualPath := config.ManualPath
-		if manualPath == "" {
-			manualPath = os.Getenv("VERSELINK_GAME_LOG_PATH")
-		}
-		locator = gamelog.NewLocator(gamelog.Config{ManualPath: manualPath})
+		locator = gamelog.NewLocator(gamelog.Config{})
 	}
 	newSession := config.NewSession
 	if newSession == nil {
@@ -133,17 +165,17 @@ func Run(ctx context.Context, config Config) error {
 	}
 
 	emitter := newStatusEmitter(config.Observer)
-	emitter.Emit(Status{Phase: PhaseStarting, Message: "Starting"})
-	emitter.Emit(Status{Phase: PhaseSearching, Message: "Searching for Game.log"})
+	emitter.Emit(Status{Phase: PhaseStarting, Message: "Starting", Configuration: configured})
+	emitter.Emit(Status{Phase: PhaseSearching, Message: "Searching for Game.log", Configuration: configured})
 
 	for {
-		result := locator.Locate()
+		result, effectiveConfig := resolveGameLog(locator, environmentPath, gameLogSettings, configured, validatePath)
 		if result.PlatformUnsupported {
-			emitter.Emit(Status{Phase: PhaseFatal, Message: "Game.log discovery is unsupported on this platform"})
+			emitter.Emit(Status{Phase: PhaseFatal, Message: "Game.log discovery is unsupported on this platform", Configuration: effectiveConfig})
 			return &Error{Kind: ErrorUnsupportedPlatform}
 		}
 		if !result.Found() {
-			emitter.Emit(Status{Phase: PhaseGameLogUnavailable, Message: "Game.log unavailable"})
+			emitter.Emit(Status{Phase: PhaseGameLogUnavailable, Message: "Game.log unavailable", Configuration: effectiveConfig})
 			if !config.RetryUnavailable {
 				return &Error{Kind: ErrorGameLogNotFound}
 			}
@@ -154,21 +186,70 @@ func Run(ctx context.Context, config Config) error {
 		}
 
 		emitter.Emit(Status{
-			Phase:    PhaseMonitoring,
-			Message:  "Monitoring Game.log",
-			Path:     result.Path,
-			Strategy: result.Strategy,
+			Phase:         PhaseMonitoring,
+			Message:       "Monitoring Game.log",
+			Path:          result.Path,
+			Strategy:      result.Strategy,
+			Configuration: effectiveConfig,
 		})
 		session, restore, err := newSession(gamelog.SessionConfig{Path: result.Path, PollInterval: pollInterval})
 		if err != nil || session == nil {
-			emitter.Emit(Status{Phase: PhaseFatal, Message: "Telemetry session could not be initialized", Path: result.Path, Strategy: result.Strategy})
+			emitter.Emit(Status{Phase: PhaseFatal, Message: "Telemetry session could not be initialized", Path: result.Path, Strategy: result.Strategy, Configuration: effectiveConfig})
 			return &Error{Kind: ErrorSessionInitialize}
 		}
 
 		initial := SafeDiagnostics(session.Diagnostics())
-		emitter.Emit(statusForDiagnostics(initial, result, restore, true))
-		return monitorSession(ctx, session, result, restore, statusInterval, config.StatusTicks, emitter)
+		initialStatus := statusForDiagnostics(initial, result, restore, true)
+		initialStatus.Configuration = effectiveConfig
+		emitter.Emit(initialStatus)
+		return monitorSession(ctx, session, result, restore, statusInterval, config.StatusTicks, emitter, effectiveConfig)
 	}
+}
+
+func resolveGameLog(locator Locator, environmentPath string, gameLogSettings settings.Settings, configured ConfigurationStatus, validate func(string) error) (gamelog.LocateResult, ConfigurationStatus) {
+	resultConfig := configured
+	if environmentPath != "" {
+		if err := validate(environmentPath); err == nil {
+			return gamelog.LocateResult{Path: environmentPath, Strategy: gamelog.StrategyManual}, effectiveConfiguration(resultConfig, environmentPath, gamelog.StrategyManual)
+		} else {
+			resultConfig.Warning = joinWarnings(resultConfig.Warning, "VERSELINK_GAME_LOG_PATH is invalid; continuing with saved settings or automatic discovery")
+			resultConfig.EnvironmentInvalid = true
+		}
+	}
+	if gameLogSettings.GameLog.Mode == settings.ModeManual {
+		manualPath := gameLogSettings.GameLog.ManualPath
+		if err := validate(manualPath); err == nil {
+			return gamelog.LocateResult{Path: manualPath, Strategy: gamelog.StrategyManual}, effectiveConfiguration(resultConfig, manualPath, gamelog.StrategyManual)
+		} else {
+			resultConfig.Warning = joinWarnings(resultConfig.Warning, "Configured manual Game.log is unavailable or invalid; using automatic discovery. Open Settings to choose another file or switch to automatic discovery.")
+			resultConfig.ManualPathInvalid = true
+		}
+	}
+	result := locator.Locate()
+	if result.Found() {
+		resultConfig = effectiveConfiguration(resultConfig, result.Path, result.Strategy)
+	}
+	return result, resultConfig
+}
+
+func effectiveConfiguration(config ConfigurationStatus, path string, strategy gamelog.DiscoveryStrategy) ConfigurationStatus {
+	config.EffectivePath = path
+	config.EffectiveStrategy = strategy
+	config.Channel = settings.ChannelFromPath(path)
+	return config
+}
+
+func joinWarnings(first, second string) string {
+	if first == "" {
+		return second
+	}
+	if second == "" {
+		return first
+	}
+	if first == second {
+		return first
+	}
+	return first + "; " + second
 }
 
 func waitForRediscovery(ctx context.Context, ticks <-chan time.Time, interval time.Duration) bool {
@@ -190,7 +271,7 @@ func waitForRediscovery(ctx context.Context, ticks <-chan time.Time, interval ti
 	}
 }
 
-func monitorSession(ctx context.Context, session Session, result gamelog.LocateResult, restore gamelog.RestoreInfo, interval time.Duration, ticks <-chan time.Time, emitter *statusEmitter) error {
+func monitorSession(ctx context.Context, session Session, result gamelog.LocateResult, restore gamelog.RestoreInfo, interval time.Duration, ticks <-chan time.Time, emitter *statusEmitter, configuration ConfigurationStatus) error {
 	runDone := make(chan error, 1)
 	go func() { runDone <- session.Run(ctx) }()
 
@@ -207,12 +288,12 @@ func monitorSession(ctx context.Context, session Session, result gamelog.LocateR
 			if ctx.Err() != nil && err == nil {
 				return nil
 			}
-			emitter.Emit(Status{Phase: PhaseFatal, Message: "Live Game.log session stopped unexpectedly", Path: result.Path, Strategy: result.Strategy})
+			emitter.Emit(Status{Phase: PhaseFatal, Message: "Live Game.log session stopped unexpectedly", Path: result.Path, Strategy: result.Strategy, Configuration: configuration})
 			return &Error{Kind: ErrorSessionRun}
 		case <-ctx.Done():
 			err := <-runDone
 			if err != nil {
-				emitter.Emit(Status{Phase: PhaseFatal, Message: "Live Game.log session stopped unexpectedly", Path: result.Path, Strategy: result.Strategy})
+				emitter.Emit(Status{Phase: PhaseFatal, Message: "Live Game.log session stopped unexpectedly", Path: result.Path, Strategy: result.Strategy, Configuration: configuration})
 				return &Error{Kind: ErrorSessionRun}
 			}
 			return nil
@@ -222,7 +303,9 @@ func monitorSession(ctx context.Context, session Session, result gamelog.LocateR
 				continue
 			}
 			diagnostics := SafeDiagnostics(session.Diagnostics())
-			emitter.Emit(statusForDiagnostics(diagnostics, result, restore, false))
+			status := statusForDiagnostics(diagnostics, result, restore, false)
+			status.Configuration = configuration
+			emitter.Emit(status)
 		}
 	}
 }
@@ -329,6 +412,7 @@ type statusKey struct {
 	Strategy       gamelog.DiscoveryStrategy
 	HasDiagnostics bool
 	Diagnostics    DiagnosticState
+	Configuration  ConfigurationStatus
 }
 
 type statusEmitter struct {
@@ -349,6 +433,7 @@ func (e *statusEmitter) Emit(status Status) bool {
 		Path:           status.Path,
 		Strategy:       status.Strategy,
 		HasDiagnostics: status.HasDiagnostics,
+		Configuration:  status.Configuration,
 	}
 	if status.HasDiagnostics {
 		key.Diagnostics = DiagnosticsState(status.Diagnostics)

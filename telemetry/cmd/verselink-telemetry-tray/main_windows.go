@@ -5,7 +5,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"runtime"
+
+	"github.com/compumark/verselink-telemetry/internal/settings"
 )
 
 func main() {
@@ -21,10 +24,22 @@ func main() {
 
 func runWindowsTray() error {
 	store := &statusStore{}
+	settingsPath, pathErr := settings.LocalSettingsPath(os.Getenv("LOCALAPPDATA"))
+	settingsStore := settings.Store{Path: settingsPath}
+	gameLogSettings := settings.Defaults()
+	var settingsWarning string
+	if pathErr != nil {
+		settingsWarning = "Settings cannot be stored because LOCALAPPDATA is unavailable."
+	} else if loaded, err := settingsStore.Load(); err != nil {
+		settingsWarning = err.Error()
+	} else {
+		gameLogSettings = loaded
+	}
 	tray, err := newWindowsTray(store)
 	if err != nil {
 		return err
 	}
+	tray.configureSettings(settingsStore, gameLogSettings, settingsWarning)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	runtimeDone := make(chan struct{})
@@ -36,7 +51,7 @@ func runWindowsTray() error {
 
 	go func() {
 		defer close(runtimeDone)
-		_ = runTelemetry(ctx, store)
+		_ = runTelemetryWithSettings(ctx, store, gameLogSettings, settingsWarning)
 	}()
 
 	err = tray.run()
