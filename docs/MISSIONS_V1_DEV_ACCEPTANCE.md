@@ -18,6 +18,10 @@ Use this checklist before closing Mission Planning V1 (M1, M2, M3). Record the D
 ## Primary flow
 
 - [ ] Create Mission
+- [ ] Create Mission as Group Member
+- [ ] Verify other active Group Members receive NEW MISSION notification
+- [ ] Verify Mission creator receives no self-notification
+- [ ] Open NEW MISSION notification and verify correct Mission deep link
 - [ ] Create CHECKLIST task
 - [ ] Create ITEM task with target 9
 - [ ] Assign task

@@ -1887,6 +1887,17 @@ const server = createServer(async (req, res) => {
         [`${mission.title} · ${actor} completed the mission`, mission.id, mission.group_id, current.id]
       );
     };
+    const insertMissionCreatedNotifications = async (db, mission, current) => {
+      const actor = missionActorName(current);
+      return db.query(
+        `INSERT INTO app_notifications (app_user_id,kind,title,message,mission_id)
+         SELECT DISTINCT u.id,'mission_created','NEW MISSION',$1,$2::uuid
+         FROM group_members gm
+         JOIN app_users u ON u.id=gm.app_user_id
+         WHERE gm.group_id=$3 AND u.account_status='active' AND u.id<>$4`,
+        [`${mission.title} · ${actor} created a new mission`, mission.id, mission.group_id, current.id]
+      );
+    };
     const loadMissionAccess = async (missionId, appUserId, db = pool) => (await db.query(
       `SELECT m.id,m.group_id,m.created_by,m.title,gm.role
        FROM missions m
@@ -1992,11 +2003,22 @@ const server = createServer(async (req, res) => {
         if (!uuidPattern.test(groupId) || !validText(title) || (description !== null && (typeof description !== "string" || description.length > 500))) return json(res, 400, { error: "invalid mission" });
         const access = await pool.query("SELECT 1 FROM group_members WHERE group_id=$1 AND app_user_id=$2", [groupId, current.id]);
         if (!access.rowCount) return json(res, 403, { error: "group member required" });
-        const result = await pool.query(
-          "INSERT INTO missions (group_id,created_by,title,description) VALUES ($1,$2,$3,$4) RETURNING id,group_id,created_by,title,description,status,created_at,updated_at,completed_at",
-          [groupId, current.id, title, description]
-        );
-        return json(res, 201, { mission: result.rows[0] });
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          const result = await client.query(
+            "INSERT INTO missions (group_id,created_by,title,description) VALUES ($1,$2,$3,$4) RETURNING id,group_id,created_by,title,description,status,created_at,updated_at,completed_at",
+            [groupId, current.id, title, description]
+          );
+          await insertMissionCreatedNotifications(client, result.rows[0], current);
+          await client.query("COMMIT");
+          return json(res, 201, { mission: result.rows[0] });
+        } catch (error) {
+          await client.query("ROLLBACK").catch(() => {});
+          throw error;
+        } finally {
+          client.release();
+        }
       }
     }
 
