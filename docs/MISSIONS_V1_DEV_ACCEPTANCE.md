@@ -1,78 +1,85 @@
 # Mission Planning V1 — DEV Acceptance
 
-Baseline: `ac2909e7d02d589827e14709a21f9761c5d213d7`  
-Status: **PENDING DEV ACCEPTANCE**
+Final accepted baseline: `dd67d9555ae70b1c199b8c9b0127b2eba1c7af47`  
+Status: **DEV ACCEPTANCE COMPLETE — 24.09.2026**
 
-Use this checklist before closing Mission Planning V1 (M1, M2, M3). Record the DEV URL, deployed SHA, desktop browser, mobile width, test account/group, and tested Stanton, Nyx, and Pyro themes. This is a DEV-environment checklist; production behavior has not been accepted by this document.
+Mission Planning V1 (M1, M2, M3) completed its documented DEV acceptance on 24.09.2026. Final confirmation is recorded in GitHub issue #73. This remains a DEV-environment acceptance record; the stable 1.4.0 release is prepared separately.
 
 ## Environment
 
-- [ ] DEV URL: ____________________
-- [ ] Deployed SHA: ____________________
-- [ ] Desktop browser: ____________________
-- [ ] Mobile / responsive width: ____________________
-- [ ] Stanton theme
-- [ ] Nyx theme
-- [ ] Pyro theme
+- [x] Final DEV deployment on the accepted Mission V1 baseline
+- [x] Desktop browser pass
+- [x] Mobile / responsive pass
+- [x] Stanton theme
+- [x] Nyx theme
+- [x] Pyro theme
 
 ## Primary flow
 
-- [ ] Create Mission
-- [ ] Create Mission as Group Member
-- [ ] Verify other active Group Members receive NEW MISSION notification
-- [ ] Verify Mission creator receives no self-notification
-- [ ] Open NEW MISSION notification and verify correct Mission deep link
-- [ ] Create CHECKLIST task
-- [ ] Create ITEM task with target 9
-- [ ] Assign task
-- [ ] Reassign task
-- [ ] Unassign task
-- [ ] Complete CHECKLIST
-- [ ] Reopen CHECKLIST
-- [ ] Contribute 3
-- [ ] Contribute remaining 6
-- [ ] Verify contribution history
-- [ ] Verify Mission becomes completed
-- [ ] Add new open task
-- [ ] Verify Mission reopens
-- [ ] Verify Mission notification
-- [ ] Verify Task notification
-- [ ] Verify Mission deep link
-- [ ] Verify Task deep link
-- [ ] Copy Mission Link
-- [ ] Open copied Mission Link in fresh tab
-- [ ] Copy Task Link
-- [ ] Open copied Task Link in fresh tab
-- [ ] Verify compact Assignment controls
-- [ ] Verify compact Contribution controls
-- [ ] Refresh Mission view
-- [ ] Browser Back
-- [ ] Browser Forward
-- [ ] Remove member
-- [ ] Verify former-member display
-- [ ] Verify desktop layout
-- [ ] Verify mobile layout
-- [ ] Verify keyboard dialog operation
-- [ ] Verify Stanton theme
-- [ ] Verify Nyx theme
-- [ ] Verify Pyro theme
-- [ ] Verify Route/Waypoint Missions launcher icon
-- [ ] Verify Missions icon in bottom navigation
-- [ ] Compare Missions icon optical weight with Group Management
+- [x] Create Mission
+- [x] Create Mission as Group Member
+- [x] Verify other active Group Members receive NEW MISSION notification
+- [x] Verify Mission creator receives no self-notification
+- [x] Open NEW MISSION notification and verify correct Mission deep link
+- [x] Create CHECKLIST task
+- [x] Create ITEM task with target 9
+- [x] Assign task
+- [x] Reassign task
+- [x] Unassign task
+- [x] Complete CHECKLIST
+- [x] Reopen CHECKLIST
+- [x] Contribute 3
+- [x] Contribute remaining 6
+- [x] Verify contribution history
+- [x] Verify Mission becomes completed
+- [x] Add new open task
+- [x] Verify Mission reopens
+- [x] Verify Mission notification
+- [x] Verify Task notification
+- [x] Verify Mission deep link
+- [x] Verify Task deep link
+- [x] Copy Mission Link
+- [x] Open copied Mission Link in fresh tab
+- [x] Copy Task Link
+- [x] Open copied Task Link in fresh tab
+- [x] Verify compact Assignment controls
+- [x] Verify compact Contribution controls
+- [x] Refresh Mission view
+- [x] Browser Back
+- [x] Browser Forward
+- [x] Remove member
+- [x] Verify former-member display
+- [x] Verify desktop layout
+- [x] Verify mobile layout
+- [x] Verify keyboard dialog operation
+- [x] Verify Stanton theme
+- [x] Verify Nyx theme
+- [x] Verify Pyro theme
+- [x] Verify Route/Waypoint Missions launcher icon
+- [x] Verify Missions icon in bottom navigation
+- [x] Compare Missions icon optical weight with Group Management
 
 ## Failure flow
 
-- [ ] Invalid Mission link
-- [ ] Stale Task link
-- [ ] Access removed
-- [ ] API/network failure
-- [ ] Validation error
-- [ ] Over-target conflict
-- [ ] No groups
-- [ ] No Missions
-- [ ] No matching Missions
-- [ ] No tasks
+- [x] Invalid Mission link
+- [x] Stale Task link
+- [x] Access removed
+- [x] API/network failure
+- [x] Validation error
+- [x] Over-target conflict
+- [x] No groups
+- [x] No Missions
+- [x] No matching Missions
+- [x] No tasks
 
 ## Automated evidence
 
-Run `node --test`; PostgreSQL lifecycle coverage requires `TEST_DATABASE_URL`. Record pass/fail/skip totals and any skipped database suites. This checklist does not claim manual acceptance was performed.
+Final automated evidence:
+
+- main CI #197: 237/237 tests passed
+- 0 failed
+- 0 skipped
+- PostgreSQL integration suite passed
+- Docker publish #122 succeeded for the final DEV baseline
+
+Manual acceptance was confirmed in GitHub issue #73 before Mission Planning V1 was closed.
