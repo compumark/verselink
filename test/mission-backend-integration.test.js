@@ -73,6 +73,77 @@ test('mission backend works through real HTTP and PostgreSQL', { skip: !database
       return response.body;
     };
 
+    await t.test('mission-created notifications reach only active group members and resolve through the notification API', async () => {
+      const recipients = {
+        creator: randomUUID(), memberB: randomUUID(), memberC: randomUUID(), blocked: randomUUID(),
+        deleted: randomUUID(), outsider: randomUUID(), admin: randomUUID()
+      };
+      const createdGroup = randomUUID();
+      await pool.query(
+        `INSERT INTO app_users (id,email,display_name,verselink_name,account_status,is_admin) VALUES
+         ($1,$2,'Creator Display','Mission Creator','active',false),
+         ($3,$4,'Member B','Mission Member B','active',false),
+         ($5,$6,'Member C','Mission Member C','active',false),
+         ($7,$8,'Blocked Member','Blocked Member','blocked',false),
+         ($9,$10,'Deleted Member','Deleted Member','deleted',false),
+         ($11,$12,'Outsider','Outsider','active',false),
+         ($13,$14,'Unrelated Admin','Unrelated Admin','active',true)`,
+        [
+          recipients.creator, `mission-created-${recipients.creator}@example.test`,
+          recipients.memberB, `mission-created-${recipients.memberB}@example.test`,
+          recipients.memberC, `mission-created-${recipients.memberC}@example.test`,
+          recipients.blocked, `mission-created-${recipients.blocked}@example.test`,
+          recipients.deleted, `mission-created-${recipients.deleted}@example.test`,
+          recipients.outsider, `mission-created-${recipients.outsider}@example.test`,
+          recipients.admin, `mission-created-${recipients.admin}@example.test`
+        ]
+      );
+      await pool.query('INSERT INTO blueprint_groups (id,name,created_by) VALUES ($1,$2,$3)', [createdGroup, 'Mission Created Notification Group', recipients.creator]);
+      await pool.query(
+        `INSERT INTO group_members (group_id,app_user_id,role) VALUES
+         ($1,$2,'owner'),($1,$3,'member'),($1,$4,'member'),($1,$5,'member'),($1,$6,'member')`,
+        [createdGroup, recipients.creator, recipients.memberB, recipients.memberC, recipients.blocked, recipients.deleted]
+      );
+      const creatorSession = await createSession(pool, pepper, recipients.creator);
+      const memberSession = await createSession(pool, pepper, recipients.memberB);
+      const title = 'Operation Waypoint';
+      const response = await json(creatorSession, 'POST', '/api/missions', { group_id: createdGroup, title });
+      assert.equal(response.status, 201, JSON.stringify(response.body));
+      assert.deepEqual(Object.keys(response.body), ['mission']);
+      const mission = response.body.mission;
+
+      const rows = await pool.query(
+        `SELECT app_user_id,kind,title,message,mission_id,mission_task_id
+         FROM app_notifications WHERE kind='mission_created' AND mission_id=$1
+         ORDER BY app_user_id`,
+        [mission.id]
+      );
+      assert.deepEqual(rows.rows.map((row) => row.app_user_id).sort(), [recipients.memberB, recipients.memberC].sort());
+      assert.equal(new Set(rows.rows.map((row) => row.app_user_id)).size, 2);
+      for (const row of rows.rows) {
+        assert.equal(row.kind, 'mission_created');
+        assert.equal(row.title, 'NEW MISSION');
+        assert.equal(row.mission_id, mission.id);
+        assert.equal(row.mission_task_id, null);
+        assert.match(row.message, /Operation Waypoint/);
+        assert.match(row.message, /Mission Creator/);
+        assert.doesNotMatch(row.message, new RegExp(recipients.creator));
+      }
+      for (const excluded of [recipients.creator, recipients.blocked, recipients.deleted, recipients.outsider, recipients.admin]) {
+        assert.equal(rows.rows.some((row) => row.app_user_id === excluded), false, `unexpected notification for ${excluded}`);
+      }
+
+      const inbox = await request('/api/notifications', { session: memberSession });
+      assert.equal(inbox.status, 200);
+      const notification = inbox.body.notifications.find((item) => item.kind === 'mission_created' && item.mission_id === mission.id);
+      assert.ok(notification);
+      assert.equal(notification.mission_id, mission.id);
+      assert.equal(notification.group_id, createdGroup);
+      assert.equal(notification.mission_task_id, null);
+      assert.equal(notification.mission_title, title);
+      await pool.query('DELETE FROM app_notifications WHERE mission_id=$1', [mission.id]);
+    });
+
     let coreMission;
     let checklistTask;
     let itemTask;
@@ -92,6 +163,7 @@ test('mission backend works through real HTTP and PostgreSQL', { skip: !database
 
       await pool.query('DELETE FROM app_notifications');
       const assignmentMission = await createMission('Notification assignment');
+      await pool.query('DELETE FROM app_notifications WHERE mission_id=$1', [assignmentMission.id]);
       const assigned = (await createTask(assignmentMission.id, {
         type: 'checklist', title: 'Assigned checklist', assigned_to: users.assignee
       })).task;
@@ -143,6 +215,7 @@ test('mission backend works through real HTTP and PostgreSQL', { skip: !database
       assert.equal((await pool.query("SELECT COUNT(*)::int AS count FROM app_notifications WHERE app_user_id=$1 AND kind='mission_task_reopened'", [users.member])).rows[0].count, 1);
 
       const contributionMission = await createMission('Notification contribution');
+      await pool.query('DELETE FROM app_notifications WHERE mission_id=$1', [contributionMission.id]);
       const contributionTask = (await createTask(contributionMission.id, {
         type: 'item', title: 'Bring ore', assigned_to: users.assignee, target_quantity: 5, unit: 'SCU'
       })).task;
@@ -158,6 +231,7 @@ test('mission backend works through real HTTP and PostgreSQL', { skip: !database
       assert.equal((await pool.query("SELECT COUNT(*)::int AS count FROM app_notifications WHERE kind='mission_item_contribution'")).rows[0].count, 1);
 
       const completionMission = await createMission('Completion recipient set');
+      await pool.query('DELETE FROM app_notifications WHERE mission_id=$1', [completionMission.id]);
       const ownerTask = (await createTask(completionMission.id, {
         type: 'checklist', title: 'Owner role overlap', assigned_to: users.owner
       })).task;
@@ -187,9 +261,9 @@ test('mission backend works through real HTTP and PostgreSQL', { skip: !database
       assert.equal(response.body.mission.status, 'completed');
       notifications = await pool.query("SELECT app_user_id,kind FROM app_notifications WHERE kind='mission_completed'");
       assert.deepEqual(notifications.rows, [{ app_user_id: users.owner, kind: 'mission_completed' }]);
-      assert.equal((await pool.query('SELECT 1 FROM app_notifications WHERE app_user_id=$1', [users.member])).rowCount, 0);
-      assert.equal((await pool.query('SELECT 1 FROM app_notifications WHERE app_user_id=$1', [users.outsider])).rowCount, 0);
-      assert.equal((await pool.query('SELECT 1 FROM app_notifications WHERE app_user_id=$1', [inactiveUser])).rowCount, 0);
+      assert.equal((await pool.query("SELECT 1 FROM app_notifications WHERE app_user_id=$1 AND kind='mission_completed'", [users.member])).rowCount, 0);
+      assert.equal((await pool.query("SELECT 1 FROM app_notifications WHERE app_user_id=$1 AND kind='mission_completed'", [users.outsider])).rowCount, 0);
+      assert.equal((await pool.query("SELECT 1 FROM app_notifications WHERE app_user_id=$1 AND kind='mission_completed'", [inactiveUser])).rowCount, 0);
       await pool.query('UPDATE app_users SET is_admin=false WHERE id=$1', [users.outsider]);
 
       response = await json(sessions.assignee, 'PATCH', `/api/missions/${completionMission.id}/tasks/${finalTask.id}`, { status: 'open' });

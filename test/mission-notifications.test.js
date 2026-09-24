@@ -29,8 +29,24 @@ test('mission notification helpers enforce active group membership, self suppres
   assert.doesNotMatch(helpers, /is_admin/);
 });
 
+test('mission-created notifications target only active group members other than the creator', () => {
+  const helper = server.slice(server.indexOf('const insertMissionCreatedNotifications'), server.indexOf('const loadMissionAccess'));
+  assert.match(helper, /INSERT INTO app_notifications \(app_user_id,kind,title,message,mission_id\)/);
+  assert.match(helper, /SELECT DISTINCT u\.id,'mission_created','NEW MISSION'/);
+  assert.match(helper, /FROM group_members gm[\s\S]*JOIN app_users u ON u\.id=gm\.app_user_id/);
+  assert.match(helper, /gm\.group_id=\$3 AND u\.account_status='active' AND u\.id<>\$4/);
+  assert.match(helper, /missionActorName\(current\)/);
+  assert.match(helper, /created a new mission/);
+  assert.doesNotMatch(helper, /is_admin|mission_task_id/);
+
+  const route = server.slice(server.indexOf('if (url.pathname === "/api/missions")'), server.indexOf('const missionMatch = url.pathname.match'));
+  assert.match(route, /BEGIN[\s\S]*INSERT INTO missions[\s\S]*insertMissionCreatedNotifications\([\s\S]*COMMIT/);
+  assert.match(route, /ROLLBACK[\s\S]*finally[\s\S]*client\.release\(\)/);
+});
+
 test('mission mutations emit stable kinds transactionally after validation', () => {
   for (const kind of [
+    'mission_created',
     'mission_task_assigned', 'mission_task_reassigned', 'mission_task_unassigned',
     'mission_task_completed', 'mission_task_reopened', 'mission_item_contribution', 'mission_completed'
   ]) assert.ok(server.includes(`'${kind}'`), `missing kind: ${kind}`);
