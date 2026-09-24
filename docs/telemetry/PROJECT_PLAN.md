@@ -81,18 +81,21 @@ Goal: turn the core into a usable Windows background application.
 
 ## Milestone C — VerseLink Connection
 
-Goal: securely connect a local device to a VerseLink account.
+Goal: provide a local Windows test monitor, then securely connect a local device
+to a VerseLink account.
 
-Planned work:
-
-- `telemetry_devices`,
-- short-lived pairing codes,
-- per-device random credentials,
-- revocation,
-- heartbeat API,
-- event ingest API,
-- payload schema validation and rate limiting,
-- current presence persistence.
+| Item | Description | Status |
+| --- | --- | --- |
+| C0 | Live Telemetry Monitor Window for Windows Testers | IN REVIEW |
+| C1 | Telemetry Connection Contract and Device Security Model | TODO |
+| C2 | Telemetry Device and Pairing Persistence | TODO |
+| C3 | Telemetry Pairing API and Device Credential Issuance | TODO |
+| C4 | Telemetry Device Authentication and Revocation | TODO |
+| C5 | Windows Pairing Flow and Secure Credential Storage | TODO |
+| C6 | Telemetry Heartbeat and Connection Health | TODO |
+| C7 | Telemetry Presence Snapshot Ingest and Persistence | TODO |
+| C8 | Telemetry Device Management in VerseLink | TODO |
+| C9 | Telemetry End-to-End Integration, Resilience and Security Tests | TODO |
 
 No browser session cookie or VerseLink password is stored by the telemetry client.
 

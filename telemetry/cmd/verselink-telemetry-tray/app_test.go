@@ -184,3 +184,92 @@ func TestStatusStoreWakeIsCalled(t *testing.T) {
 		t.Fatal("status update did not wake native tray")
 	}
 }
+
+func TestLiveTelemetryPresentationIncludesCurrentStructuredState(t *testing.T) {
+	status := runtimehost.Status{
+		Phase: runtimehost.PhaseSessionActive, Message: "Session active", Path: `O:\SC\LIVE\Game.log`,
+		Strategy: gamelog.StrategyManual, HasDiagnostics: true,
+		Configuration: runtimehost.ConfigurationStatus{EffectivePath: `O:\SC\LIVE\Game.log`, Channel: "LIVE", EffectiveStrategy: gamelog.StrategyManual},
+		Diagnostics: gamelog.SessionDiagnostics{LinesProcessed: 125, ParserEventCount: 8, SourceResetCount: 1, State: telemetry.TelemetryState{
+			SessionActive: true, PlayerHandle: "PilotOne", Shard: "pu-test-01",
+			LastEventAt:  time.Date(2026, 9, 24, 10, 11, 12, 123456789, time.UTC),
+			Location:     &telemetry.LocationState{Raw: "Area 18", ObservedAt: time.Date(2026, 9, 24, 10, 10, 0, 0, time.UTC)},
+			Jurisdiction: "ArcCorp", Ship: &telemetry.ShipState{Name: "Anvil_Carrack", Owner: "PilotOne"},
+			Quantum: &telemetry.QuantumState{Destination: "Baijini Point", State: "traveling"}, Party: []string{"PrivatePartyMember"},
+		}},
+	}
+	p := presentLiveTelemetry(status)
+	want := strings.Join([]string{
+		"VerseLink Telemetry — Live Monitor",
+		"Status: Session active",
+		"Channel: LIVE",
+		"Discovery strategy: Manual path",
+		`Game.log: O:\SC\LIVE\Game.log`,
+		"Lines processed: 125",
+		"Parser events: 8",
+		"Source resets: 1",
+		"Session: Active",
+		"Player: PilotOne",
+		"Shard: pu-test-01",
+		"Last event: 2026-09-24T10:11:12.123456789Z",
+		"Location: Area 18",
+		"Location observed: 2026-09-24T10:10:00Z",
+		"Jurisdiction: ArcCorp",
+		"Ship: Anvil_Carrack",
+		"Ship owner: PilotOne",
+		"Quantum destination: Baijini Point",
+		"Quantum state: traveling",
+		"Party members: 1",
+	}, "\n")
+	if got := formatLiveTelemetry(p); got != want {
+		t.Errorf("live text mismatch\n got: %q\nwant: %q", got, want)
+	}
+	formatted := formatLiveTelemetry(p)
+	for _, forbidden := range []string{"PrivatePartyMember", "GEID_SECRET_SENTINEL", "RAW_GAME_LOG_SECRET_SENTINEL", "AUTH_TOKEN_SECRET_SENTINEL", "map["} {
+		if strings.Contains(formatted, forbidden) {
+			t.Errorf("live text contains forbidden %q", forbidden)
+		}
+	}
+}
+
+func TestLiveTelemetryPresentationUsesUnknownForUnavailableValues(t *testing.T) {
+	p := presentLiveTelemetry(runtimehost.Status{Phase: runtimehost.PhaseSearching, Message: "Searching for Game.log"})
+	if p.status != "Searching for Game.log" || p.channel != "Unknown" || p.path != "Unknown" || p.lines != "Unknown" || p.player != "Unknown" || p.shard != "Unknown" || p.lastEvent != "Unknown" || p.locationAt != "Unknown" || p.partyCount != "Unknown" {
+		t.Fatalf("startup presentation = %#v", p)
+	}
+	status := runtimehost.Status{Phase: runtimehost.PhaseMonitoring, Message: "RAW_GAME_LOG_SECRET_SENTINEL GEID_SECRET_SENTINEL AUTH_TOKEN_SECRET_SENTINEL", HasDiagnostics: true}
+	p = presentLiveTelemetry(status)
+	if p.status != "Monitoring Game.log" || p.lastEvent != "Unknown" || p.locationAt != "Unknown" || p.ship != "Unknown" || p.quantumDestination != "Unknown" || p.partyCount != "0" || p.lines != "0" {
+		t.Fatalf("empty diagnostics presentation = %#v", p)
+	}
+	formatted := formatLiveTelemetry(p)
+	for _, forbidden := range []string{"RAW_GAME_LOG_SECRET_SENTINEL", "GEID_SECRET_SENTINEL", "AUTH_TOKEN_SECRET_SENTINEL"} {
+		if strings.Contains(formatted, forbidden) {
+			t.Errorf("live text exposed untrusted runtime message %q", forbidden)
+		}
+	}
+}
+
+func TestLiveSnapshotWakeTracksPresentationOnlyWhileVisible(t *testing.T) {
+	store := &statusStore{}
+	store.SetLiveVisible(true)
+	wakes := 0
+	store.SetLiveWake(func() { wakes++ })
+	status := runtimehost.Status{Phase: runtimehost.PhaseMonitoring, Message: "Monitoring Game.log", HasDiagnostics: true, Diagnostics: gamelog.SessionDiagnostics{LinesProcessed: 1}}
+	store.OnLiveSnapshot(status)
+	store.OnLiveSnapshot(status)
+	if wakes != 1 {
+		t.Fatalf("wake count after duplicate snapshots = %d, want 1", wakes)
+	}
+	status.Diagnostics.LinesProcessed++
+	store.OnLiveSnapshot(status)
+	if wakes != 2 {
+		t.Fatalf("wake count after visible counter update = %d, want 2", wakes)
+	}
+	store.SetLiveVisible(false)
+	status.Diagnostics.LinesProcessed++
+	store.OnLiveSnapshot(status)
+	if wakes != 2 {
+		t.Fatalf("hidden monitor caused wake, count = %d", wakes)
+	}
+}

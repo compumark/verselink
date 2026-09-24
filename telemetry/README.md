@@ -147,6 +147,29 @@ Travel state, Party count, and last event. Structured status snapshots remove
 Party member names and never contain raw `Game.log` lines, GEIDs, or raw event
 data maps. No diagnostics are uploaded or persisted.
 
+### Live telemetry monitor (C0)
+
+Choose **Open live telemetry** from the tray menu to keep a native Windows
+monitor window open while testing. It displays the current runtime phase,
+effective Game.log path, discovery strategy and channel; processed-line, parser
+event and source-reset counters; session/player/shard and last-event time;
+location/time/jurisdiction; ship/owner; Quantum Travel destination/state; and
+Party member count. Values update locally from detached structured runtime
+snapshots at approximately one-second intervals. The monitor does not open,
+tail, or parse `Game.log` itself. Missing values are shown as **Unknown**.
+
+**Copy current status** copies a deterministic plain-text snapshot using the
+Windows Unicode clipboard. It includes only the listed structured fields and
+Party count. It excludes Party identities, raw log lines, raw event maps,
+GEIDs, credentials, cookies, passwords, and tokens. Nothing is transmitted to
+a backend; VerseLink account connection and upload are not implemented.
+
+The monitor intentionally reports the telemetry core's current observations
+without compensating for known live compatibility limitations: shard
+detection may be unavailable in some logs (#48), ship exit may not be
+confirmed in the current live test (#49), and Party reconstruction can be
+incomplete in some scenarios. These issues are separate from the monitor.
+
 B2 itself did not provide persistent settings or a settings UI. Windows
 autostart, a service, an installer/updater, account pairing, and network
 telemetry remain out of scope. Known live compatibility investigations for

@@ -70,6 +70,14 @@ type recordingObserver struct {
 	updates  chan Status
 }
 
+type recordingLiveObserver struct{ updates chan Status }
+
+func newRecordingLiveObserver() *recordingLiveObserver {
+	return &recordingLiveObserver{updates: make(chan Status, 32)}
+}
+
+func (o *recordingLiveObserver) OnLiveSnapshot(status Status) { o.updates <- status }
+
 func newRecordingObserver() *recordingObserver {
 	return &recordingObserver{updates: make(chan Status, 32)}
 }
@@ -243,6 +251,59 @@ func TestStatusEmitterSuppressesCounterNoiseButEmitsSourceReset(t *testing.T) {
 	}
 	if got := len(observer.snapshot()); got != 2 {
 		t.Fatalf("observer updates = %d, want 2", got)
+	}
+}
+
+func TestLiveSnapshotsRefreshCountersWithoutChangingSemanticStatus(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	semantic := newRecordingObserver()
+	live := newRecordingLiveObserver()
+	ticks := make(chan time.Time, 1)
+	session := &fakeSession{started: make(chan struct{}), diagnostics: gamelog.SessionDiagnostics{
+		LinesProcessed: 10,
+		State:          telemetry.TelemetryState{SessionActive: true, Party: []string{"CrewMate", "SecondMate"}},
+	}}
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, Config{
+			Locator:    &scriptedLocator{results: []gamelog.LocateResult{{Path: `C:\Game.log`, Strategy: gamelog.StrategyManual}}},
+			NewSession: sessionFactory(session, gamelog.RestoreInfo{}),
+			Observer:   semantic, LiveObserver: live, StatusTicks: ticks,
+		})
+	}()
+	var initial Status
+	for initial.Phase != PhaseSessionActive {
+		select {
+		case initial = <-live.updates:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for initial live session snapshot")
+		}
+	}
+	if len(initial.Diagnostics.State.Party) != 2 || initial.Diagnostics.State.Party[0] != "" || initial.Diagnostics.State.Party[1] != "" {
+		t.Fatalf("live snapshot did not redact Party identities: %#v", initial.Diagnostics.State.Party)
+	}
+	semanticBefore := len(semantic.snapshot())
+	session.setDiagnostics(gamelog.SessionDiagnostics{LinesProcessed: 11, ParserEventCount: 1, State: telemetry.TelemetryState{SessionActive: true, Party: []string{"CrewMate", "SecondMate"}}})
+	ticks <- time.Now()
+	select {
+	case refreshed := <-live.updates:
+		if refreshed.Diagnostics.LinesProcessed != 11 || refreshed.Diagnostics.ParserEventCount != 1 {
+			t.Fatalf("live counters = %d/%d, want 11/1", refreshed.Diagnostics.LinesProcessed, refreshed.Diagnostics.ParserEventCount)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("counter-only change did not refresh the live snapshot")
+	}
+	if got := len(semantic.snapshot()); got != semanticBefore {
+		t.Fatalf("counter-only change emitted semantic status: count %d -> %d", semanticBefore, got)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	ticks <- time.Now()
+	if got := len(live.updates); got != 0 {
+		t.Fatalf("live snapshots continued after Run returned: %d queued", got)
 	}
 }
 

@@ -56,6 +56,12 @@ type Observer interface {
 	OnRuntimeStatus(Status)
 }
 
+// LiveSnapshotObserver receives bounded, privacy-safe snapshots independently
+// of semantic status deduplication. It is intended for local UI presentation.
+type LiveSnapshotObserver interface {
+	OnLiveSnapshot(Status)
+}
+
 type ObserverFunc func(Status)
 
 func (f ObserverFunc) OnRuntimeStatus(status Status) { f(status) }
@@ -75,6 +81,7 @@ type Config struct {
 	Locator          Locator
 	NewSession       SessionFactory
 	Observer         Observer
+	LiveObserver     LiveSnapshotObserver
 	PollInterval     time.Duration
 	StatusInterval   time.Duration
 	RetryInterval    time.Duration
@@ -165,17 +172,21 @@ func Run(ctx context.Context, config Config) error {
 	}
 
 	emitter := newStatusEmitter(config.Observer)
-	emitter.Emit(Status{Phase: PhaseStarting, Message: "Starting", Configuration: configured})
-	emitter.Emit(Status{Phase: PhaseSearching, Message: "Searching for Game.log", Configuration: configured})
+	emit := func(status Status) {
+		emitter.Emit(status)
+		publishLiveSnapshot(config.LiveObserver, status)
+	}
+	emit(Status{Phase: PhaseStarting, Message: "Starting", Configuration: configured})
+	emit(Status{Phase: PhaseSearching, Message: "Searching for Game.log", Configuration: configured})
 
 	for {
 		result, effectiveConfig := resolveGameLog(locator, environmentPath, gameLogSettings, configured, validatePath)
 		if result.PlatformUnsupported {
-			emitter.Emit(Status{Phase: PhaseFatal, Message: "Game.log discovery is unsupported on this platform", Configuration: effectiveConfig})
+			emit(Status{Phase: PhaseFatal, Message: "Game.log discovery is unsupported on this platform", Configuration: effectiveConfig})
 			return &Error{Kind: ErrorUnsupportedPlatform}
 		}
 		if !result.Found() {
-			emitter.Emit(Status{Phase: PhaseGameLogUnavailable, Message: "Game.log unavailable", Configuration: effectiveConfig})
+			emit(Status{Phase: PhaseGameLogUnavailable, Message: "Game.log unavailable", Configuration: effectiveConfig})
 			if !config.RetryUnavailable {
 				return &Error{Kind: ErrorGameLogNotFound}
 			}
@@ -185,7 +196,7 @@ func Run(ctx context.Context, config Config) error {
 			continue
 		}
 
-		emitter.Emit(Status{
+		emit(Status{
 			Phase:         PhaseMonitoring,
 			Message:       "Monitoring Game.log",
 			Path:          result.Path,
@@ -194,15 +205,15 @@ func Run(ctx context.Context, config Config) error {
 		})
 		session, restore, err := newSession(gamelog.SessionConfig{Path: result.Path, PollInterval: pollInterval})
 		if err != nil || session == nil {
-			emitter.Emit(Status{Phase: PhaseFatal, Message: "Telemetry session could not be initialized", Path: result.Path, Strategy: result.Strategy, Configuration: effectiveConfig})
+			emit(Status{Phase: PhaseFatal, Message: "Telemetry session could not be initialized", Path: result.Path, Strategy: result.Strategy, Configuration: effectiveConfig})
 			return &Error{Kind: ErrorSessionInitialize}
 		}
 
 		initial := SafeDiagnostics(session.Diagnostics())
 		initialStatus := statusForDiagnostics(initial, result, restore, true)
 		initialStatus.Configuration = effectiveConfig
-		emitter.Emit(initialStatus)
-		return monitorSession(ctx, session, result, restore, statusInterval, config.StatusTicks, emitter, effectiveConfig)
+		emit(initialStatus)
+		return monitorSession(ctx, session, result, restore, statusInterval, config.StatusTicks, emitter, config.LiveObserver, effectiveConfig)
 	}
 }
 
@@ -271,7 +282,7 @@ func waitForRediscovery(ctx context.Context, ticks <-chan time.Time, interval ti
 	}
 }
 
-func monitorSession(ctx context.Context, session Session, result gamelog.LocateResult, restore gamelog.RestoreInfo, interval time.Duration, ticks <-chan time.Time, emitter *statusEmitter, configuration ConfigurationStatus) error {
+func monitorSession(ctx context.Context, session Session, result gamelog.LocateResult, restore gamelog.RestoreInfo, interval time.Duration, ticks <-chan time.Time, emitter *statusEmitter, liveObserver LiveSnapshotObserver, configuration ConfigurationStatus) error {
 	runDone := make(chan error, 1)
 	go func() { runDone <- session.Run(ctx) }()
 
@@ -288,12 +299,16 @@ func monitorSession(ctx context.Context, session Session, result gamelog.LocateR
 			if ctx.Err() != nil && err == nil {
 				return nil
 			}
-			emitter.Emit(Status{Phase: PhaseFatal, Message: "Live Game.log session stopped unexpectedly", Path: result.Path, Strategy: result.Strategy, Configuration: configuration})
+			status := Status{Phase: PhaseFatal, Message: "Live Game.log session stopped unexpectedly", Path: result.Path, Strategy: result.Strategy, Configuration: configuration}
+			emitter.Emit(status)
+			publishLiveSnapshot(liveObserver, status)
 			return &Error{Kind: ErrorSessionRun}
 		case <-ctx.Done():
 			err := <-runDone
 			if err != nil {
-				emitter.Emit(Status{Phase: PhaseFatal, Message: "Live Game.log session stopped unexpectedly", Path: result.Path, Strategy: result.Strategy, Configuration: configuration})
+				status := Status{Phase: PhaseFatal, Message: "Live Game.log session stopped unexpectedly", Path: result.Path, Strategy: result.Strategy, Configuration: configuration}
+				emitter.Emit(status)
+				publishLiveSnapshot(liveObserver, status)
 				return &Error{Kind: ErrorSessionRun}
 			}
 			return nil
@@ -305,9 +320,18 @@ func monitorSession(ctx context.Context, session Session, result gamelog.LocateR
 			diagnostics := SafeDiagnostics(session.Diagnostics())
 			status := statusForDiagnostics(diagnostics, result, restore, false)
 			status.Configuration = configuration
+			publishLiveSnapshot(liveObserver, status)
 			emitter.Emit(status)
 		}
 	}
+}
+
+func publishLiveSnapshot(observer LiveSnapshotObserver, status Status) {
+	if observer == nil {
+		return
+	}
+	status.Diagnostics = SafeDiagnostics(status.Diagnostics)
+	observer.OnLiveSnapshot(status)
 }
 
 func statusForDiagnostics(snapshot gamelog.SessionDiagnostics, result gamelog.LocateResult, restore gamelog.RestoreInfo, includeRestore bool) Status {
