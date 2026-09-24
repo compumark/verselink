@@ -88,7 +88,7 @@ to a VerseLink account.
 | --- | --- | --- |
 | C0 | Live Telemetry Monitor Window for Windows Testers | COMPLETE |
 | C1 | Telemetry Connection Contract and Device Security Model | COMPLETE |
-| C2 | Telemetry Device and Pairing Persistence | IN REVIEW |
+| C2 | Telemetry Device and Pairing Persistence | COMPLETE |
 | C3 | Telemetry Pairing API and Device Credential Issuance | TODO |
 | C4 | Telemetry Device Authentication and Revocation | TODO |
 | C5 | Windows Pairing Flow and Secure Credential Storage | TODO |
