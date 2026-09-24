@@ -11,14 +11,15 @@ import (
 )
 
 const (
-	wmDestroy    = 0x0002
-	wmClose      = 0x0010
-	wmCommand    = 0x0111
-	wmLButtonUp  = 0x0202
-	wmRButtonUp  = 0x0205
-	wmApp        = 0x8000
-	trayCallback = wmApp + 1
-	statusUpdate = wmApp + 2
+	wmDestroy        = 0x0002
+	wmClose          = 0x0010
+	wmCommand        = 0x0111
+	wmLButtonUp      = 0x0202
+	wmRButtonUp      = 0x0205
+	wmApp            = 0x8000
+	trayCallback     = wmApp + 1
+	statusUpdate     = wmApp + 2
+	liveStatusUpdate = wmApp + 3
 
 	nimAdd     = 0x00000000
 	nimModify  = 0x00000001
@@ -40,6 +41,7 @@ const (
 	tpmReturnCommand = 0x0100
 
 	swHide      = 0
+	swRestore   = 9
 	mbOK        = 0x00000000
 	mbIconInfo  = 0x00000040
 	mbIconError = 0x00000010
@@ -48,6 +50,7 @@ const (
 	statusMenuID      = 1001
 	diagnosticsMenuID = 1002
 	exitMenuID        = 1003
+	liveMonitorMenuID = 1005
 )
 
 var (
@@ -73,6 +76,9 @@ var (
 	procSetForegroundWindow = user32.NewProc("SetForegroundWindow")
 	procLoadImage           = user32.NewProc("LoadImageW")
 	procMessageBox          = user32.NewProc("MessageBoxW")
+	procGetFocus            = user32.NewProc("GetFocus")
+	procIsChild             = user32.NewProc("IsChild")
+	procIsWindowVisible     = user32.NewProc("IsWindowVisible")
 	procShellNotifyIcon     = shell32.NewProc("Shell_NotifyIconW")
 	procGetModuleHandle     = kernel32.NewProc("GetModuleHandleW")
 
@@ -145,6 +151,7 @@ type windowsTray struct {
 	settingsValue   settings.Settings
 	settingsWarning string
 	settingsWindow  *settingsWindow
+	liveWindow      *liveMonitorWindow
 }
 
 func newWindowsTray(store *statusStore) (*windowsTray, error) {
@@ -217,6 +224,7 @@ func (t *windowsTray) buildMenu() error {
 		{mfString | mfGray, titleMenuID, "VerseLink Telemetry"},
 		{mfSeparator, 0, ""},
 		{mfString | mfGray, statusMenuID, "Status: Starting"},
+		{mfString, liveMonitorMenuID, "Open live telemetry"},
 		{mfString, diagnosticsMenuID, "Open diagnostics"},
 		{mfString, settingsMenuID, "Settings..."},
 		{mfSeparator, 0, ""},
@@ -236,7 +244,6 @@ func (t *windowsTray) buildMenu() error {
 }
 
 func (t *windowsTray) run() error {
-	defer t.cleanup()
 	var msg message
 	for {
 		result, _, err := procGetMessage.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0)
@@ -246,19 +253,41 @@ func (t *windowsTray) run() error {
 		if result == 0 {
 			return nil
 		}
-		if t.settingsWindow != nil {
-			consumed, _, _ := procIsDialogMessage.Call(t.settingsWindow.hwnd, uintptr(unsafe.Pointer(&msg)))
-			if consumed != 0 {
-				continue
-			}
+		if t.preprocessDialogMessage(uintptr(unsafe.Pointer(&msg))) {
+			continue
 		}
 		procTranslateMessage.Call(uintptr(unsafe.Pointer(&msg)))
 		procDispatchMessage.Call(uintptr(unsafe.Pointer(&msg)))
 	}
 }
 
+func (t *windowsTray) preprocessDialogMessage(msg uintptr) bool {
+	focus, _, _ := procGetFocus.Call()
+	for _, hwnd := range []uintptr{windowHandle(t.liveWindow), windowHandle(t.settingsWindow)} {
+		visible, _, _ := procIsWindowVisible.Call(hwnd)
+		child, _, _ := procIsChild.Call(hwnd, focus)
+		if hwnd == 0 || visible == 0 || (focus != hwnd && child == 0) {
+			continue
+		}
+		consumed, _, _ := procIsDialogMessage.Call(hwnd, msg)
+		return consumed != 0
+	}
+	return false
+}
+
+func windowHandle(window interface{ handle() uintptr }) uintptr {
+	if window == nil {
+		return 0
+	}
+	return window.handle()
+}
+
 func (t *windowsTray) postStatusUpdate() {
 	procPostMessage.Call(t.hwnd, statusUpdate, 0, 0)
+}
+
+func (t *windowsTray) postLiveStatusUpdate() {
+	procPostMessage.Call(t.hwnd, liveStatusUpdate, 0, 0)
 }
 
 func (t *windowsTray) postClose() {
@@ -291,6 +320,8 @@ func (t *windowsTray) handleCommand(command uintptr) {
 	switch command {
 	case diagnosticsMenuID:
 		showNativeMessage("VerseLink Telemetry Diagnostics", diagnosticsText(t.store.Current()), mbOK|mbIconInfo)
+	case liveMonitorMenuID:
+		t.openLiveMonitor()
 	case settingsMenuID:
 		t.openSettings()
 	case exitMenuID:
@@ -301,6 +332,10 @@ func (t *windowsTray) handleCommand(command uintptr) {
 }
 
 func (t *windowsTray) cleanup() {
+	if t.liveWindow != nil {
+		procDestroyWindow.Call(t.liveWindow.hwnd)
+		t.liveWindow = nil
+	}
 	if t.settingsWindow != nil {
 		procDestroyWindow.Call(t.settingsWindow.hwnd)
 		t.settingsWindow = nil
@@ -326,6 +361,9 @@ func windowProcedure(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 		if tray.settingsWindow != nil && tray.settingsWindow.hwnd == hwnd && tray.handleSettingsMessage(hwnd, msg, wParam, lParam) {
 			return 0
 		}
+		if tray.liveWindow != nil && tray.liveWindow.hwnd == hwnd && tray.handleLiveMonitorMessage(hwnd, msg, wParam, lParam) {
+			return 0
+		}
 		switch msg {
 		case trayCallback:
 			if lParam == wmLButtonUp || lParam == wmRButtonUp {
@@ -335,13 +373,15 @@ func windowProcedure(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 		case statusUpdate:
 			tray.refreshStatus()
 			return 0
+		case liveStatusUpdate:
+			tray.refreshLiveMonitor()
+			return 0
 		case wmCommand:
 			tray.handleCommand(wParam & 0xffff)
 			return 0
 		case wmClose:
 			// The shutdown controller posts WM_CLOSE only after the telemetry
-			// runtime has stopped. End the loop now; deferred cleanup removes
-			// the icon before destroying the hidden window.
+			// runtime has stopped. The caller then performs cleanup on this OS thread.
 			procPostQuitMessage.Call(0)
 			return 0
 		case wmDestroy:

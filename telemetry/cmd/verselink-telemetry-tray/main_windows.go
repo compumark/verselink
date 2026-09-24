@@ -44,18 +44,29 @@ func runWindowsTray() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	runtimeDone := make(chan struct{})
 	shutdown := newShutdownController(cancel, runtimeDone)
+	exitPostDone := make(chan struct{})
+	exitRequested := false
 	tray.onExit = func() {
-		shutdown.Request(tray.postClose)
+		exitRequested = true
+		shutdown.Request(func() {
+			tray.postClose()
+			close(exitPostDone)
+		})
 	}
 	store.SetWake(tray.postStatusUpdate)
+	store.SetLiveWake(tray.postLiveStatusUpdate)
 
 	go func() {
 		defer close(runtimeDone)
-		_ = runTelemetryWithSettings(ctx, store, gameLogSettings, settingsWarning)
+		_ = runTelemetryWithSettings(ctx, store, store, gameLogSettings, settingsWarning)
 	}()
 
 	err = tray.run()
 	cancel()
 	<-runtimeDone
+	if exitRequested {
+		<-exitPostDone
+	}
+	tray.cleanup()
 	return err
 }

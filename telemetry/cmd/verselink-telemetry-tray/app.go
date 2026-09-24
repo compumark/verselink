@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/compumark/verselink-telemetry/internal/diagnostics"
 	"github.com/compumark/verselink-telemetry/internal/gamelog"
@@ -13,9 +14,29 @@ import (
 )
 
 type statusStore struct {
-	mu     sync.RWMutex
-	status runtimehost.Status
-	wake   func()
+	mu          sync.RWMutex
+	status      runtimehost.Status
+	wake        func()
+	liveStatus  runtimehost.Status
+	liveWake    func()
+	liveVisible bool
+	liveLast    liveTelemetryPresentation
+	hasLiveLast bool
+}
+
+func (s *statusStore) OnLiveSnapshot(status runtimehost.Status) {
+	status.Diagnostics = runtimehost.SafeDiagnostics(status.Diagnostics)
+	presentation := presentLiveTelemetry(status)
+	s.mu.Lock()
+	s.liveStatus = status
+	changed := !s.hasLiveLast || s.liveLast != presentation
+	s.liveLast, s.hasLiveLast = presentation, true
+	wake := s.liveWake
+	visible := s.liveVisible
+	s.mu.Unlock()
+	if changed && visible && wake != nil {
+		wake()
+	}
 }
 
 func (s *statusStore) OnRuntimeStatus(status runtimehost.Status) {
@@ -33,6 +54,25 @@ func (s *statusStore) SetWake(wake func()) {
 	s.mu.Lock()
 	s.wake = wake
 	s.mu.Unlock()
+}
+
+func (s *statusStore) SetLiveWake(wake func()) {
+	s.mu.Lock()
+	s.liveWake = wake
+	s.mu.Unlock()
+}
+
+func (s *statusStore) SetLiveVisible(visible bool) {
+	s.mu.Lock()
+	s.liveVisible = visible
+	s.mu.Unlock()
+}
+
+func (s *statusStore) CurrentLivePresentation() liveTelemetryPresentation {
+	s.mu.RLock()
+	status := s.liveStatus
+	s.mu.RUnlock()
+	return presentLiveTelemetry(status)
 }
 
 func (s *statusStore) Current() runtimehost.Status {
@@ -96,13 +136,169 @@ func runTelemetry(ctx context.Context, observer runtimehost.Observer) error {
 	})
 }
 
-func runTelemetryWithSettings(ctx context.Context, observer runtimehost.Observer, value settings.Settings, warning string) error {
+func runTelemetryWithSettings(ctx context.Context, observer runtimehost.Observer, liveObserver runtimehost.LiveSnapshotObserver, value settings.Settings, warning string) error {
 	return runtimehost.Run(ctx, runtimehost.Config{
 		Observer:         observer,
+		LiveObserver:     liveObserver,
 		RetryUnavailable: true,
 		GameLogSettings:  value,
 		SettingsWarning:  warning,
 	})
+}
+
+type liveTelemetryPresentation struct {
+	status, channel, strategy, path  string
+	lines, events, resets            string
+	session, player, shard           string
+	lastEvent                        string
+	location, locationAt, zone       string
+	ship, owner                      string
+	quantumDestination, quantumState string
+	partyCount                       string
+}
+
+func presentLiveTelemetry(status runtimehost.Status) liveTelemetryPresentation {
+	p := liveTelemetryPresentation{
+		status: liveRuntimeStatus(status), channel: "Unknown", strategy: "Unknown", path: "Unknown",
+		lines: "Unknown", events: "Unknown", resets: "Unknown", session: "Inactive",
+		player: "Unknown", shard: "Unknown", lastEvent: "Unknown", location: "Unknown",
+		locationAt: "Unknown", zone: "Unknown", ship: "Unknown", owner: "Unknown",
+		quantumDestination: "Unknown", quantumState: "Unknown", partyCount: "Unknown",
+	}
+	configuration := status.Configuration
+	if configuration.Channel != "" {
+		p.channel = configuration.Channel
+	}
+	if configuration.EffectiveStrategy != "" {
+		p.strategy = presentDiscoveryStrategy(configuration.EffectiveStrategy)
+	} else if status.Strategy != "" {
+		p.strategy = presentDiscoveryStrategy(status.Strategy)
+	}
+	path := configuration.EffectivePath
+	if path == "" {
+		path = status.Path
+	}
+	if path != "" {
+		p.path = singleLine(path)
+	}
+	if !status.HasDiagnostics {
+		return p
+	}
+	diagnostics := status.Diagnostics
+	state := diagnostics.State
+	p.lines = fmt.Sprint(diagnostics.LinesProcessed)
+	p.events = fmt.Sprint(diagnostics.ParserEventCount)
+	p.resets = fmt.Sprint(diagnostics.SourceResetCount)
+	p.partyCount = fmt.Sprint(len(state.Party))
+	if state.SessionActive {
+		p.session = "Active"
+	}
+	p.player = valueOrUnknown(state.PlayerHandle)
+	p.shard = valueOrUnknown(state.Shard)
+	p.lastEvent = formatTime(state.LastEventAt)
+	if state.Location != nil {
+		p.location = valueOrUnknown(state.Location.Raw)
+		p.locationAt = formatTime(state.Location.ObservedAt)
+	}
+	p.zone = valueOrUnknown(state.Jurisdiction)
+	if state.Ship != nil {
+		p.ship = valueOrUnknown(state.Ship.Name)
+		p.owner = valueOrUnknown(state.Ship.Owner)
+	}
+	if state.Quantum != nil {
+		p.quantumDestination = valueOrUnknown(state.Quantum.Destination)
+		p.quantumState = valueOrUnknown(state.Quantum.State)
+	}
+	return p
+}
+
+func liveRuntimeStatus(status runtimehost.Status) string {
+	if status.Configuration.Warning != "" {
+		return "Warning: Game.log configuration"
+	}
+	switch status.Phase {
+	case runtimehost.PhaseStarting:
+		return "Starting"
+	case runtimehost.PhaseSearching:
+		return "Searching for Game.log"
+	case runtimehost.PhaseMonitoring:
+		return "Monitoring Game.log"
+	case runtimehost.PhaseSessionActive:
+		return "Session active"
+	case runtimehost.PhaseGameLogUnavailable:
+		return "Game.log unavailable"
+	case runtimehost.PhaseWarning:
+		return "Warning"
+	case runtimehost.PhaseFatal:
+		return "Fatal error"
+	default:
+		return "Starting"
+	}
+}
+
+func presentDiscoveryStrategy(strategy gamelog.DiscoveryStrategy) string {
+	switch strategy {
+	case gamelog.StrategyLauncherLog:
+		return "RSI Launcher log"
+	case gamelog.StrategyRunningProcess:
+		return "Running Star Citizen"
+	case gamelog.StrategyKnownLocation:
+		return "Known installation"
+	case gamelog.StrategyRegistry:
+		return "Registry installation hint"
+	case gamelog.StrategyManual:
+		return "Manual path"
+	default:
+		return "Unknown"
+	}
+}
+
+func valueOrUnknown(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "Unknown"
+	}
+	return singleLine(value)
+}
+
+func singleLine(value string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, value)
+}
+
+func formatTime(value time.Time) string {
+	if value.IsZero() {
+		return "Unknown"
+	}
+	return value.Format(time.RFC3339Nano)
+}
+
+func formatLiveTelemetry(p liveTelemetryPresentation) string {
+	return strings.Join([]string{
+		"VerseLink Telemetry — Live Monitor",
+		"Status: " + p.status,
+		"Channel: " + p.channel,
+		"Discovery strategy: " + p.strategy,
+		"Game.log: " + p.path,
+		"Lines processed: " + p.lines,
+		"Parser events: " + p.events,
+		"Source resets: " + p.resets,
+		"Session: " + p.session,
+		"Player: " + p.player,
+		"Shard: " + p.shard,
+		"Last event: " + p.lastEvent,
+		"Location: " + p.location,
+		"Location observed: " + p.locationAt,
+		"Jurisdiction: " + p.zone,
+		"Ship: " + p.ship,
+		"Ship owner: " + p.owner,
+		"Quantum destination: " + p.quantumDestination,
+		"Quantum state: " + p.quantumState,
+		"Party members: " + p.partyCount,
+	}, "\n")
 }
 
 func configurationText(value runtimehost.ConfigurationStatus) string {

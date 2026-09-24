@@ -123,6 +123,13 @@ type settingsWindow struct {
 	instance     uintptr
 }
 
+func (w *settingsWindow) handle() uintptr {
+	if w == nil {
+		return 0
+	}
+	return w.hwnd
+}
+
 type settingsWindowRect struct {
 	Left, Top, Right, Bottom int32
 }
