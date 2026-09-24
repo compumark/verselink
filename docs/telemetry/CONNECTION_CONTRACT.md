@@ -59,9 +59,10 @@ Normalization before lookup:
 - Exactly 16 remaining characters from the stated alphabet are required.
 - Crockford aliases such as O→0 or I/L→1 are not accepted; other punctuation,
   Unicode lookalikes, and invalid symbols are rejected.
-- The canonical stored-HMAC input is the prefix plus the 16 normalized
-  characters; separators and accepted whitespace therefore do not affect
-  lookup.
+- `canonical_code` is exactly the 16 normalized Crockford Base32 characters
+  and contains no domain prefix. For example, `7K3M-9D2F-6R8W-1Q5C` normalizes
+  to `7K3M9D2F6R8W1Q5C`. The HMAC domain prefix is applied exactly once in
+  §2.3; separators and accepted whitespace therefore do not affect lookup.
 
 There is at most one unconsumed, non-invalidated pairing-code record per
 account (including an expired-but-not-yet-cleaned record). Creating a new code
@@ -102,10 +103,12 @@ Non-secret device ID/name and the presence revision may be stored separately.
 ### 2.3 Server-side secret representation and pepper
 
 Use the existing stable deployment `SINK_TOKEN_PEPPER`; do not add another
-environment secret for C1. Store lowercase hexadecimal HMAC-SHA256 outputs:
+environment secret for C1. Store lowercase hexadecimal HMAC-SHA256 outputs.
+For pairing, `canonical_code` is only the normalized 16-character code; apply
+the domain prefix exactly once as follows:
 
 ```text
-HMAC-SHA256(pepper, "verselink-telemetry-pairing:" + canonical_code)
+HMAC-SHA256(SINK_TOKEN_PEPPER, "verselink-telemetry-pairing:" + canonical_code)
 HMAC-SHA256(pepper, "verselink-telemetry-device:" + full_credential)
 ```
 
@@ -159,10 +162,11 @@ The account-status check is server-side and repeated for device requests. Any
 `account_status` other than `active` (including `blocked` and `deleted` before
 hard deletion) rejects device authentication and new pairing-code creation.
 Changing an account to a non-active status invalidates its outstanding pairing
-codes and deletes or marks its current presence as not current in the same
-transaction. Claiming one of those invalidated codes returns
+codes and transactionally deletes all `telemetry_presence` rows for its devices.
+Claiming one of those invalidated codes returns
 `409 pairing_code_used`, without disclosing the account status. A temporary
-block does **not** set `revoked_at` or delete the device row/credential HMAC.
+block does **not** set `revoked_at` or delete the device row, credential HMAC,
+or its `last_presence_revision`.
 When the account returns to `active`, a device not explicitly revoked may
 authenticate again; an explicitly revoked device remains permanently revoked
 and requires a new pairing. Hard account deletion cascades/removes device,
@@ -260,10 +264,18 @@ client may safely retry before expiry.
 | `POST /api/telemetry/heartbeat` | Device Bearer only | `{"schema":1}` | `200 {"schema":1,"ok":true,"received_at":"…"}` | 400 unsupported schema, 401 invalid/revoked credential, 403 inactive account, 429, 503 | 120 per device per minute | Credential only in Authorization header; never echoed. |
 | `PUT /api/telemetry/presence` | Device Bearer only | Schema-1 snapshot in §5 | Newer: `200 {"schema":1,"accepted":true,"revision":42,"received_at":"…"}`; exact duplicate: `200 {"schema":1,"accepted":false,"revision":42}`; lower revision: `409 stale_revision`; same revision/different snapshot: `409 revision_conflict` (both include current revision) | 400 `unsupported_schema`/`invalid_payload`, 401 invalid/revoked credential, 403 inactive account, 413 `payload_too_large`, 429, 503 | 120 per device per minute; max body 16 KiB | Credential only in Authorization header; body has no secret. |
 
-Rate limits are per process initially, following the repository's bounded
-in-memory `createRateLimiter` convention. They are best-effort across multiple
-server replicas and resets; they are not a substitute for entropy, atomic
-single-use database operations, request-size limits, or authentication. A
+All listed limits count requests/attempts, not only failures: successful
+pairing-code creation, every pairing claim attempt, and successful as well as
+failed heartbeat/presence requests each consume a unit in their respective
+bucket. Initial enforcement is per process and bounded in memory. The existing
+`createRateLimiter` helper currently tracks `recordFailure()` counts; C3/C6/C7
+must not use that failure-only behavior unchanged for request-count limits.
+They may extend the existing bounded in-memory limiter with request-count
+semantics where appropriate or add a small repository-consistent bounded
+in-memory request limiter. Limits remain best-effort across multiple server
+replicas and process resets; they are not a substitute for pairing-code
+entropy, atomic single-use database operations, request-size limits, or
+authentication. Phase C does not require distributed/global enforcement. A
 future shared limiter may strengthen enforcement without changing API
 semantics. IP keys use the socket peer unless a trusted-proxy policy explicitly
 establishes the client address.
@@ -467,7 +479,7 @@ claim limiter bounds guesses; none returns ownership information.
 | --- | --- | --- | --- |
 | `telemetry_devices` | C2; server-generated UUID primary key; FK `app_user_id` to `app_users`; unique credential HMAC | Device name; credential HMAC only; `created_at`; `last_seen_at` server receipt time; `revoked_at`; `last_presence_revision` (BIGINT, default 0); only explicitly approved optional metadata. | Explicit revocation is retained as a tombstone while the account exists. A temporary non-active account status does not revoke/delete this device or its HMAC; auth is suspended until reactivation. Hard account deletion removes the row/lookup material and dependent data. Multiple device rows per account are supported; no credential is shared between devices. |
 | `telemetry_pairing_codes` | C2; server-generated UUID primary key; FK owner to `app_users`; unique code HMAC | HMAC only; `created_at`, `expires_at`, `consumed_at`, and `invalidated_at`. | C3 atomically consumes once. A new code invalidates the prior unconsumed/non-invalidated code for that account. Expired, consumed, or invalidated rows are cleaned 30 days after expiry/transition; they can never become valid again. Account deactivation invalidates open codes; deletion cascades/removes them. |
-| `telemetry_presence` | C7; one current row keyed by `device_id` FK to `telemetry_devices` | Exact schema-1 allowlist, latest `revision`, and server `received_at`; owner is derived through device, not duplicated. | Upsert only when revision advances. No historical snapshots/event stream. Delete or mark not-current in the same transaction as account blocking/deactivation; delete on explicit device revocation; cascade on hard account/device deletion. Never retain raw logs. |
+| `telemetry_presence` | C7; one current row keyed by `device_id` FK to `telemetry_devices` | Exact schema-1 allowlist, latest `revision`, and server `received_at`; owner is derived through device, not duplicated. | Upsert only when revision advances. No historical snapshots/event stream. Delete rows transactionally when the owning account becomes non-active and on explicit device revocation; cascade on hard account/device deletion. Never retain raw logs. |
 | `telemetry_events` | Not part of Phase-C MVP; no C1/C2-C8 table or ingestion route | None. | Historical/event ingestion may be reconsidered in a future phase only with a concrete approved requirement and privacy/retention design. |
 
 Schema initialization follows the repository's repeat-safe startup-schema
@@ -479,9 +491,10 @@ Indexes must support credential lookup, account device listing, pairing
 expiry/cleanup, and presence-by-device. Do not persist client IP addresses.
 
 Any account status other than `active` immediately blocks device auth and code
-creation and invalidates outstanding pairing codes. Blocking does not set
-device `revoked_at`; current presence is removed or marked not-current, while
-device rows and credential HMACs may remain. Reactivation permits
+creation, invalidates outstanding pairing codes, and transactionally deletes
+all of that account's `telemetry_presence` rows. Blocking does not set device
+`revoked_at`; device rows, credential HMACs, and each device's
+`last_presence_revision` remain. Reactivation permits
 non-revoked devices to authenticate again. Hard account deletion cascades
 device, pairing, and presence records in the same transaction; no credential
 lookup material survives independently. Explicit device revocation remains
