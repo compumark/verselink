@@ -152,6 +152,32 @@ DO $$ BEGIN
     ALTER TABLE app_users ADD CONSTRAINT app_users_text_color_check CHECK (text_color IS NULL OR text_color ~ '^#[0-9A-Fa-f]{6}$');
   END IF;
 END $$;
+CREATE TABLE IF NOT EXISTS telemetry_devices (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  app_user_id uuid NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+  name text NOT NULL DEFAULT 'Telemetry device' CHECK (char_length(name) <= 64),
+  credential_hash text NOT NULL UNIQUE CHECK (credential_hash ~ '^[0-9a-f]{64}$'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  last_seen_at timestamptz,
+  revoked_at timestamptz,
+  last_presence_revision bigint NOT NULL DEFAULT 0 CHECK (last_presence_revision BETWEEN 0 AND 9007199254740991)
+);
+CREATE INDEX IF NOT EXISTS telemetry_devices_app_user_id_idx ON telemetry_devices(app_user_id);
+CREATE TABLE IF NOT EXISTS telemetry_pairing_codes (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  app_user_id uuid NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+  code_hash text NOT NULL UNIQUE CHECK (code_hash ~ '^[0-9a-f]{64}$'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  expires_at timestamptz NOT NULL,
+  consumed_at timestamptz,
+  invalidated_at timestamptz,
+  CHECK (expires_at > created_at),
+  CHECK (NOT (consumed_at IS NOT NULL AND invalidated_at IS NOT NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS telemetry_pairing_codes_active_account_idx
+  ON telemetry_pairing_codes(app_user_id)
+  WHERE consumed_at IS NULL AND invalidated_at IS NULL;
+CREATE INDEX IF NOT EXISTS telemetry_pairing_codes_expires_at_idx ON telemetry_pairing_codes(expires_at);
 CREATE TABLE IF NOT EXISTS auth_tokens (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   app_user_id uuid NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
