@@ -52,6 +52,9 @@ Use this checklist before closing Mission Planning V1 (M1, M2, M3). Record the D
 - [ ] Verify Stanton theme
 - [ ] Verify Nyx theme
 - [ ] Verify Pyro theme
+- [ ] Verify Route/Waypoint Missions launcher icon
+- [ ] Verify Missions icon in bottom navigation
+- [ ] Compare Missions icon optical weight with Group Management
 
 ## Failure flow
 

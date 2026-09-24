@@ -81,21 +81,25 @@ test('Missions header uses the provided app PNG while retaining the compact SVG 
   assert.ok(shellSource.includes("/assets/icons/missions.svg"));
 });
 
-test('Missions has its own currentColor waypoint icon and no classic page', async () => {
+test('Missions route icon is a currentColor waypoint with simple route geometry and no classic page', async () => {
   assert.match(iconSource, /viewBox="0 0 64 64"/);
   assert.match(iconSource, /stroke="currentColor"/);
   assert.match(iconSource, /stroke-width="2\.4"/);
   assert.doesNotMatch(iconSource, /#[0-9a-f]/i);
+  assert.match(iconSource, /fill="none"/);
+  assert.equal((iconSource.match(/<circle\b/g) || []).length, 3, 'objective and waypoint should remain recognizable circles');
+  assert.match(iconSource, /<path d="M48 [^\"]+Z"\/>/, 'waypoint pin should be an independent closed path');
+  assert.match(iconSource, /stroke-dasharray="3 4"/, 'route should use a few clear dash segments');
+  assert.doesNotMatch(iconSource, /<text\b|>\s*[A-Za-z0-9]\s*</i);
   await assert.rejects(stat(new URL('../public/missions.html', import.meta.url)), { code: 'ENOENT' });
   await assert.rejects(stat(new URL('../public/mission.html', import.meta.url)), { code: 'ENOENT' });
 });
 
-test('Missions launcher uses a scoped optical correction without changing shared icon slots or nav icons', () => {
-  assert.match(shellSource, /\.home-apps \[data-app=missions\] \.app-icon\{transform:scale\(1\.28\);transform-origin:center\}/);
+test('Missions route icon uses the shared launcher and navigation sizing', () => {
   assert.match(shellSource, /\.app-icon\{width:48px;height:48px;/);
-  assert.ok(shellSource.includes("data-app=\"missions\"><i class=\"app-icon\""));
   assert.ok(shellSource.includes("/assets/icons/missions.svg"));
-  assert.ok(shellSource.includes("class=\"nav-icon\""));
+  assert.doesNotMatch(shellSource, /home-apps[^\n]*missions[^\n]*transform:\s*scale/i);
+  assert.match(shellSource, /\.nav-icon\{display:block;width:21px;height:21px;/);
   assert.ok(serverSource.includes('missions.svg'));
-  assert.doesNotMatch(shellSource, /\.nav-icon[^}]*transform:scale/);
+  assert.doesNotMatch(shellSource, /\.nav-icon[^}]*transform:\s*scale/);
 });
