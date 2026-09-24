@@ -109,7 +109,7 @@ the domain prefix exactly once as follows:
 
 ```text
 HMAC-SHA256(SINK_TOKEN_PEPPER, "verselink-telemetry-pairing:" + canonical_code)
-HMAC-SHA256(pepper, "verselink-telemetry-device:" + full_credential)
+HMAC-SHA256(SINK_TOKEN_PEPPER, "verselink-telemetry-device:" + full_credential)
 ```
 
 The different domain prefixes prevent cross-purpose representation reuse and
