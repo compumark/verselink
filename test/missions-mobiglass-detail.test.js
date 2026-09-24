@@ -53,3 +53,17 @@ test('creator labels distinguish active members, former members, and hard-delete
   assert.match(source, /const missionCreatorLabel = mission => !mission\?\.created_by \? 'FORMER USER' : memberName\(mission, mission\.created_by\) \|\| 'FORMER MEMBER'/);
   assert.doesNotMatch(source, /memberName\(mission, mission\.created_by\) \|\| 'UNKNOWN'/);
 });
+
+test('task section keeps its heading separate from the compact add-task control', () => {
+  assert.match(source, /<div class="mission-tasks-head"><div class="missions-label">TASKS<\/div>\$\{manage \? '<button type="button" class="mission-task-add" data-task-create>/);
+  assert.match(source, /<div class="mission-tasks">/);
+  assert.match(source, /\.mission-tasks-head\{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:10px\}/);
+  assert.match(source, /\.mission-task-add\{min-height:31px;padding:5px 9px;font-size:11px/);
+  assert.match(source, /@media\(max-width:680px\)\{\.mission-tasks-head\{display:grid;gap:8px\}\.mission-task-add\{width:100%;min-height:38px\}\}/);
+});
+
+test('task add focus-return selector remains wired to the dialog lifecycle', () => {
+  assert.match(source, /data-task-create.*openDialog/);
+  assert.match(source, /: '\[data-task-create\]'/);
+  assert.match(source, /mountedRoot\?\.querySelector\(selector\)/);
+});
