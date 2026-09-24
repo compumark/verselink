@@ -6,7 +6,7 @@
 
 # VerseLink
 
-**VerseLink – Star Citizen Companion** is a web-based companion platform for Star Citizen. It connects blueprint data, material planning, group coordination, and orders in one shared mobiGlas-inspired interface.
+**VerseLink – Star Citizen Companion** is a web-based companion platform for Star Citizen. It connects blueprint data, material planning, group coordination, Missions, and orders in one shared mobiGlas-inspired interface.
 
 > **Disclaimer:** VerseLink is an unofficial Star Citizen fan and companion project and is not affiliated with Cloud Imperium Games or the Cloud Imperium group of companies. Star Citizen and related names, marks, logos, and content belong to their respective rights holders. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details and visit the [official Star Citizen website](https://robertsspaceindustries.com/).
 
@@ -20,6 +20,7 @@ VerseLink
 ├── 📦 Material Inventory
 ├── 📋 Orders
 ├── 👥 Groups
+├── 🎯 Missions
 ├── 💰 TradeMax
 ├── 📱 Mobiglass Interface
 └── 🔐 Admin Center
@@ -59,6 +60,21 @@ Create groups or join existing crews to connect VerseLink features.
 - Create public blueprint searches
 - View crew profiles where members have enabled profile visibility
 
+## Missions
+
+Plan and coordinate longer-running group objectives directly inside VerseLink.
+
+- Any active group member can create a Mission for their group
+- Add CHECKLIST tasks and quantity-based ITEM tasks
+- Assign, reassign, or unassign tasks to active group members
+- Track checklist completion, item contributions, remaining quantities, and contribution history
+- Derive Mission progress automatically from its active tasks
+- Receive Mission and task notifications with direct deep links
+- Copy Mission and task links for sharing inside the group
+- Preserve coherent history when members leave or accounts become inactive
+
+Missions are designed for shared objectives and coordination; Orders remain focused on procurement and delivery.
+
 ## TradeMax
 
 **TradeMax** is VerseLink's commodity trade finder. It uses UEX market data to find profitable routes based on:
@@ -83,7 +99,7 @@ Authorized administrators can use the protected VerseLink Admin Center for user 
 
 ## The VerseLink idea
 
-**Receive a blueprint → check stock → share it with the group → organize materials as an order → track progress → acquire missing resources.**
+**Receive a blueprint → check stock → plan a Mission → assign objectives → organize missing materials as Orders → track progress together.**
 
 ## 100% Vibe Coded
 
@@ -95,7 +111,7 @@ The application has been designed and developed with ChatGPT and OpenAI Codex �
 
 ## Development status
 
-Implemented capabilities include SCMDB ingestion, PostgreSQL persistence, session authentication, groups and roles, invitations, administration, filters, reference data, external images, material links, PWA foundations, and optional Discord notifications. Automated Node.js tests and UI contract tests are available; browser end-to-end coverage is still limited.
+Implemented capabilities include SCMDB ingestion, PostgreSQL persistence, session authentication, groups and roles, Mission planning, invitations, administration, filters, reference data, external images, material links, PWA foundations, and optional Discord notifications. Automated Node.js tests and UI contract tests are available; browser end-to-end coverage is still limited.
 
 ## Tech stack
 
@@ -109,13 +125,13 @@ Implemented capabilities include SCMDB ingestion, PostgreSQL persistence, sessio
 VerseLink supports both version-pinned GHCR deployments and builds directly from this repository. For production, use an explicit stable image version:
 
 ```yaml
-image: ghcr.io/compumark/verselink:1.2.3
+image: ghcr.io/compumark/verselink:1.4.0
 ```
 
 Image tags:
 
-- `1.2.3`: exact stable version (recommended for production)
-- `1.2`: latest stable patch in the `1.2` series
+- `1.4.0`: exact stable version (recommended for production)
+- `1.4`: latest stable patch in the `1.4` series
 - `1`: latest stable release in major version `1`
 - `latest`: latest published stable VerseLink release
 - `dev`: current development build from `main`; do not use for normal production
@@ -127,7 +143,7 @@ The following is a self-contained Portainer Web Editor example using Docker name
 ```yaml
 services:
   app:
-    image: ghcr.io/compumark/verselink:1.2.3
+    image: ghcr.io/compumark/verselink:1.4.0
     restart: unless-stopped
     environment:
       APP_PORT: 3000
