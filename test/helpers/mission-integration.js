@@ -35,47 +35,87 @@ export const createSession = async (pool, pepper, appUserId) => {
 };
 
 export const startMissionTestServer = async ({ databaseUrl, pepper }) => {
-  const port = await reservePort();
-  const baseUrl = `http://127.0.0.1:${port}`;
-  const output = [];
-  const child = spawn(process.execPath, ['src/server.js'], {
-    cwd: new URL('../..', import.meta.url),
-    env: {
-      ...process.env,
-      APP_ENVIRONMENT: 'Mission integration test',
-      APP_PORT: String(port),
-      DATABASE_URL: databaseUrl,
-      LOG_DIR: join(tmpdir(), `verselink-mission-test-${process.pid}`),
-      LOG_LEVEL: 'ERROR',
-      NODE_ENV: 'test',
-      SINK_TOKEN_PEPPER: pepper,
-      SCMDB_SINK_BASE_URL: '',
-      DISCORD_BOT_TOKEN: '',
-      DISCORD_ADMIN_USER_ID: '',
-      DISCORD_ORDERS_WEBHOOKS: '{}',
-      DISCORD_WEBHOOK_URL: '',
-      UEX_API_TOKEN: ''
-    },
-    stdio: ['ignore', 'pipe', 'pipe']
-  });
-  const remember = (chunk) => {
-    output.push(chunk.toString());
-    if (output.length > 100) output.shift();
+  const lockPool = await createTestPool(databaseUrl);
+  let lockClient;
+  let lockAcquired = false;
+  let child;
+  const stopChild = async () => {
+    if (child && child.exitCode === null && child.signalCode === null) {
+      const exited = once(child, 'exit');
+      child.kill('SIGKILL');
+      await exited;
+    }
   };
-  child.stdout.on('data', remember);
-  child.stderr.on('data', remember);
 
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) throw new Error(`test server exited early (${child.exitCode})\n${output.join('')}`);
+  try {
+    lockClient = await lockPool.connect();
+    await lockClient.query(
+      'SELECT pg_advisory_lock(hashtext($1))',
+      ['verselink-test-server-schema-startup']
+    );
+    lockAcquired = true;
+
+    const port = await reservePort();
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const output = [];
+    child = spawn(process.execPath, ['src/server.js'], {
+      cwd: new URL('../..', import.meta.url),
+      env: {
+        ...process.env,
+        APP_ENVIRONMENT: 'Mission integration test',
+        APP_PORT: String(port),
+        DATABASE_URL: databaseUrl,
+        LOG_DIR: join(tmpdir(), `verselink-mission-test-${process.pid}`),
+        LOG_LEVEL: 'ERROR',
+        NODE_ENV: 'test',
+        SINK_TOKEN_PEPPER: pepper,
+        SCMDB_SINK_BASE_URL: '',
+        DISCORD_BOT_TOKEN: '',
+        DISCORD_ADMIN_USER_ID: '',
+        DISCORD_ORDERS_WEBHOOKS: '{}',
+        DISCORD_WEBHOOK_URL: '',
+        UEX_API_TOKEN: ''
+      },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    const remember = (chunk) => {
+      output.push(chunk.toString());
+      if (output.length > 100) output.shift();
+    };
+    child.stdout.on('data', remember);
+    child.stderr.on('data', remember);
+
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      if (child.exitCode !== null) throw new Error(`test server exited early (${child.exitCode})\n${output.join('')}`);
+      try {
+        const response = await fetch(`${baseUrl}/healthz`);
+        if (response.ok) return { baseUrl, child, output };
+      } catch {}
+      await delay(100);
+    }
+    throw new Error(`test server did not become ready\n${output.join('')}`);
+  } catch (error) {
+    await stopChild();
+    throw error;
+  } finally {
     try {
-      const response = await fetch(`${baseUrl}/healthz`);
-      if (response.ok) return { baseUrl, child, output };
-    } catch {}
-    await delay(100);
+      if (lockAcquired) {
+        try {
+          await lockClient.query(
+            'SELECT pg_advisory_unlock(hashtext($1))',
+            ['verselink-test-server-schema-startup']
+          );
+        } catch (error) {
+          await stopChild();
+          throw error;
+        }
+      }
+    } finally {
+      lockClient?.release();
+      await lockPool.end();
+    }
   }
-  child.kill('SIGKILL');
-  throw new Error(`test server did not become ready\n${output.join('')}`);
 };
 
 export const stopMissionTestServer = async (runtime) => {
