@@ -102,8 +102,22 @@ invalidates the previous unused code. Claim accepts
 HTTP 201 claim returns a device UUID, normalized name, and one-time
 `vlt_` Bearer credential. Pairing codes and credentials are persisted only as
 domain-separated HMAC-SHA256 hashes using `SINK_TOKEN_PEPPER`; plaintext is
-never stored or logged. C3 does not implement device authentication,
-heartbeat, presence, or device-management routes.
+never stored or logged. C3 does not implement heartbeat, presence, or
+device-management routes.
+
+### Telemetry device authentication (C4)
+
+C4 adds a reusable server-side authentication layer for future device routes,
+but adds no device-authenticated HTTP endpoint itself. Future protected routes
+must use exactly one case-sensitive `Authorization: Bearer vlt_…` credential;
+browser cookies, query/body credentials, and account or recovery tokens are
+not substitutes. The server reuses C3's domain-separated device HMAC and
+checks the current device revocation and account status in PostgreSQL on every
+authentication attempt, without caching. Outcomes are `invalid_device_credential`
+(401, with a Bearer challenge), `device_revoked` (401), `account_inactive`
+(403), or a minimal internal device/owner context on success.
+Heartbeat, presence, and device-management endpoints are not added here; C6,
+C7, and C8 respectively own those behaviors.
 
 ## Request-Beispiele
 

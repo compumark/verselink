@@ -34,7 +34,7 @@ export const createSession = async (pool, pepper, appUserId) => {
   return session;
 };
 
-export const startMissionTestServer = async ({ databaseUrl, pepper, extraEnv = {} }) => {
+export const startMissionTestServer = async ({ databaseUrl, pepper, extraEnv = {}, logDirectory = join(tmpdir(), `verselink-mission-test-${process.pid}`) }) => {
   const lockPool = await createTestPool(databaseUrl);
   let lockClient;
   let lockAcquired = false;
@@ -58,7 +58,6 @@ export const startMissionTestServer = async ({ databaseUrl, pepper, extraEnv = {
     const port = await reservePort();
     const baseUrl = `http://127.0.0.1:${port}`;
     const output = [];
-    const logDirectory = join(tmpdir(), `verselink-mission-test-${process.pid}`);
     child = spawn(process.execPath, ['src/server.js'], {
       cwd: new URL('../..', import.meta.url),
       env: {
