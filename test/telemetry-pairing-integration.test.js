@@ -190,7 +190,7 @@ test("C3 pairing creation, claim, lifecycle, rate limits, and secret handling us
       const expiredCode = generatePairingCode();
       secrets.push(expiredCode, normalizePairingCode(expiredCode), hashPairingCode(pepper, normalizePairingCode(expiredCode)));
       const expiredHash = hashPairingCode(pepper, normalizePairingCode(expiredCode));
-      await pool.query("INSERT INTO telemetry_pairing_codes (app_user_id,code_hash,created_at,expires_at) VALUES ($1,$2,now()-interval '2 hours',now()-interval '1 hour')", [ids.owner, expiredHash]);
+      await pool.query("INSERT INTO telemetry_pairing_codes (app_user_id,code_hash,created_at,expires_at) VALUES ($1,$2,now()-interval '2 hours',now()-interval '1 hour')", [ids.secondOwner, expiredHash]);
       const expired = await request(claimPath, makeBody({ schema: 1, code: expiredCode }));
       assert.deepEqual([expired.status, expired.body], [410, { error: "expired_pairing_code" }]);
     });
