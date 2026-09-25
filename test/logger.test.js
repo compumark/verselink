@@ -39,6 +39,26 @@ test("redaction protects tokens, credentials and authorization values", () => {
   assert.equal(value.DATABASE_URL, "[redacted]");
 });
 
+test("redaction protects telemetry pairing codes and device credentials in fields and messages", () => {
+  const pairingCode = "7K3M-9D2F-6R8W-1Q5C";
+  const canonicalCode = "7K3M9D2F6R8W1Q5C";
+  const credential = `vlt_${"a".repeat(43)}`;
+  const credentialHash = "c".repeat(64);
+  const value = redact({
+    device_credential: credential,
+    credential_hash: credentialHash,
+    code: pairingCode,
+    pairing_code: pairingCode,
+    canonical_code: canonicalCode,
+    message: `claim rejected for ${pairingCode} (${canonicalCode}); Authorization: Bearer ${credential}`
+  });
+  for (const secret of [pairingCode, canonicalCode, credential, credentialHash]) {
+    assert.equal(JSON.stringify(value).includes(secret), false);
+  }
+  assert.equal(value.device_credential, "[redacted]");
+  assert.equal(value.credential_hash, "[redacted]");
+});
+
 test("redaction preserves internal correlation IDs and build metadata", () => {
   const value = redact({ request_id: "71a65d6e-9b7a-4c1a-a7bf-1234567890ab", user_id: "8fd2131a-9b7a-4c1a-a7bf-1234567890ab", app_user_id: "8fd2131a-9b7a-4c1a-a7bf-1234567890ab", group_id: "41c73333-9b7a-4c1a-a7bf-1234567890ab", resource_id: "resource-123", order_id: "order-123", material_id: "material-123", location_id: "location-123", app_commit: "abcdef0123456789abcdef0123456789abcdef01" });
   assert.equal(value.request_id, "71a65d6e-9b7a-4c1a-a7bf-1234567890ab");

@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { selectWikiCandidate, selectWikiImageFile, shouldRefreshReference, wikiSourceMatchesProduct } from "./reference-resolver.js";
 import { hashRecoveryToken, isRecoveryToken, generateRecoveryToken } from "./auth-primitives.js";
-import { clientKey, createRateLimiter } from "./rate-limit.js";
+import { clientKey, createRateLimiter, createRequestRateLimiter } from "./rate-limit.js";
+import { generateDeviceCredential, generatePairingCode, hashDeviceCredential, hashPairingCode, normalizeDeviceName, normalizePairingCode } from "./telemetry-pairing.js";
 import { normalizeScmdbSinkBaseUrl, scmdbSinkUrl } from "./scmdb-sink-config.js";
 import { createDiscordAdminNotifier } from "./discord-admin-dm.js";
 import { createLogger } from "./logger.js";
@@ -29,6 +30,29 @@ const cleanupExpiredInvites = async () => {
   const result = await pool.query("DELETE FROM group_invites WHERE expires_at <= now() RETURNING id");
   logger.info("invites.cleanup", { removed: result.rowCount });
 };
+const cleanupTelemetryPairingCodes = async () => {
+  const result = await pool.query(`
+    WITH expired AS (
+      SELECT id FROM (
+        SELECT id, consumed_at AS cleanup_at FROM telemetry_pairing_codes
+        WHERE consumed_at IS NOT NULL AND consumed_at <= now() - interval '30 days'
+        UNION ALL
+        SELECT id, invalidated_at AS cleanup_at FROM telemetry_pairing_codes
+        WHERE invalidated_at IS NOT NULL AND invalidated_at <= now() - interval '30 days'
+        UNION ALL
+        SELECT id, expires_at AS cleanup_at FROM telemetry_pairing_codes
+        WHERE consumed_at IS NULL AND invalidated_at IS NULL
+          AND expires_at <= now() - interval '30 days'
+      ) candidates
+      ORDER BY cleanup_at
+      LIMIT 500
+    )
+    DELETE FROM telemetry_pairing_codes pairing
+    USING expired
+    WHERE pairing.id = expired.id
+  `);
+  logger.info("telemetry.pairing.cleanup", { removed: result.rowCount });
+};
 const scheduleInviteCleanup = () => {
   const now = new Date();
   const next = new Date(now);
@@ -36,6 +60,7 @@ const scheduleInviteCleanup = () => {
   if (next <= now) next.setDate(next.getDate() + 1);
   setTimeout(async () => {
     try { await cleanupExpiredInvites(); } catch (error) { logger.warn("invites.cleanup.failed", { error: error.message }); }
+    try { await cleanupTelemetryPairingCodes(); } catch (error) { logger.warn("telemetry.pairing.cleanup.failed", { reason: "database_unavailable" }); }
     scheduleInviteCleanup();
   }, Math.max(1000, next.getTime() - now.getTime()));
 };
@@ -570,12 +595,12 @@ const accepted = (res) => {
   res.end();
 };
 
-const readBody = async (req) => {
+const readBody = async (req, maxBytes = 64 * 1024) => {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 64 * 1024) throw new Error("payload too large");
+    if (size > maxBytes) throw Object.assign(new Error("payload too large"), { code: "PAYLOAD_TOO_LARGE" });
     chunks.push(chunk);
   }
   return Buffer.concat(chunks).toString("utf8");
@@ -592,6 +617,8 @@ const loginRateLimit = createRateLimiter({ limit: 10, windowMs: 10 * 60_000 });
 const registrationRateLimit = createRateLimiter({ limit: 5, windowMs: 15 * 60_000 });
 const recoveryRateLimit = createRateLimiter({ limit: 5, windowMs: 15 * 60_000 });
 const recoveryRotationRateLimit = createRateLimiter({ limit: 5, windowMs: 15 * 60_000 });
+const telemetryPairingCreateRateLimit = createRequestRateLimiter({ limit: 5, windowMs: 60 * 60_000 });
+const telemetryPairingClaimRateLimit = createRequestRateLimiter({ limit: 20, windowMs: 15 * 60_000 });
 const tooManyRequests = (res, req, event = "auth.rate_limited") => { logger.warn(event, { reason: "rate_limited" }, { request_id: req?.requestId }); return json(res, 429, { error: "too many requests" }); };
 const sameVerseLinkOrigin = (req) => {
   const origin = req.headers.origin;
@@ -1021,6 +1048,43 @@ const getCurrentAppUser = async (req) => {
   return user;
 };
 
+const pairingBrowserAccount = async (req) => {
+  let session;
+  try { session = parseCookies(req.headers.cookie).bp_session; } catch { return { kind: "unauthenticated" }; }
+  if (!session || !/^[A-Za-z0-9_-]{32,}$/.test(session)) return { kind: "unauthenticated" };
+  const result = await pool.query(
+    `SELECT ds.app_user_id, u.account_status
+     FROM dashboard_sessions ds
+     JOIN app_users u ON u.id = ds.app_user_id
+     WHERE ds.session_hash = $1 AND ds.expires_at > now()`,
+    [hashSession(session)]
+  );
+  if (!result.rowCount) return { kind: "unauthenticated" };
+  if (result.rows[0].account_status !== "active") return { kind: "inactive", appUserId: result.rows[0].app_user_id };
+  return { kind: "active", appUserId: result.rows[0].app_user_id };
+};
+
+const telemetryError = (res, status, code, retryAfter) => {
+  if (retryAfter !== undefined) res.setHeader("Retry-After", String(Math.max(0, Math.ceil(retryAfter))));
+  return json(res, status, { error: code });
+};
+
+const telemetryRateLimited = (res, req, route, result) => {
+  logger.warn("telemetry.rate_limited", { route, status: 429 }, { request_id: req.requestId });
+  return telemetryError(res, 429, "rate_limited", result.retryAfter);
+};
+
+const readTelemetryJson = async (req) => {
+  if (!/^application\/json(?:\s*;|$)/i.test(String(req.headers["content-type"] || ""))) return { error: "invalid_payload", status: 400 };
+  let text;
+  try { text = await readBody(req, 4 * 1024); }
+  catch (error) { return error.code === "PAYLOAD_TOO_LARGE" ? { error: "payload_too_large", status: 413 } : { error: "invalid_payload", status: 400 }; }
+  let body;
+  try { body = JSON.parse(text); } catch { return { error: "invalid_payload", status: 400 }; }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return { error: "invalid_payload", status: 400 };
+  return { body };
+};
+
 const unassignOpenMissionTasksForFormerMember = async (db, groupId, appUserId) => db.query(
   `UPDATE mission_tasks t
    SET assigned_to=NULL,updated_at=now()
@@ -1110,9 +1174,16 @@ const logValue = (value) => String(value ?? "unknown").replace(/[\r\n\t]/g, " ")
 const requestLogContext = (req, user) => ({ request_id: req.requestId, user_id: user?.id, user: user?.verselink_name || user?.display_name });
 const pollingPaths = new Set(["/api/notifications", "/api/session", "/api/me", "/api/me/status", "/api/profile", "/api/profile/scmdb", "/api/version"]);
 const authLogPaths = new Set(["/auth/register", "/auth/login", "/auth/recover", "/logout"]);
+const telemetrySecretRoutes = new Set(["/api/me/telemetry/pairing", "/api/telemetry/pair"]);
 const logApiRequest = (req, res, url, startedAt) => {
   if (!url.pathname.startsWith("/api/") && !authLogPaths.has(url.pathname)) return;
   res.once("finish", () => {
+    if (telemetrySecretRoutes.has(url.pathname)) {
+      const duration = Date.now() - startedAt;
+      const level = res.statusCode >= 500 ? "ERROR" : res.statusCode >= 400 || duration > 1000 ? "WARN" : "INFO";
+      logger.access({ request_id: req.requestId, method: req.method, path: logValue(url.pathname), status: res.statusCode, duration_ms: duration, ...(duration > 3000 ? { slow_request: true } : {}) }, level);
+      return;
+    }
     getCurrentAppUser(req).then((user) => {
       const identity = user?.user_handle || user?.scmdb_display_name || user?.display_name || "anonymous";
       const duration = Date.now() - startedAt;
@@ -1374,6 +1445,176 @@ const calculateTradingRoutes = (rows, system, ship, capital, fullLoadOnly, hideO
   return routes.sort((a, b) => { if (field === "buyLocation") return `${a.buyLocation} ${a.sellLocation}`.localeCompare(`${b.buyLocation} ${b.sellLocation}`); if (field === "age") return (a[field] ?? Infinity) - (b[field] ?? Infinity); return b[field] - a[field]; });
 };
 const tradingHtml = () => readFile(join(publicDir, "trading.html"), "utf8");
+
+const handleTelemetryPairingCreate = async (req, res) => {
+  try {
+    if (!sameVerseLinkOrigin(req)) return json(res, 401, { error: "login required" });
+    const account = await pairingBrowserAccount(req);
+    if (account.kind === "unauthenticated") return json(res, 401, { error: "login required" });
+    if (account.kind === "inactive") return telemetryError(res, 403, "account_inactive");
+    const rate = telemetryPairingCreateRateLimit.consume(account.appUserId);
+    if (!rate.allowed) return telemetryRateLimited(res, req, "/api/me/telemetry/pairing", rate);
+
+    const parsed = await readTelemetryJson(req);
+    if (parsed.error) return telemetryError(res, parsed.status, parsed.error);
+    const body = parsed.body;
+    if (!Object.hasOwn(body, "schema")) return telemetryError(res, 400, "invalid_payload");
+    if (body.schema !== 1) return telemetryError(res, 400, "unsupported_schema");
+    if (Object.keys(body).some((key) => key !== "schema")) return telemetryError(res, 400, "invalid_payload");
+
+    const client = await pool.connect();
+    let displayCode;
+    let expiresAt;
+    try {
+      await client.query("BEGIN");
+      const user = await client.query("SELECT account_status FROM app_users WHERE id=$1 FOR UPDATE", [account.appUserId]);
+      if (!user.rowCount || user.rows[0].account_status !== "active") {
+        await client.query("ROLLBACK");
+        return telemetryError(res, 403, "account_inactive");
+      }
+      await client.query(
+        `UPDATE telemetry_pairing_codes
+         SET invalidated_at=now()
+         WHERE app_user_id=$1 AND consumed_at IS NULL AND invalidated_at IS NULL`,
+        [account.appUserId]
+      );
+      let inserted;
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const formatted = generatePairingCode();
+        const canonical = normalizePairingCode(formatted);
+        const codeHash = hashPairingCode(pepper, canonical);
+        inserted = await client.query(
+          `INSERT INTO telemetry_pairing_codes (app_user_id,code_hash,expires_at)
+           VALUES ($1,$2,now()+interval '10 minutes')
+           ON CONFLICT (code_hash) DO NOTHING
+           RETURNING expires_at`,
+          [account.appUserId, codeHash]
+        );
+        if (inserted.rowCount) {
+          displayCode = formatted;
+          expiresAt = inserted.rows[0].expires_at;
+          break;
+        }
+      }
+      if (!displayCode) {
+        await client.query("ROLLBACK");
+        logger.warn("telemetry.pairing.create.failed", { route: "/api/me/telemetry/pairing", reason: "collision_limit" }, { request_id: req.requestId });
+        return telemetryError(res, 503, "server_unavailable");
+      }
+      await client.query("COMMIT");
+      return json(res, 201, { schema: 1, code: displayCode, expires_at: expiresAt.toISOString() });
+    } catch {
+      await client.query("ROLLBACK").catch(() => {});
+      logger.warn("telemetry.pairing.create.failed", { route: "/api/me/telemetry/pairing", reason: "database_unavailable" }, { request_id: req.requestId });
+      return telemetryError(res, 503, "server_unavailable");
+    } finally {
+      client.release();
+    }
+  } catch {
+    logger.warn("telemetry.pairing.create.failed", { route: "/api/me/telemetry/pairing", reason: "dependency_unavailable" }, { request_id: req.requestId });
+    return telemetryError(res, 503, "server_unavailable");
+  }
+};
+
+const handleTelemetryPairClaim = async (req, res) => {
+  const rate = telemetryPairingClaimRateLimit.consume(clientKey(req));
+  if (!rate.allowed) return telemetryRateLimited(res, req, "/api/telemetry/pair", rate);
+  const parsed = await readTelemetryJson(req);
+  if (parsed.error) return telemetryError(res, parsed.status, parsed.error);
+  const body = parsed.body;
+  if (!Object.hasOwn(body, "schema")) return telemetryError(res, 400, "invalid_payload");
+  if (body.schema !== 1) return telemetryError(res, 400, "unsupported_schema");
+  if (Object.keys(body).some((key) => !["schema", "code", "device_name"].includes(key)) || !Object.hasOwn(body, "code")) {
+    return telemetryError(res, 400, "invalid_payload");
+  }
+  const deviceName = normalizeDeviceName(body.device_name);
+  if (deviceName === null) return telemetryError(res, 400, "invalid_payload");
+  const canonicalCode = normalizePairingCode(body.code);
+  if (!canonicalCode) return telemetryError(res, 400, "invalid_pairing_code");
+  const codeHash = hashPairingCode(pepper, canonicalCode);
+
+  let client;
+  try {
+    const ownerLookup = await pool.query("SELECT app_user_id FROM telemetry_pairing_codes WHERE code_hash=$1", [codeHash]);
+    if (!ownerLookup.rowCount) return telemetryError(res, 400, "invalid_pairing_code");
+    client = await pool.connect();
+    await client.query("BEGIN");
+    const owner = await client.query("SELECT account_status FROM app_users WHERE id=$1 FOR UPDATE", [ownerLookup.rows[0].app_user_id]);
+    if (!owner.rowCount) {
+      await client.query("ROLLBACK");
+      return telemetryError(res, 400, "invalid_pairing_code");
+    }
+    const pairing = await client.query(
+      `SELECT id,app_user_id,consumed_at,invalidated_at,expires_at,(expires_at <= now()) AS expired
+       FROM telemetry_pairing_codes WHERE code_hash=$1 FOR UPDATE`,
+      [codeHash]
+    );
+    if (!pairing.rowCount) {
+      await client.query("ROLLBACK");
+      return telemetryError(res, 400, "invalid_pairing_code");
+    }
+    const record = pairing.rows[0];
+    if (record.consumed_at || record.invalidated_at) {
+      await client.query("ROLLBACK");
+      return telemetryError(res, 409, "pairing_code_used");
+    }
+    if (record.expired) {
+      await client.query("ROLLBACK");
+      return telemetryError(res, 410, "expired_pairing_code");
+    }
+    if (owner.rows[0].account_status !== "active") {
+      await client.query("UPDATE telemetry_pairing_codes SET invalidated_at=now() WHERE id=$1 AND consumed_at IS NULL AND invalidated_at IS NULL", [record.id]);
+      await client.query("COMMIT");
+      return telemetryError(res, 409, "pairing_code_used");
+    }
+
+    let credential;
+    let createdDevice;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      credential = generateDeviceCredential();
+      const credentialHash = hashDeviceCredential(pepper, credential);
+      const inserted = await client.query(
+        `INSERT INTO telemetry_devices (app_user_id,name,credential_hash)
+         VALUES ($1,$2,$3)
+         ON CONFLICT (credential_hash) DO NOTHING
+         RETURNING id,name,created_at`,
+        [record.app_user_id, deviceName, credentialHash]
+      );
+      if (inserted.rowCount) {
+        createdDevice = inserted.rows[0];
+        break;
+      }
+      credential = undefined;
+    }
+    if (!createdDevice) {
+      await client.query("ROLLBACK");
+      logger.warn("telemetry.pair.claim.failed", { route: "/api/telemetry/pair", reason: "collision_limit" }, { request_id: req.requestId });
+      return telemetryError(res, 503, "server_unavailable");
+    }
+    const consumed = await client.query(
+      `UPDATE telemetry_pairing_codes SET consumed_at=now()
+       WHERE id=$1 AND consumed_at IS NULL AND invalidated_at IS NULL
+       RETURNING id`,
+      [record.id]
+    );
+    if (!consumed.rowCount) throw new Error("pairing state changed");
+    await client.query("COMMIT");
+    return json(res, 201, {
+      schema: 1,
+      device_id: createdDevice.id,
+      device_name: createdDevice.name,
+      device_credential: credential,
+      token_type: "Bearer",
+      created_at: createdDevice.created_at.toISOString()
+    });
+  } catch {
+    if (client) await client.query("ROLLBACK").catch(() => {});
+    logger.warn("telemetry.pair.claim.failed", { route: "/api/telemetry/pair", reason: "database_unavailable" }, { request_id: req.requestId });
+    return telemetryError(res, 503, "server_unavailable");
+  } finally {
+    client?.release();
+  }
+};
 
 const server = createServer(async (req, res) => {
   req.requestId = randomUUID();
@@ -2651,7 +2892,7 @@ const server = createServer(async (req, res) => {
       const params = new URLSearchParams(await readBody(req)); const userId = params.get("user_id"), status = params.get("status");
       if (!/^[0-9a-f-]{36}$/i.test(userId || "") || !["active", "blocked", "deleted"].includes(status)) return json(res, 400, { error: "invalid user or status" });
       const client = await pool.connect();
-      try { await client.query("BEGIN"); const updated = await client.query("UPDATE app_users SET account_status=$1 WHERE id=$2 AND id<>$3 RETURNING id", [status, userId, current.id]); if (!updated.rowCount) { await client.query("ROLLBACK"); return json(res, 400, { error: "user not available" }); } if (status !== "active") { await client.query("DELETE FROM dashboard_sessions WHERE app_user_id=$1", [userId]); await unassignOpenMissionTasksForInactiveUser(client, userId); } await client.query("COMMIT"); return json(res, 200, { ok: true }); } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+      try { await client.query("BEGIN"); const updated = await client.query("UPDATE app_users SET account_status=$1 WHERE id=$2 AND id<>$3 RETURNING id", [status, userId, current.id]); if (!updated.rowCount) { await client.query("ROLLBACK"); return json(res, 400, { error: "user not available" }); } if (status !== "active") { await client.query("DELETE FROM dashboard_sessions WHERE app_user_id=$1", [userId]); await client.query("UPDATE telemetry_pairing_codes SET invalidated_at=now() WHERE app_user_id=$1 AND consumed_at IS NULL AND invalidated_at IS NULL", [userId]); await unassignOpenMissionTasksForInactiveUser(client, userId); } await client.query("COMMIT"); return json(res, 200, { ok: true }); } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
     }
 
     if (req.method === "POST" && url.pathname === "/api/admin/users/delete") {
@@ -2898,6 +3139,9 @@ const server = createServer(async (req, res) => {
       res.writeHead(200, { "content-type": contentType, "cache-control": url.pathname === "/hector-header.png" ? "no-cache, max-age=0, must-revalidate" : url.pathname.endsWith(".png") ? "public, max-age=86400" : "no-cache" });
       return res.end(content);
     }
+
+    if (req.method === "POST" && url.pathname === "/api/me/telemetry/pairing") return handleTelemetryPairingCreate(req, res);
+    if (req.method === "POST" && url.pathname === "/api/telemetry/pair") return handleTelemetryPairClaim(req, res);
 
     if (req.method === "GET" && url.pathname === "/api/me") {
       const current = await getCurrentAppUser(req);
