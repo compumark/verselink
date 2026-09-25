@@ -339,6 +339,18 @@ details. The endpoints are future work, not implemented routes, and must not
 be added to the general implemented-behavior reference in `docs/API.md` until
 their implementation ships.
 
+### C2 persistence foundation (implemented)
+
+The repeat-safe startup schema in `src/server.js` creates `telemetry_devices`
+and `telemetry_pairing_codes`. Both are owned through `app_users` foreign keys
+with `ON DELETE CASCADE`. Device and pairing secrets are represented only by
+unique lowercase HMAC-SHA256 hashes; plaintext credentials and pairing codes
+are not persisted. `telemetry_devices.last_presence_revision` stores the
+per-device revision high-water mark independently of current presence rows.
+The `telemetry_presence` table and snapshot upsert remain C7 scope. C2 adds
+schema only—no pairing or telemetry HTTP endpoints, auth middleware, or secret
+generation logic.
+
 ## Privacy boundary
 
 The client may parse more locally than is uploaded.
