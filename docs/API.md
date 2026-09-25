@@ -83,6 +83,28 @@ Alle folgenden Endpunkte benötigen die bestehende `bp_session`-Session und grei
 | POST | `/api/material-inventory/contributions` | Material zum Gruppenlager hinzufügen | Gruppenmitglied |
 | POST | `/api/material-inventory/withdrawals` | Menge aus einer konkreten Spieler-/Qualitäts-/Warehouse-Zeile entnehmen | Gruppenmitglied |
 
+### Telemetry pairing (C3)
+
+Both routes accept JSON with a 4 KiB body limit and return machine-readable
+telemetry errors as `{"error":"code"}`. Rate-limited responses use HTTP 429,
+`{"error":"rate_limited"}`, and an integer `Retry-After` header.
+
+| Method | Path | Authentication | Purpose / limit |
+|---|---|---|---|
+| POST | `/api/me/telemetry/pairing` | Active `bp_session` account | Create a one-time pairing code; 5 requests per account per hour. |
+| POST | `/api/telemetry/pair` | No browser session required | Exchange a one-time code for a device ID and credential; 20 attempts per socket source IP per 15 minutes. |
+
+Pairing creation accepts `{"schema":1}` and returns HTTP 201 with a grouped
+code and UTC expiry. The code is valid for 10 minutes; a replacement
+invalidates the previous unused code. Claim accepts
+`{"schema":1,"code":"7K3M-9D2F-6R8W-1Q5C","device_name":"Gaming PC"}`;
+`device_name` is optional and defaults to `Telemetry device`. A successful
+HTTP 201 claim returns a device UUID, normalized name, and one-time
+`vlt_` Bearer credential. Pairing codes and credentials are persisted only as
+domain-separated HMAC-SHA256 hashes using `SINK_TOKEN_PEPPER`; plaintext is
+never stored or logged. C3 does not implement device authentication,
+heartbeat, presence, or device-management routes.
+
 ## Request-Beispiele
 
 Session:

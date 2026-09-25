@@ -335,9 +335,9 @@ The normative endpoint, request/response, error, rate-limit, lifecycle,
 ordering/idempotency, and privacy contract is in
 [`CONNECTION_CONTRACT.md`](CONNECTION_CONTRACT.md). This architecture document
 summarizes that contract; it does not define a second copy of its field-level
-details. The endpoints are future work, not implemented routes, and must not
-be added to the general implemented-behavior reference in `docs/API.md` until
-their implementation ships.
+details. C3 implements only the pairing-creation and pairing-claim routes;
+later device authentication, heartbeat, presence, and management routes remain
+future work.
 
 ### C2 persistence foundation (implemented)
 
@@ -350,6 +350,21 @@ per-device revision high-water mark independently of current presence rows.
 The `telemetry_presence` table and snapshot upsert remain C7 scope. C2 adds
 schema only—no pairing or telemetry HTTP endpoints, auth middleware, or secret
 generation logic.
+
+### C3 pairing API (implemented)
+
+The authenticated VerseLink profile can request a one-time, ten-minute pairing
+code. The server returns its grouped Crockford representation once and stores
+only a domain-separated HMAC lookup value. Issuing a replacement invalidates
+the previous open code transactionally. The unauthenticated claim route
+normalizes the submitted code, applies bounded request-count rate limits, and
+atomically consumes the live code while creating its device and returning the
+new device credential once; only that credential's HMAC is stored. Account
+deactivation invalidates open pairing codes in the same transaction, and a
+bounded daily cleanup removes aged lifecycle records. The existing MobiGlass
+profile provides the pairing-code utility. C5 still owns the Windows code-entry
+UI and secure credential storage; C4 owns device Bearer authentication; C7
+owns `telemetry_presence` and snapshot ingestion.
 
 ## Privacy boundary
 

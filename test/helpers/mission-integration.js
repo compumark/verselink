@@ -34,7 +34,7 @@ export const createSession = async (pool, pepper, appUserId) => {
   return session;
 };
 
-export const startMissionTestServer = async ({ databaseUrl, pepper }) => {
+export const startMissionTestServer = async ({ databaseUrl, pepper, extraEnv = {} }) => {
   const lockPool = await createTestPool(databaseUrl);
   let lockClient;
   let lockAcquired = false;
@@ -58,6 +58,7 @@ export const startMissionTestServer = async ({ databaseUrl, pepper }) => {
     const port = await reservePort();
     const baseUrl = `http://127.0.0.1:${port}`;
     const output = [];
+    const logDirectory = join(tmpdir(), `verselink-mission-test-${process.pid}`);
     child = spawn(process.execPath, ['src/server.js'], {
       cwd: new URL('../..', import.meta.url),
       env: {
@@ -65,7 +66,7 @@ export const startMissionTestServer = async ({ databaseUrl, pepper }) => {
         APP_ENVIRONMENT: 'Mission integration test',
         APP_PORT: String(port),
         DATABASE_URL: databaseUrl,
-        LOG_DIR: join(tmpdir(), `verselink-mission-test-${process.pid}`),
+        LOG_DIR: logDirectory,
         LOG_LEVEL: 'ERROR',
         NODE_ENV: 'test',
         SINK_TOKEN_PEPPER: pepper,
@@ -74,7 +75,8 @@ export const startMissionTestServer = async ({ databaseUrl, pepper }) => {
         DISCORD_ADMIN_USER_ID: '',
         DISCORD_ORDERS_WEBHOOKS: '{}',
         DISCORD_WEBHOOK_URL: '',
-        UEX_API_TOKEN: ''
+        UEX_API_TOKEN: '',
+        ...extraEnv
       },
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -90,7 +92,7 @@ export const startMissionTestServer = async ({ databaseUrl, pepper }) => {
       if (child.exitCode !== null) throw new Error(`test server exited early (${child.exitCode})\n${output.join('')}`);
       try {
         const response = await fetch(`${baseUrl}/healthz`);
-        if (response.ok) return { baseUrl, child, output };
+        if (response.ok) return { baseUrl, child, output, logDirectory };
       } catch {}
       await delay(100);
     }

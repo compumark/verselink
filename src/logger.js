@@ -5,8 +5,8 @@ export const LOG_LEVELS = Object.freeze(["ERROR", "WARN", "INFO", "DEBUG"]);
 const levelIndex = (value) => LOG_LEVELS.indexOf(String(value || "").toUpperCase());
 export const normalizeLogLevel = (value) => levelIndex(value) >= 0 ? String(value).toUpperCase() : "INFO";
 
-const secretKey = /password|authorization|cookie|token|secret|database_url|sink_token_pepper|webhook|uex_api|api[_-]?key/i;
-const secretValue = /\bvl_[A-Za-z0-9_-]{20,}\b|\bBearer\s+[^\s"']+|(?:postgres(?:ql)?:\/\/)[^\s"']+|(?:[?&](?:token|access_token|session|key)=[^&\s"']+)/gi;
+const secretKey = /password|authorization|cookie|token|secret|credential|pairing[_-]?code|raw[_-]?code|canonical[_-]?code|code[_-]?hash|^code$|database_url|sink_token_pepper|webhook|uex_api|api[_-]?key/i;
+const secretValue = /\bvlt_[A-Za-z0-9_-]{43}\b|\bvl_[A-Za-z0-9_-]{20,}\b|\bBearer\s+[^\s"']+|\b(?:[0-9A-HJKMNP-TV-Z]{4}-){3}[0-9A-HJKMNP-TV-Z]{4}\b|\b[0-9A-HJKMNP-TV-Z]{16}\b|(?:postgres(?:ql)?:\/\/)[^\s"']+|(?:[?&](?:token|access_token|session|key)=[^&\s"']+)/gi;
 const diagnosticKey = /^(request_id|user_id|app_user_id|group_id|resource_id|order_id|material_id|location_id|source_location_id|destination_location_id|app_environment|app_version|app_commit|effective_log_level|log_directory|retention_days|port|method|path|status|duration_ms|slow_request|reason|error|stack)$/;
 export const redact = (value, depth = 0) => {
   if (depth > 6) return "[truncated]";
