@@ -120,17 +120,21 @@ export const startMissionTestServer = async ({ databaseUrl, pepper, extraEnv = {
 };
 
 export const stopMissionTestServer = async (runtime) => {
-  if (!runtime?.child || runtime.child.exitCode !== null) return;
-  runtime.child.kill('SIGTERM');
-  const exited = once(runtime.child, 'exit');
+  const child = runtime?.child;
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  const exited = once(child, 'exit');
+  child.kill('SIGTERM');
   let timeoutId;
   const timeout = new Promise((resolve) => {
     timeoutId = setTimeout(resolve, 5_000);
   });
-  await Promise.race([exited, timeout]);
-  clearTimeout(timeoutId);
-  if (runtime.child.exitCode === null) {
-    runtime.child.kill('SIGKILL');
+  try {
+    await Promise.race([exited, timeout]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill('SIGKILL');
     await exited;
   }
 };
