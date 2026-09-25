@@ -34,7 +34,7 @@ export const createSession = async (pool, pepper, appUserId) => {
   return session;
 };
 
-export const startMissionTestServer = async ({ databaseUrl, pepper, extraEnv = {} }) => {
+export const startMissionTestServer = async ({ databaseUrl, pepper, extraEnv = {}, logDirectory = join(tmpdir(), `verselink-mission-test-${process.pid}`) }) => {
   const lockPool = await createTestPool(databaseUrl);
   let lockClient;
   let lockAcquired = false;
@@ -58,7 +58,6 @@ export const startMissionTestServer = async ({ databaseUrl, pepper, extraEnv = {
     const port = await reservePort();
     const baseUrl = `http://127.0.0.1:${port}`;
     const output = [];
-    const logDirectory = join(tmpdir(), `verselink-mission-test-${process.pid}`);
     child = spawn(process.execPath, ['src/server.js'], {
       cwd: new URL('../..', import.meta.url),
       env: {
@@ -121,17 +120,21 @@ export const startMissionTestServer = async ({ databaseUrl, pepper, extraEnv = {
 };
 
 export const stopMissionTestServer = async (runtime) => {
-  if (!runtime?.child || runtime.child.exitCode !== null) return;
-  runtime.child.kill('SIGTERM');
-  const exited = once(runtime.child, 'exit');
+  const child = runtime?.child;
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  const exited = once(child, 'exit');
+  child.kill('SIGTERM');
   let timeoutId;
   const timeout = new Promise((resolve) => {
     timeoutId = setTimeout(resolve, 5_000);
   });
-  await Promise.race([exited, timeout]);
-  clearTimeout(timeoutId);
-  if (runtime.child.exitCode === null) {
-    runtime.child.kill('SIGKILL');
+  try {
+    await Promise.race([exited, timeout]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill('SIGKILL');
     await exited;
   }
 };

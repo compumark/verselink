@@ -336,8 +336,8 @@ ordering/idempotency, and privacy contract is in
 [`CONNECTION_CONTRACT.md`](CONNECTION_CONTRACT.md). This architecture document
 summarizes that contract; it does not define a second copy of its field-level
 details. C3 implements only the pairing-creation and pairing-claim routes;
-later device authentication, heartbeat, presence, and management routes remain
-future work.
+C4 adds the reusable device-authentication layer described below. Heartbeat,
+presence, and device-management routes remain future work.
 
 ### C2 persistence foundation (implemented)
 
@@ -365,6 +365,25 @@ bounded daily cleanup removes aged lifecycle records. The existing MobiGlass
 profile provides the pairing-code utility. C5 still owns the Windows code-entry
 UI and secure credential storage; C4 owns device Bearer authentication; C7
 owns `telemetry_presence` and snapshot ingestion.
+
+### C4 device authentication (implemented)
+
+`src/telemetry-device-auth.js` accepts exactly one case-sensitive
+`Authorization: Bearer vlt_…` value in the approved credential shape. It
+reuses C3's domain-separated HMAC-SHA256 function and performs an indexed
+credential-hash lookup joined to the current owning account on every call.
+There is no authentication cache or application-side secret comparison. On
+success, callers receive only the device ID and owning app-user ID. Unknown
+credentials return `invalid_device_credential`; a committed device revocation
+returns `device_revoked` before account-status evaluation; any non-active
+account returns `account_inactive`. Database/dependency errors remain distinct
+from authentication failures.
+
+Device Bearer auth is separate from browser `bp_session` auth in both
+directions. C4 adds no protected HTTP route, heartbeat, presence behavior, or
+device-management/revocation API. Future C6/C7 handlers consume this helper;
+C8 / Issue #94 owns the user-facing device management and remote-revocation
+API/UI.
 
 ## Privacy boundary
 
