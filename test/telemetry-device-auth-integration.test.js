@@ -131,6 +131,8 @@ test("C4 authenticates real C3-issued credentials against live PostgreSQL lifecy
 
     await t.test("hard account deletion cascades devices and makes the old credential unknown", async () => {
       assert.equal((await auth(otherAccount.credential)).kind, "authenticated");
+      const removedSessions = await pool.query("DELETE FROM dashboard_sessions WHERE app_user_id=$1", [ids.deleteOwner]);
+      assert.equal(removedSessions.rowCount, 1);
       await pool.query("DELETE FROM app_users WHERE id=$1", [ids.deleteOwner]);
       const device = await pool.query("SELECT 1 FROM telemetry_devices WHERE id=$1", [otherAccount.deviceId]);
       assert.equal(device.rowCount, 0);
