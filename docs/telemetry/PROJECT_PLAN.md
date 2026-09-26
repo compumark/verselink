@@ -91,11 +91,13 @@ to a VerseLink account.
 | C2 | Telemetry Device and Pairing Persistence | COMPLETE |
 | C3 | Telemetry Pairing API and Device Credential Issuance | COMPLETE |
 | C4 | Telemetry Device Authentication and Revocation | COMPLETE |
-| C5 | Windows Pairing Flow and Secure Credential Storage | IN REVIEW |
+| C5 | Windows Pairing Flow and Secure Credential Storage | COMPLETE |
 | C6 | Telemetry Heartbeat and Connection Health | TODO |
 | C7 | Telemetry Presence Snapshot Ingest and Persistence | TODO |
 | C8 | Telemetry Device Management in VerseLink | TODO |
 | C9 | Telemetry End-to-End Integration, Resilience and Security Tests | TODO |
+
+Next planned item: C6 — Telemetry Heartbeat and Connection Health (#92). C6 will begin as a separate work item only after the C5 PR is completed and merged.
 
 No browser session cookie or VerseLink password is stored by the telemetry client.
 
