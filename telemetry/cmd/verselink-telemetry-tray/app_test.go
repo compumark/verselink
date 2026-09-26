@@ -42,6 +42,47 @@ func TestStatusStoreKeepsOnlyPrivacySafePartyCount(t *testing.T) {
 	}
 }
 
+func TestUnexpectedTrayExitCancelsAndDrainsPairingWithoutUIPost(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	gate := &pairingPostGate{}
+	done := make(chan struct{})
+	results := make(chan []byte, 1)
+	posted := false
+	credential := []byte("vlt_test-secret-buffer")
+
+	go func() {
+		defer close(done)
+		<-ctx.Done()
+		results <- credential
+		gate.postIfActive(func() { posted = true })
+	}()
+
+	gate.stop() // run() has returned; no further window-message posts are allowed.
+	stopPairingWorker(cancel, done, func() {
+		select {
+		case secret := <-results:
+			clear(secret)
+		default:
+		}
+	})
+	if posted {
+		t.Fatal("pairing worker posted into UI processing after tray shutdown")
+	}
+	if !allBytesZero(credential) {
+		t.Fatal("drained pairing credential was not cleared")
+	}
+}
+
+func allBytesZero(value []byte) bool {
+	for _, b := range value {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func TestDiagnosticsExposeConfigurationAndFallbackWarning(t *testing.T) {
 	status := runtimehost.Status{
 		Phase:   runtimehost.PhaseSessionActive,
@@ -67,7 +108,7 @@ func TestDiagnosticsExposeConfigurationAndFallbackWarning(t *testing.T) {
 }
 
 func TestSettingsDraftCancelDiscardsUnsavedChanges(t *testing.T) {
-	saved := settings.Settings{Version: 1, GameLog: settings.GameLogConfig{Mode: settings.ModeManual, ManualPath: `O:\SC\LIVE\Game.log`}}
+	saved := settings.Settings{Version: settings.CurrentVersion, GameLog: settings.GameLogConfig{Mode: settings.ModeManual, ManualPath: `O:\SC\LIVE\Game.log`}}
 	draft := newSettingsDraft(saved)
 	draft.setMode(settings.ModeAuto)
 	draft.setManualPath(`D:\Other\PTU\Game.log`)
@@ -84,7 +125,7 @@ func TestSettingsDraftSaveUsesSelectedModeAndPath(t *testing.T) {
 	draft := newSettingsDraft(settings.Defaults())
 	draft.setMode(settings.ModeManual)
 	draft.setManualPath(`O:\StarCitizen\LIVE\Game.log`)
-	want := settings.Settings{Version: 1, GameLog: settings.GameLogConfig{Mode: settings.ModeManual, ManualPath: `O:\StarCitizen\LIVE\Game.log`}}
+	want := settings.Settings{Version: settings.CurrentVersion, GameLog: settings.GameLogConfig{Mode: settings.ModeManual, ManualPath: `O:\StarCitizen\LIVE\Game.log`}}
 	if got := draft.value(); got != want {
 		t.Fatalf("draft value = %#v, want %#v", got, want)
 	}

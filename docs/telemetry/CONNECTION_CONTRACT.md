@@ -360,11 +360,14 @@ The client maintains a per-device `revision` counter. Before sending a newly
 created presence snapshot it atomically increments the counter and durably
 persists that value locally; it must not send a snapshot until that persistence
 succeeds. Only one process may write for a given device at a time: C5 acquires
-an exclusive OS file lock on the per-device revision-state file before
-enabling network sync and releases it at shutdown (the OS releases it after an
-unexpected process exit); another process using the same local device identity
-must remain unsynced until it acquires the lock. This prevents two processes
-from allocating the same revision. Skipped numbers after a crash are valid.
+an exclusive OS file lock associated with the per-device revision-state file
+before enabling network sync and releases it at shutdown (the OS releases it
+after an unexpected process exit). A separate sibling lock file is permitted
+when the state file is atomically replaced; every process must use the same
+stable lock path for the same device ID. The lock and state files contain no
+credentials or other secrets. Another process using the same local device
+identity must remain unsynced until it acquires the lock. This prevents two
+processes from allocating the same revision. Skipped numbers after a crash are valid.
 Retries of the same snapshot use the same revision and identical body. A
 changed snapshot always receives a new revision. The counter is non-secret
 metadata and survives ordinary client restart; C5 stores it separately from
@@ -560,6 +563,14 @@ custom cryptography. A redirect must not downgrade credential-bearing
 requests to HTTP or another origin. Explicit development localhost/DEV
 configuration may use HTTP only where the existing development environment
 requires it; production configuration rejects non-HTTPS base URLs.
+
+C5 treats the configured base URL as an origin, not a path-prefixed deployment:
+path prefixes, query values, fragments, and URL credentials are rejected. The
+credential-store server identity lowercases scheme and host, removes an
+explicit default port (`https:443` or development `http:80`), and removes the
+trailing slash. Non-default ports remain distinct. This makes equivalent
+origin spellings share one per-device credential target without allowing two
+path-prefixed deployments to collide.
 
 ## 13. Ownership by implementation issue
 

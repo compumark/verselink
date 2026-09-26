@@ -171,8 +171,8 @@ confirmed in the current live test (#49), and Party reconstruction can be
 incomplete in some scenarios. These issues are separate from the monitor.
 
 B2 itself did not provide persistent settings or a settings UI. Windows
-autostart, a service, an installer/updater, account pairing, and network
-telemetry remain out of scope. Known live compatibility investigations for
+autostart, a service, an installer/updater, and network telemetry remain out
+of scope. Known live compatibility investigations for
 shard detection (#48) and ship-exit confirmation (#49) remain separate work.
 
 ## B3 local Game.log settings
@@ -209,6 +209,37 @@ The effective channel is derived from the path shape
 `...\StarCitizen\<channel>\Game.log`, so LIVE, PTU, EPTU, and future channel
 directory names can be shown without storing a separate channel setting.
 Settings are local only and are never uploaded.
+
+## C5 VerseLink pairing (review pending)
+
+Open **Settings... → VerseLink connection** to pair this Windows client with a
+VerseLink account. Generate a one-time pairing code in the authenticated
+VerseLink profile, enter it in Settings, and select **Connect**. This client
+never asks for a VerseLink password, browser cookie, browser session, or account
+token. A successful claim stores the device credential only in the current
+Windows user's Credential Manager; `settings.json` contains only the explicit
+server URL and non-secret device ID/name. If Credential Manager storage fails,
+the app does not show Connected or save the credential elsewhere. Because the
+code is single-use, after a timeout check whether the code was consumed before
+requesting a replacement and retrying manually.
+
+The client does not infer a public production host. Configure the instance URL
+in the Settings field, or set `VERSELINK_APP_URL` in the client process
+environment (it takes precedence). This is separate from the server's
+deployment environment and is not inherited automatically. Without either
+source, pairing remains unavailable. Production URLs must use HTTPS. For an
+explicit local development server only, set
+`VERSELINK_TELEMETRY_ALLOW_HTTP=1`; HTTP is still accepted only for
+`localhost`/loopback addresses. Do not use this override for production.
+
+The Settings status means the claim response was safely stored locally; C5
+does not yet probe server authentication or revocation. C6 will establish
+authenticated heartbeat/connection health. **Disconnect locally** removes
+the local Credential Manager entry and local device metadata only; it does
+not revoke the device on VerseLink. Remote revoke/device management is C8.
+Local Game.log monitoring continues to work when the VerseLink server is
+unavailable. The C5 per-device OS lock is held while a paired app instance is
+running; a second instance cannot manage that same local device simultaneously.
 
 The security boundary is explicit. VerseLink Telemetry will not use process
 memory reading, DLL injection, kernel drivers, packet sniffing, keyboard hooks,

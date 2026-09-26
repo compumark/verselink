@@ -40,6 +40,7 @@ func runWindowsTray() error {
 		return err
 	}
 	tray.configureSettings(settingsStore, gameLogSettings, settingsWarning)
+	tray.configureConnection(os.Getenv("LOCALAPPDATA"), gameLogSettings)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	runtimeDone := make(chan struct{})
@@ -48,8 +49,9 @@ func runWindowsTray() error {
 	exitRequested := false
 	tray.onExit = func() {
 		exitRequested = true
+		tray.cancelPairing()
 		shutdown.Request(func() {
-			tray.postClose()
+			tray.closeWhenPairingDone()
 			close(exitPostDone)
 		})
 	}
@@ -61,12 +63,16 @@ func runWindowsTray() error {
 		_ = runTelemetryWithSettings(ctx, store, store, gameLogSettings, settingsWarning)
 	}()
 
-	err = tray.run()
-	cancel()
-	<-runtimeDone
-	if exitRequested {
-		<-exitPostDone
-	}
-	tray.cleanup()
-	return err
+	return runTrayLifecycle(trayLifecycle{
+		run:         tray.run,
+		stopPairing: tray.stopPairingAndDrain,
+		cancel:      cancel,
+		runtimeDone: runtimeDone,
+		waitExit: func() {
+			if exitRequested {
+				<-exitPostDone
+			}
+		},
+		cleanup: tray.cleanup,
+	})
 }
