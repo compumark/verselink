@@ -2,11 +2,12 @@ package settings
 
 import (
 	"fmt"
+	"github.com/compumark/verselink-telemetry/internal/connection"
 	"path/filepath"
 	"strings"
 )
 
-const CurrentVersion = 1
+const CurrentVersion = 2
 
 type Mode string
 
@@ -16,8 +17,17 @@ const (
 )
 
 type Settings struct {
-	Version int           `json:"version"`
-	GameLog GameLogConfig `json:"gameLog"`
+	Version    int              `json:"version"`
+	GameLog    GameLogConfig    `json:"gameLog"`
+	Connection ConnectionConfig `json:"connection,omitempty"`
+}
+
+// ConnectionConfig contains non-secret instance/device metadata only.
+type ConnectionConfig struct {
+	ServerURL  string `json:"serverUrl,omitempty"`
+	DeviceID   string `json:"deviceId,omitempty"`
+	DeviceName string `json:"deviceName,omitempty"`
+	Revision   int64  `json:"revision,omitempty"`
 }
 
 type GameLogConfig struct {
@@ -30,6 +40,9 @@ func Defaults() Settings {
 }
 
 func Normalize(value Settings) (Settings, error) {
+	if value.Version == 1 {
+		value.Version = CurrentVersion
+	}
 	if value.Version != CurrentVersion {
 		return Defaults(), fmt.Errorf("unsupported settings version %d", value.Version)
 	}
@@ -45,6 +58,22 @@ func Normalize(value Settings) (Settings, error) {
 		}
 	default:
 		return Defaults(), fmt.Errorf("unsupported Game.log mode %q", value.GameLog.Mode)
+	}
+	value.Connection.ServerURL = strings.TrimSpace(value.Connection.ServerURL)
+	if value.Connection.ServerURL != "" {
+		serverURL, err := connection.ValidateStoredServerURL(value.Connection.ServerURL, true)
+		if err != nil {
+			return Defaults(), err
+		}
+		value.Connection.ServerURL = serverURL
+	}
+	value.Connection.DeviceID = strings.TrimSpace(value.Connection.DeviceID)
+	value.Connection.DeviceName = strings.TrimSpace(value.Connection.DeviceName)
+	if value.Connection.Revision < 0 || value.Connection.Revision > 9007199254740991 {
+		return Defaults(), fmt.Errorf("invalid connection revision")
+	}
+	if len(value.Connection.DeviceID) > 64 || len(value.Connection.DeviceName) > 256 {
+		return Defaults(), fmt.Errorf("invalid connection metadata")
 	}
 	return value, nil
 }

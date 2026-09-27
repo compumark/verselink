@@ -3,23 +3,28 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"syscall"
 	"unsafe"
 
+	"github.com/compumark/verselink-telemetry/internal/connection"
+	"github.com/compumark/verselink-telemetry/internal/revision"
 	"github.com/compumark/verselink-telemetry/internal/settings"
 )
 
 const (
-	wmDestroy        = 0x0002
-	wmClose          = 0x0010
-	wmCommand        = 0x0111
-	wmLButtonUp      = 0x0202
-	wmRButtonUp      = 0x0205
-	wmApp            = 0x8000
-	trayCallback     = wmApp + 1
-	statusUpdate     = wmApp + 2
-	liveStatusUpdate = wmApp + 3
+	wmDestroy         = 0x0002
+	wmClose           = 0x0010
+	wmCommand         = 0x0111
+	wmLButtonUp       = 0x0202
+	wmRButtonUp       = 0x0205
+	wmApp             = 0x8000
+	trayCallback      = wmApp + 1
+	statusUpdate      = wmApp + 2
+	liveStatusUpdate  = wmApp + 3
+	pairingComplete   = wmApp + 4
+	closeAfterPairing = wmApp + 5
 
 	nimAdd     = 0x00000000
 	nimModify  = 0x00000001
@@ -141,17 +146,28 @@ type notifyIconData struct {
 }
 
 type windowsTray struct {
-	hwnd            uintptr
-	menu            uintptr
-	icon            notifyIconData
-	store           *statusStore
-	onExit          func()
-	removed         bool
-	settingsStore   settings.Store
-	settingsValue   settings.Settings
-	settingsWarning string
-	settingsWindow  *settingsWindow
-	liveWindow      *liveMonitorWindow
+	hwnd                    uintptr
+	menu                    uintptr
+	icon                    notifyIconData
+	store                   *statusStore
+	onExit                  func()
+	removed                 bool
+	settingsStore           settings.Store
+	settingsValue           settings.Settings
+	settingsWarning         string
+	settingsWindow          *settingsWindow
+	liveWindow              *liveMonitorWindow
+	credentialStore         connection.CredentialStore
+	connectionState         connection.State
+	connectionMessage       string
+	revisionLock            *revision.Lock
+	revisionLockUnavailable bool
+	revisionDirectory       string
+	pairingResults          chan pairingResult
+	pairingDone             chan struct{}
+	pairingCancel           context.CancelFunc
+	pairingActive           bool
+	pairingPostGate         pairingPostGate
 }
 
 func newWindowsTray(store *statusStore) (*windowsTray, error) {
@@ -332,6 +348,10 @@ func (t *windowsTray) handleCommand(command uintptr) {
 }
 
 func (t *windowsTray) cleanup() {
+	if t.revisionLock != nil {
+		_ = t.revisionLock.Release()
+		t.revisionLock = nil
+	}
 	if t.liveWindow != nil {
 		procDestroyWindow.Call(t.liveWindow.hwnd)
 		t.liveWindow = nil
@@ -375,6 +395,12 @@ func windowProcedure(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 			return 0
 		case liveStatusUpdate:
 			tray.refreshLiveMonitor()
+			return 0
+		case pairingComplete:
+			tray.finishPairing()
+			return 0
+		case closeAfterPairing:
+			tray.postClose()
 			return 0
 		case wmCommand:
 			tray.handleCommand(wParam & 0xffff)

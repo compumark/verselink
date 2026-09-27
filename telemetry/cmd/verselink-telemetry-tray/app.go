@@ -117,6 +117,76 @@ func newShutdownController(cancel context.CancelFunc, done <-chan struct{}) *shu
 	return &shutdownController{cancel: cancel, done: done}
 }
 
+// trayLifecycle is the shared post-message-loop shutdown sequence. The
+// Windows entry point supplies the native tray operations; tests supply the
+// same production orchestration with controlled run and shutdown boundaries.
+type trayLifecycle struct {
+	run         func() error
+	stopPairing func()
+	cancel      context.CancelFunc
+	runtimeDone <-chan struct{}
+	waitExit    func()
+	cleanup     func()
+}
+
+func runTrayLifecycle(lifecycle trayLifecycle) error {
+	err, runPanic, runPanicked := callTrayRun(lifecycle.run)
+	var cleanupPanic any
+	cleanupPanicked := false
+	runCleanup := func(cleanup func()) {
+		panicValue, panicked := callTrayCleanup(cleanup)
+		if panicked && !cleanupPanicked {
+			cleanupPanic, cleanupPanicked = panicValue, true
+		}
+	}
+	runCleanup(lifecycle.stopPairing)
+	runCleanup(lifecycle.cancel)
+	if lifecycle.runtimeDone != nil {
+		runCleanup(func() { <-lifecycle.runtimeDone })
+	}
+	runCleanup(lifecycle.waitExit)
+	runCleanup(lifecycle.cleanup)
+	if runPanicked {
+		panic(runPanic)
+	}
+	if err != nil {
+		return err
+	}
+	if cleanupPanicked {
+		panic(cleanupPanic)
+	}
+	return nil
+}
+
+func callTrayRun(run func() error) (err error, panicValue any, panicked bool) {
+	completed := false
+	defer func() {
+		if !completed {
+			panicValue, panicked = recover(), true
+		}
+	}()
+	if run != nil {
+		err = run()
+	}
+	completed = true
+	return err, nil, false
+}
+
+func callTrayCleanup(cleanup func()) (panicValue any, panicked bool) {
+	if cleanup == nil {
+		return nil, false
+	}
+	completed := false
+	defer func() {
+		if !completed {
+			panicValue, panicked = recover(), true
+		}
+	}()
+	cleanup()
+	completed = true
+	return nil, false
+}
+
 func (s *shutdownController) Request(after func()) {
 	s.once.Do(func() {
 		s.cancel()
@@ -336,10 +406,11 @@ type configurationPresentation struct {
 type settingsDraft struct {
 	mode       settings.Mode
 	manualPath string
+	connection settings.ConnectionConfig
 }
 
 func newSettingsDraft(saved settings.Settings) settingsDraft {
-	return settingsDraft{mode: saved.GameLog.Mode, manualPath: saved.GameLog.ManualPath}
+	return settingsDraft{mode: saved.GameLog.Mode, manualPath: saved.GameLog.ManualPath, connection: saved.Connection}
 }
 
 func (draft *settingsDraft) setMode(mode settings.Mode) { draft.mode = mode }
@@ -349,6 +420,7 @@ func (draft *settingsDraft) reset(saved settings.Settings) {
 }
 func (draft settingsDraft) value() settings.Settings {
 	value := settings.Defaults()
+	value.Connection = draft.connection
 	if draft.mode == settings.ModeManual {
 		value.GameLog = settings.GameLogConfig{Mode: settings.ModeManual, ManualPath: draft.manualPath}
 	}

@@ -385,6 +385,49 @@ device-management/revocation API. Future C6/C7 handlers consume this helper;
 C8 / Issue #94 owns the user-facing device management and remote-revocation
 API/UI.
 
+### C5 Windows pairing client (implemented locally; review pending)
+
+The native tray Settings window accepts an explicit VerseLink instance URL,
+optional device name, and one-time C3 pairing code. A client-side
+`VERSELINK_APP_URL` environment value takes precedence; otherwise the saved,
+validated instance URL is used. The server's deployment variable is not
+automatically available to a standalone Windows process, and no production
+hostname is embedded in the client. Missing configuration disables pairing.
+Production targets require HTTPS, normal system certificate/hostname
+validation, and no URL credentials, query, or fragment. HTTP is permitted only
+with the explicit `VERSELINK_TELEMETRY_ALLOW_HTTP=1` development override and
+a loopback host. Pairing is a single bounded request to C3's
+`POST /api/telemetry/pair`; redirects and cookie jars are disabled, the total
+timeout is 10 seconds, and response reads are capped. A timeout is ambiguous:
+the client never retries a claim automatically.
+
+The one-time `vlt_` value is held in a wipeable byte buffer and written only to
+a per-user Windows Credential Manager Generic Credential target derived from
+the normalized server URL and server-issued device ID. The target contains no
+secret and isolates devices as well as server instances. Settings version 2
+retains backward compatibility with version-1 Game.log settings and stores
+only instance URL, device UUID/name, and other non-secret local configuration.
+Credential-store failures never fall back to settings, files, registry, or
+DPAPI. Pairing confirmation says the credential is stored locally; it does not
+claim C4 authentication/revocation status, which requires C6's first heartbeat.
+
+Local Disconnect deletes the Windows Credential Manager entry and local
+device metadata only. It does not call the server and explicitly does not
+revoke the remote device; remote device management belongs to C8. The existing
+local Game.log runtime remains independent of network availability.
+
+C5 creates a durable per-device revision-state file and holds an exclusive OS
+lock associated with the paired device for the process lifetime. A stable
+sibling lock file is used because the JSON state file is atomically replaced;
+this keeps the OS lock identity stable across replacement. All processes use
+the same lock path derived from the device ID. Neither lock nor state files
+contain credentials or other secrets. The state file is written via synced
+temporary file and write-through atomic replacement on Windows. The revision
+allocator is present for future snapshot creation but is not called by C5: no
+revision is incremented until C7 has an actual presence snapshot to send. C5
+adds no heartbeat, presence upload, authentication probe, management route, or
+server-side code.
+
 ## Privacy boundary
 
 The client may parse more locally than is uploaded.

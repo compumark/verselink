@@ -3,13 +3,18 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"unsafe"
 
+	"github.com/compumark/verselink-telemetry/internal/connection"
 	"github.com/compumark/verselink-telemetry/internal/gamelog"
+	"github.com/compumark/verselink-telemetry/internal/revision"
 	"github.com/compumark/verselink-telemetry/internal/runtimehost"
 	"github.com/compumark/verselink-telemetry/internal/settings"
 )
@@ -55,6 +60,12 @@ const (
 	settingsWarningID      = 1110
 	settingsCancelID       = 1111
 	settingsSaveID         = 1112
+	settingsServerURLID    = 1113
+	settingsDeviceNameID   = 1114
+	settingsPairCodeID     = 1115
+	settingsPairID         = 1116
+	settingsDisconnectID   = 1117
+	settingsConnectionID   = 1118
 	dialogCancelID         = 2
 )
 
@@ -103,24 +114,30 @@ type openFileName struct {
 }
 
 type settingsWindow struct {
-	hwnd         uintptr
-	auto         uintptr
-	manual       uintptr
-	pathLabel    uintptr
-	path         uintptr
-	browseButton uintptr
-	values       [4]uintptr
-	warning      uintptr
-	errorText    uintptr
-	font         uintptr
-	cancelButton uintptr
-	saveButton   uintptr
-	store        settings.Store
-	value        settings.Settings
-	draft        settingsDraft
-	warningText  string
-	status       func() runtimehost.Status
-	instance     uintptr
+	hwnd             uintptr
+	auto             uintptr
+	manual           uintptr
+	pathLabel        uintptr
+	path             uintptr
+	browseButton     uintptr
+	values           [4]uintptr
+	warning          uintptr
+	errorText        uintptr
+	font             uintptr
+	cancelButton     uintptr
+	saveButton       uintptr
+	store            settings.Store
+	value            settings.Settings
+	draft            settingsDraft
+	warningText      string
+	status           func() runtimehost.Status
+	instance         uintptr
+	serverURL        uintptr
+	deviceName       uintptr
+	pairCode         uintptr
+	connectionStatus uintptr
+	pairButton       uintptr
+	disconnectButton uintptr
 }
 
 func (w *settingsWindow) handle() uintptr {
@@ -163,7 +180,7 @@ func createSettingsWindow(store settings.Store, value settings.Settings, warning
 		dpi = uint32(got)
 	}
 	scale := func(value int32) int32 { return int32((int64(value)*int64(dpi) + 48) / 96) }
-	client := settingsWindowRect{Right: scale(680), Bottom: scale(492)}
+	client := settingsWindowRect{Right: scale(680), Bottom: scale(690)}
 	procAdjustWindowRect.Call(uintptr(unsafe.Pointer(&client)), style, 0, exStyle)
 	width, height := client.Right-client.Left, client.Bottom-client.Top
 	instance, _, instanceErr := procGetModuleHandle.Call(0)
@@ -206,7 +223,7 @@ func createSettingsWindow(store settings.Store, value settings.Settings, warning
 	window.pathLabel = add("STATIC", "Game.log path:", wsChild|wsVisible|ssLeft, 48, 119, 120, 20, settingsPathLabelID)
 	window.path = add("EDIT", value.GameLog.ManualPath, wsChild|wsVisible|wsTabStop|wsBorder|esAutoHScroll, 48, 141, 488, 26, settingsPathID)
 	window.browseButton = add("BUTTON", "Browse...", wsChild|wsVisible|wsTabStop, 546, 139, 96, 28, settingsBrowseID)
-	add("BUTTON", "Current configuration", wsChild|wsVisible|bsGroupBox, 16, 208, 648, 222, 0)
+	add("BUTTON", "Current Game.log configuration", wsChild|wsVisible|bsGroupBox, 16, 208, 648, 212, 0)
 	labels := []string{"Configured mode:", "Effective source:", "Channel:", "Game.log:"}
 	labelY := []int32{234, 261, 288, 315}
 	for index, label := range labels {
@@ -220,17 +237,32 @@ func createSettingsWindow(store settings.Store, value settings.Settings, warning
 		window.values[index] = add("STATIC", "", valueStyle, 154, labelY[index], 486, valueHeight, []uintptr{settingsModeValueID, settingsSourceValueID, settingsChannelValueID, settingsPathValueID}[index])
 	}
 	window.warning = add("STATIC", "", wsChild|wsVisible|ssLeft|ssEditControl|ssNoPrefix, 34, 365, 606, 43, settingsWarningID)
-	window.errorText = add("STATIC", "", wsChild|wsVisible|ssLeftNoWrap, 34, 408, 606, 18, 0)
+	add("BUTTON", "VerseLink connection", wsChild|wsVisible|bsGroupBox, 16, 430, 648, 208, 0)
+	add("STATIC", "Server URL (VERSELINK_APP_URL or explicit instance URL):", wsChild|wsVisible|ssLeft, 34, 452, 606, 20, 0)
+	initialServerURL := value.Connection.ServerURL
+	if environmentURL := strings.TrimSpace(os.Getenv("VERSELINK_APP_URL")); environmentURL != "" && (activeTray == nil || activeTray.connectionState != connection.Connected) {
+		initialServerURL = environmentURL
+	}
+	window.serverURL = add("EDIT", initialServerURL, wsChild|wsVisible|wsTabStop|wsBorder|esAutoHScroll, 34, 474, 606, 25, settingsServerURLID)
+	add("STATIC", "Device name (optional):", wsChild|wsVisible|ssLeft, 34, 507, 180, 20, 0)
+	window.deviceName = add("EDIT", value.Connection.DeviceName, wsChild|wsVisible|wsTabStop|wsBorder|esAutoHScroll, 210, 504, 210, 25, settingsDeviceNameID)
+	add("STATIC", "Pairing code:", wsChild|wsVisible|ssLeft, 34, 540, 100, 20, 0)
+	window.pairCode = add("EDIT", "", wsChild|wsVisible|wsTabStop|wsBorder|esAutoHScroll, 140, 537, 280, 25, settingsPairCodeID)
+	window.connectionStatus = add("STATIC", "Not connected. Pairing requires a configured HTTPS VerseLink URL.", wsChild|wsVisible|ssLeft|ssEditControl|ssNoPrefix, 34, 568, 606, 30, settingsConnectionID)
+	window.pairButton = add("BUTTON", "Connect", wsChild|wsVisible|wsTabStop, 430, 535, 96, 28, settingsPairID)
+	window.disconnectButton = add("BUTTON", "Disconnect locally", wsChild|wsVisible|wsTabStop, 530, 535, 110, 28, settingsDisconnectID)
+	window.errorText = add("STATIC", "", wsChild|wsVisible|ssLeftNoWrap, 34, 612, 606, 18, 0)
 	window.autoCheck(value.GameLog.Mode != settings.ModeManual)
 	window.manualCheck(value.GameLog.Mode == settings.ModeManual)
 	window.setModeEnabled(value.GameLog.Mode == settings.ModeManual)
-	window.cancelButton = add("BUTTON", "Cancel", wsChild|wsVisible|wsTabStop, 452, 446, 88, 28, settingsCancelID)
-	window.saveButton = add("BUTTON", "Save", wsChild|wsVisible|wsTabStop|bsDefaultButton, 552, 446, 88, 28, settingsSaveID)
+	window.cancelButton = add("BUTTON", "Cancel", wsChild|wsVisible|wsTabStop, 452, 646, 88, 28, settingsCancelID)
+	window.saveButton = add("BUTTON", "Save", wsChild|wsVisible|wsTabStop|bsDefaultButton, 552, 646, 88, 28, settingsSaveID)
 	if controlCreationErr != nil {
 		procDestroyWindow.Call(hwnd)
 		return nil, controlCreationErr
 	}
 	window.refreshSummary()
+	window.refreshConnection()
 	procShowWindow.Call(hwnd, swShow)
 	return window, nil
 }
@@ -322,6 +354,10 @@ func (t *windowsTray) handleSettingsMessage(hwnd uintptr, msg uint32, wParam, lP
 			window.browse()
 		case settingsSaveID:
 			window.save()
+		case settingsPairID:
+			window.beginPairing()
+		case settingsDisconnectID:
+			window.disconnectLocally()
 		case settingsCancelID, dialogCancelID:
 			window.discardChanges()
 			procShowWindow.Call(window.hwnd, swHide)
@@ -396,6 +432,25 @@ func (w *settingsWindow) save() {
 	} else {
 		w.draft.setMode(settings.ModeAuto)
 	}
+	serverURL := strings.TrimSpace(w.controlText(w.serverURL))
+	if serverURL != "" {
+		allowHTTP := os.Getenv("VERSELINK_TELEMETRY_ALLOW_HTTP") == "1"
+		normalized, err := connection.ValidateBaseURL(serverURL, allowHTTP)
+		if err != nil {
+			w.setError("Enter a valid HTTPS VerseLink instance URL. HTTP is permitted only for explicit localhost development override.")
+			return
+		}
+		serverURL = normalized
+	}
+	if w.value.Connection.DeviceID != "" && serverURL == "" {
+		w.setError("Disconnect this local device before clearing its server URL.")
+		return
+	}
+	if w.value.Connection.DeviceID != "" && serverURL != w.value.Connection.ServerURL {
+		w.setError("Disconnect this local device before changing its VerseLink server URL.")
+		return
+	}
+	w.draft.connection.ServerURL = serverURL
 	value := w.draft.value()
 	if w.store.Path == "" {
 		w.setError("Settings cannot be saved because LOCALAPPDATA is unavailable.")
@@ -415,7 +470,7 @@ func (w *settingsWindow) save() {
 	w.refreshSummary()
 	w.setError("")
 	if changed {
-		showNativeMessage("Settings saved", "Restart VerseLink Telemetry to apply the Game.log configuration change.", mbOK|mbIconInfo)
+		showNativeMessage("Settings saved", "Restart VerseLink Telemetry to apply Game.log changes. Connection settings take effect immediately.", mbOK|mbIconInfo)
 	} else {
 		showNativeMessage("Settings saved", "Your settings are saved.", mbOK|mbIconInfo)
 	}
@@ -433,6 +488,326 @@ func (w *settingsWindow) discardChanges() {
 	w.setModeEnabled(w.value.GameLog.Mode == settings.ModeManual)
 	w.setError("")
 	w.refreshSummary()
+	w.setText(w.serverURL, w.value.Connection.ServerURL)
+	w.setText(w.deviceName, w.value.Connection.DeviceName)
+	w.refreshConnection()
+}
+
+type pairingResult struct {
+	response connection.ClaimResponse
+	err      error
+	baseURL  string
+}
+
+func (w *settingsWindow) beginPairing() {
+	if activeTray == nil || activeTray.connectionState == connection.Pairing {
+		return
+	}
+	if activeTray.connectionState == connection.Connected {
+		w.setError("Disconnect the currently paired local device before pairing another device.")
+		return
+	}
+	serverURL := strings.TrimSpace(w.controlText(w.serverURL))
+	allowHTTP := os.Getenv("VERSELINK_TELEMETRY_ALLOW_HTTP") == "1"
+	baseURL, urlSource, err := connection.ResolveBaseURL(os.Getenv("VERSELINK_APP_URL"), serverURL, allowHTTP)
+	if err != nil {
+		w.setError("Pairing is disabled. Set VERSELINK_APP_URL or enter a valid HTTPS VerseLink instance URL. HTTP requires the explicit localhost development override.")
+		return
+	}
+	if w.store.Path == "" {
+		w.setError("Settings cannot be stored because LOCALAPPDATA is unavailable.")
+		return
+	}
+	value := activeTray.settingsValue
+	if urlSource == connection.URLFromSettings {
+		value.Connection.ServerURL = baseURL
+	}
+	if name := strings.TrimSpace(w.controlText(w.deviceName)); name != "" {
+		value.Connection.DeviceName = name
+	}
+	if err := w.store.Save(value); err != nil {
+		w.setError("Could not save the non-secret connection settings.")
+		return
+	}
+	activeTray.settingsValue, activeTray.settingsWarning = value, ""
+	w.value, w.draft.connection = value, value.Connection
+	code := w.controlText(w.pairCode)
+	w.setText(w.pairCode, "")
+	if strings.TrimSpace(code) == "" {
+		w.setError("Enter the one-time pairing code from VerseLink.")
+		return
+	}
+	name := strings.TrimSpace(w.controlText(w.deviceName))
+	if activeTray.pairingResults == nil {
+		activeTray.pairingResults = make(chan pairingResult, 1)
+	}
+	activeTray.connectionState = connection.Pairing
+	activeTray.connectionMessage = "Pairing in progress. A network timeout may leave the one-time code consumed; retry only after confirming its status."
+	ctx, cancel := context.WithCancel(context.Background())
+	activeTray.pairingCancel = cancel
+	activeTray.pairingDone = make(chan struct{})
+	activeTray.pairingActive = true
+	w.refreshConnection()
+	w.setError("")
+	procEnableWindow.Call(w.pairCode, 0)
+	procEnableWindow.Call(w.saveButton, 0)
+	tray := activeTray
+	go func() {
+		defer close(tray.pairingDone)
+		response, pairErr := (connection.Client{BaseURL: baseURL, AllowHTTP: allowHTTP}).Claim(ctx, code, name)
+		tray.pairingResults <- pairingResult{response: response, err: pairErr, baseURL: baseURL}
+		tray.pairingPostGate.postIfActive(func() { procPostMessage.Call(tray.hwnd, pairingComplete, 0, 0) })
+	}()
+}
+
+func (t *windowsTray) finishPairing() {
+	if t.pairingResults == nil {
+		return
+	}
+	var result pairingResult
+	select {
+	case result = <-t.pairingResults:
+	default:
+		return
+	}
+	t.applyPairingResult(result, true)
+}
+
+// applyPairingResult persists a successful claim independently of the window
+// message loop. UI changes remain opt-in so shutdown can drain an already
+// received result without posting to, or touching, a destroyed window.
+func (t *windowsTray) applyPairingResult(result pairingResult, updateUI bool) {
+	t.pairingActive = false
+	if t.pairingCancel != nil {
+		t.pairingCancel()
+		t.pairingCancel = nil
+	}
+	defer clear(result.response.DeviceCredential)
+	if updateUI && !t.pairingPostGate.active() {
+		return
+	}
+	if updateUI && t.settingsWindow != nil {
+		procEnableWindow.Call(t.settingsWindow.pairCode, 1)
+		procEnableWindow.Call(t.settingsWindow.saveButton, 1)
+	}
+	if result.err != nil {
+		t.connectionState = connection.NotConnected
+		t.connectionMessage = result.err.Error()
+		if errors.Is(result.err, connection.ErrServerUnavailable) {
+			t.connectionState = connection.ServerUnavailable
+		}
+		if updateUI && t.settingsWindow != nil {
+			t.settingsWindow.refreshConnection()
+			t.settingsWindow.setError(result.err.Error())
+		}
+		return
+	}
+	lock, revState, err := revision.Acquire(t.revisionDirectory, result.response.DeviceID)
+	if err != nil {
+		t.connectionState = connection.NotConnected
+		t.connectionMessage = "Pairing may exist on the server, but the local single-instance lock could not be acquired. Request a new code only after checking its status."
+		if updateUI && t.settingsWindow != nil {
+			t.settingsWindow.refreshConnection()
+			t.settingsWindow.setError(t.connectionMessage)
+		}
+		return
+	}
+	value := t.settingsValue
+	value.Connection = settings.ConnectionConfig{ServerURL: result.baseURL, DeviceID: result.response.DeviceID, DeviceName: result.response.DeviceName, Revision: revState.Revision}
+	if err := t.settingsStore.Save(value); err != nil {
+		_ = lock.Release()
+		t.connectionState = connection.NotConnected
+		t.connectionMessage = "Pairing may exist on the server, but local settings could not be saved. Check the code status before retrying."
+		if updateUI && t.settingsWindow != nil {
+			t.settingsWindow.refreshConnection()
+			t.settingsWindow.setError(t.connectionMessage)
+		}
+		return
+	}
+	target := connection.CredentialTarget(result.baseURL, result.response.DeviceID)
+	if err := t.credentialStore.Write(target, result.response.DeviceCredential); err != nil {
+		_ = lock.Release()
+		// Restore the previous non-secret configuration; never claim Connected
+		// unless both metadata and the secure credential were persisted.
+		_ = t.settingsStore.Save(t.settingsValue)
+		t.connectionState = connection.NotConnected
+		t.connectionMessage = "Pairing may exist on the server, but secure local credential storage failed. Check the code status before retrying."
+		if updateUI && t.settingsWindow != nil {
+			t.settingsWindow.refreshConnection()
+			t.settingsWindow.setError(t.connectionMessage)
+		}
+		return
+	}
+	if t.revisionLock != nil {
+		_ = t.revisionLock.Release()
+	}
+	t.revisionLock = lock
+	t.revisionLockUnavailable = false
+	t.settingsValue = value
+	t.connectionState = connection.Connected
+	t.connectionMessage = fmt.Sprintf("Paired %s locally (device %s). Server authentication is not verified until C6 adds heartbeat.", result.response.DeviceName, result.response.DeviceID)
+	if updateUI && t.settingsWindow != nil {
+		t.settingsWindow.value = value
+		t.settingsWindow.draft.reset(value)
+		t.settingsWindow.setText(t.settingsWindow.serverURL, value.Connection.ServerURL)
+		t.settingsWindow.setText(t.settingsWindow.deviceName, value.Connection.DeviceName)
+		t.settingsWindow.refreshConnection()
+		t.settingsWindow.setError("")
+	}
+}
+
+func (t *windowsTray) cancelPairing() {
+	if t != nil {
+		t.pairingPostGate.stop()
+		if t.pairingCancel != nil {
+			t.pairingCancel()
+		}
+	}
+}
+
+func (t *windowsTray) stopPairingAndDrain() {
+	if t == nil {
+		return
+	}
+	shutdownPairing(&t.pairingPostGate, t.pairingCancel, t.pairingDone, func() {
+		if t.pairingResults == nil {
+			return
+		}
+		select {
+		case result := <-t.pairingResults:
+			t.applyPairingResult(result, false)
+		default:
+		}
+	})
+}
+
+func (t *windowsTray) closeWhenPairingDone() {
+	if t == nil || t.hwnd == 0 {
+		return
+	}
+	done := t.pairingDone
+	if done == nil {
+		t.postClose()
+		return
+	}
+	go func() {
+		<-done
+		procPostMessage.Call(t.hwnd, closeAfterPairing, 0, 0)
+	}()
+}
+
+func (w *settingsWindow) disconnectLocally() {
+	if activeTray == nil || activeTray.connectionState == connection.Pairing {
+		return
+	}
+	if activeTray.revisionLockUnavailable {
+		w.setError("Another VerseLink Telemetry instance holds this device lock. Close it before disconnecting here.")
+		return
+	}
+	value := activeTray.settingsValue
+	if value.Connection.DeviceID != "" {
+		target := connection.CredentialTarget(value.Connection.ServerURL, value.Connection.DeviceID)
+		if err := activeTray.credentialStore.Delete(target); err != nil {
+			w.setError("Could not remove the local credential from Windows Credential Manager.")
+			return
+		}
+	}
+	if activeTray.revisionLock != nil {
+		_ = activeTray.revisionLock.Release()
+		activeTray.revisionLock = nil
+	}
+	value.Connection.DeviceID = ""
+	value.Connection.DeviceName = ""
+	value.Connection.Revision = 0
+	if w.store.Path != "" {
+		if err := w.store.Save(value); err != nil {
+			w.setError("Local credential was removed, but settings could not be updated. No server-side revocation was performed.")
+			activeTray.connectionState = connection.NotConnected
+			activeTray.settingsValue = value
+			w.refreshConnection()
+			return
+		}
+	}
+	activeTray.settingsValue = value
+	activeTray.connectionState = connection.NotConnected
+	activeTray.revisionLockUnavailable = false
+	activeTray.connectionMessage = "Local credential removed. This does not revoke the server-side device; use VerseLink device management when C8 is available."
+	w.value = value
+	w.draft.reset(value)
+	w.setText(w.deviceName, "")
+	w.refreshConnection()
+	w.setError("")
+}
+
+func (w *settingsWindow) refreshConnection() {
+	if w.connectionStatus == 0 {
+		return
+	}
+	message := "Pairing requires a configured HTTPS VerseLink instance URL."
+	if activeTray != nil && activeTray.connectionMessage != "" {
+		message = string(activeTray.connectionState) + " — " + activeTray.connectionMessage
+	}
+	envURL := strings.TrimSpace(os.Getenv("VERSELINK_APP_URL"))
+	if envURL != "" && (activeTray == nil || activeTray.connectionState != connection.Connected) {
+		message += " (pairing URL from VERSELINK_APP_URL)"
+	}
+	w.setText(w.connectionStatus, message)
+	enabled := uintptr(0)
+	if (envURL != "" || strings.TrimSpace(w.controlText(w.serverURL)) != "") && (activeTray == nil || activeTray.connectionState != connection.Pairing && activeTray.connectionState != connection.Connected) {
+		enabled = 1
+	}
+	procEnableWindow.Call(w.pairButton, enabled)
+	disconnectEnabled := uintptr(1)
+	if activeTray != nil && (activeTray.connectionState == connection.Pairing || activeTray.revisionLockUnavailable) {
+		disconnectEnabled = 0
+	}
+	procEnableWindow.Call(w.disconnectButton, disconnectEnabled)
+}
+
+func (w *settingsWindow) controlText(hwnd uintptr) string {
+	buffer := make([]uint16, 2048)
+	n, _, _ := procGetWindowText.Call(hwnd, uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)))
+	if n == 0 {
+		return ""
+	}
+	return syscall.UTF16ToString(buffer[:int(n)])
+}
+
+func (t *windowsTray) configureConnection(localAppData string, value settings.Settings) {
+	t.credentialStore = connection.SystemCredentialStore{}
+	if localAppData != "" {
+		t.revisionDirectory = filepath.Join(localAppData, "VerseLink", "Telemetry", "devices")
+	}
+	t.connectionState = connection.NotConnected
+	if localAppData == "" || value.Connection.DeviceID == "" || value.Connection.ServerURL == "" {
+		t.connectionMessage = "Not connected. No secure paired credential is configured."
+		return
+	}
+	allowHTTP := os.Getenv("VERSELINK_TELEMETRY_ALLOW_HTTP") == "1"
+	serverURL, err := connection.ValidateStoredServerURL(value.Connection.ServerURL, allowHTTP)
+	if err != nil {
+		t.connectionMessage = "Not connected. The saved VerseLink server URL is invalid or not allowed by the current security settings."
+		return
+	}
+	target := connection.CredentialTarget(serverURL, value.Connection.DeviceID)
+	secret, err := t.credentialStore.Read(target)
+	if err != nil || len(secret) == 0 {
+		t.connectionMessage = "Not connected. No matching secure credential is available."
+		return
+	}
+	// Do not retain the secret after verifying secure-store presence.
+	clear(secret)
+	lock, state, err := revision.Acquire(t.revisionDirectory, value.Connection.DeviceID)
+	if err != nil {
+		t.connectionState = connection.Connected
+		t.revisionLockUnavailable = true
+		t.connectionMessage = "Paired credential found, but the per-device revision lock is held by another instance."
+		return
+	}
+	t.revisionLock = lock
+	t.revisionLockUnavailable = false
+	t.connectionState = connection.Connected
+	t.connectionMessage = fmt.Sprintf("Paired locally (revision %d); server authentication is not verified until C6.", state.Revision)
 }
 
 func (w *settingsWindow) refreshSummary() {

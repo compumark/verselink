@@ -3,6 +3,7 @@ package settings
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -19,15 +20,44 @@ func TestLoadVersionOneSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := (Store{Path: path}).Load()
-	want := Settings{Version: 1, GameLog: GameLogConfig{Mode: ModeManual, ManualPath: `O:\SC\LIVE\Game.log`}}
+	want := Settings{Version: CurrentVersion, GameLog: GameLogConfig{Mode: ModeManual, ManualPath: `O:\SC\LIVE\Game.log`}}
 	if err != nil || got != want {
 		t.Fatalf("Load() = %#v, %v; want %#v", got, err, want)
 	}
 }
 
+func TestVersionOneSettingsMigrateAndConnectionMetadataRoundTripsWithoutSecrets(t *testing.T) {
+	legacy := `{"version":1,"gameLog":{"mode":"auto","manualPath":""}}`
+	path := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (Store{Path: path}).Load()
+	if err != nil || got.Version != CurrentVersion || got.GameLog.Mode != ModeAuto {
+		t.Fatalf("legacy settings = %#v, %v", got, err)
+	}
+	got.Connection = ConnectionConfig{ServerURL: "https://telemetry.example.test", DeviceID: "device-123", DeviceName: "Test PC", Revision: 17}
+	if err := (Store{Path: path}).Save(got); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"device_credential", "pairing code", "vlt_"} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("settings contain secret marker %q", forbidden)
+		}
+	}
+	reloaded, err := (Store{Path: path}).Load()
+	if err != nil || reloaded != got {
+		t.Fatalf("round trip = %#v, %v", reloaded, err)
+	}
+}
+
 func TestSaveLoadRoundTripAndClearManual(t *testing.T) {
 	store := Store{Path: filepath.Join(t.TempDir(), "nested", "settings.json")}
-	manual := Settings{Version: 1, GameLog: GameLogConfig{Mode: ModeManual, ManualPath: `O:\SC\LIVE\Game.log`}}
+	manual := Settings{Version: CurrentVersion, GameLog: GameLogConfig{Mode: ModeManual, ManualPath: `O:\SC\LIVE\Game.log`}}
 	if err := store.Save(manual); err != nil {
 		t.Fatal(err)
 	}
@@ -51,11 +81,12 @@ func TestSaveLoadRoundTripAndClearManual(t *testing.T) {
 
 func TestLoadMalformedAndUnsupportedSettingsFallBackWithoutOverwrite(t *testing.T) {
 	for name, content := range map[string]string{
-		"malformed":    `{not json`,
-		"future":       `{"version":2,"gameLog":{"mode":"auto","manualPath":""}}`,
-		"bad mode":     `{"version":1,"gameLog":{"mode":"future","manualPath":""}}`,
-		"missing mode": `{"version":1,"gameLog":{"manualPath":"C:\\Game.log"}}`,
-		"trailing":     `{"version":1,"gameLog":{"mode":"auto","manualPath":""}} {}`,
+		"malformed":        `{not json`,
+		"future":           `{"version":3,"gameLog":{"mode":"auto","manualPath":""}}`,
+		"credential field": `{"version":2,"gameLog":{"mode":"auto","manualPath":""},"connection":{"device_credential":"vlt_secret"}}`,
+		"bad mode":         `{"version":1,"gameLog":{"mode":"future","manualPath":""}}`,
+		"missing mode":     `{"version":1,"gameLog":{"manualPath":"C:\\Game.log"}}`,
+		"trailing":         `{"version":1,"gameLog":{"mode":"auto","manualPath":""}} {}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "settings.json")
