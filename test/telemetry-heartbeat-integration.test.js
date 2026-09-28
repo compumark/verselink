@@ -27,7 +27,9 @@ test("C6 heartbeat authenticates C3 devices, updates connection metadata, and en
     schemaName = `c6_heartbeat_${randomUUID().replaceAll("-", "")}`;
     await createC6TestSchema(adminPool, schemaName);
     const scoped = new URL(databaseUrl);
-    scoped.searchParams.set("options", `-c search_path=${schemaName},public`);
+    // Keep fault-injection and assertions inside this test-owned schema. If
+    // public is on the path, a renamed table can silently resolve there instead.
+    scoped.searchParams.set("options", `-c search_path=${schemaName}`);
     runtime = await startMissionTestServer({ databaseUrl: scoped.toString(), pepper, logDirectory });
     await stopMissionTestServer(runtime); runtime = null;
     pool = await createC6TestPool(scoped.toString());
@@ -98,6 +100,7 @@ test("C6 heartbeat authenticates C3 devices, updates connection metadata, and en
     });
 
     await t.test("successful attempts count toward the per-device request limit", async () => {
+      await pool.query("UPDATE app_users SET account_status='active' WHERE id=$1", [ownerId]);
       await pool.query("UPDATE telemetry_devices SET last_seen_at=$1 WHERE id=$2", [old, limited.id]);
       for (let index = 0; index < 120; index += 1) {
         const response = await heartbeat(runtime.baseUrl, { credential: limited.credential });
@@ -121,6 +124,7 @@ test("C6 heartbeat authenticates C3 devices, updates connection metadata, and en
       assert.equal(presence.rows[0].table_name, null);
     });
     await t.test("authentication database failures consume the credential bucket and remain service errors", async () => {
+      await pool.query("UPDATE app_users SET account_status='active' WHERE id=$1", [ownerId]);
       const before = (await pool.query("SELECT last_seen_at FROM telemetry_devices WHERE id=$1", [second.id])).rows[0].last_seen_at;
       await pool.query("ALTER TABLE telemetry_devices RENAME TO telemetry_devices_c6_hidden");
       try {
