@@ -210,7 +210,7 @@ The effective channel is derived from the path shape
 directory names can be shown without storing a separate channel setting.
 Settings are local only and are never uploaded.
 
-## C5 VerseLink pairing (review pending)
+## C5 VerseLink pairing
 
 Open **Settings... → VerseLink connection** to pair this Windows client with a
 VerseLink account. Generate a one-time pairing code in the authenticated
@@ -232,14 +232,34 @@ explicit local development server only, set
 `VERSELINK_TELEMETRY_ALLOW_HTTP=1`; HTTP is still accepted only for
 `localhost`/loopback addresses. Do not use this override for production.
 
-The Settings status means the claim response was safely stored locally; C5
-does not yet probe server authentication or revocation. C6 will establish
-authenticated heartbeat/connection health. **Disconnect locally** removes
+The Settings status follows the authenticated heartbeat state; local pairing
+storage alone is shown as Connecting until the server accepts a heartbeat.
+**Disconnect locally** removes
 the local Credential Manager entry and local device metadata only; it does
 not revoke the device on VerseLink. Remote revoke/device management is C8.
 Local Game.log monitoring continues to work when the VerseLink server is
 unavailable. The C5 per-device OS lock is held while a paired app instance is
 running; a second instance cannot manage that same local device simultaneously.
+
+## C6 heartbeat and connection health (review pending)
+
+While paired and running, the client sends an authenticated heartbeat
+immediately and every 30 seconds. Credentials are read from the current
+Windows user's Credential Manager and sent only in the Authorization header;
+they are never written to settings or diagnostics. Connection health is shown
+as Not connected, Connecting, Connected, Temporarily offline, Authentication
+failed, or Device revoked, with the last successful server heartbeat timestamp
+available in Settings. Network loss does not interrupt local Game.log parsing
+or clear gameplay state.
+
+Requests have a 10-second timeout. Network/timeouts and server failures retry
+with capped exponential backoff and full jitter; Retry-After governs rate-limit
+retries. Authentication failure or revocation stops heartbeat traffic. After
+resolving an inactive account, restart the client to authenticate again; a
+revoked device must be paired as a new device. Application shutdown cancels active
+requests and pending retry waits. Server `last_seen_at` and its 90-second online
+window represent connection health only—not an active Star Citizen session or
+shared gameplay presence. Presence upload remains out of scope until C7.
 
 The security boundary is explicit. VerseLink Telemetry will not use process
 memory reading, DLL injection, kernel drivers, packet sniffing, keyboard hooks,

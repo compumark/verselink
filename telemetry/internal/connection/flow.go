@@ -11,6 +11,8 @@ const (
 	NotConnected         State = "Not connected"
 	Pairing              State = "Pairing"
 	Connected            State = "Connected"
+	Connecting           State = "Connecting"
+	TemporarilyOffline   State = "Temporarily offline"
 	AuthenticationFailed State = "Authentication failed"
 	DeviceRevoked        State = "Device revoked"
 	ServerUnavailable    State = "Server unavailable"
@@ -50,12 +52,12 @@ func (c *Controller) Pair(ctx context.Context, target, code, name string) (Claim
 		c.Current = Snapshot{State: state, Message: err.Error()}
 		return ClaimResponse{}, err
 	}
-	c.Current = Snapshot{State: Connected, DeviceID: response.DeviceID, DeviceName: response.DeviceName, Message: "Paired locally; server authentication is not yet verified"}
+	c.Current = Snapshot{State: Connecting, DeviceID: response.DeviceID, DeviceName: response.DeviceName, Message: "Paired locally; waiting for the first authenticated heartbeat"}
 	return response, nil
 }
 
 func (c *Controller) SetAuthenticationState(state State, message string) {
-	if state != AuthenticationFailed && state != DeviceRevoked && state != ServerUnavailable && state != Connected && state != NotConnected {
+	if state != AuthenticationFailed && state != DeviceRevoked && state != ServerUnavailable && state != Connected && state != Connecting && state != TemporarilyOffline && state != NotConnected {
 		return
 	}
 	c.Current.State = state

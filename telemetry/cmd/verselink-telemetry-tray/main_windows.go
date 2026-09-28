@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 
+	"github.com/compumark/verselink-telemetry/internal/connection"
 	"github.com/compumark/verselink-telemetry/internal/settings"
 )
 
@@ -39,11 +40,14 @@ func runWindowsTray() error {
 	if err != nil {
 		return err
 	}
+	tray.heartbeatUpdates = make(chan connection.HeartbeatConfig, 1)
 	tray.configureSettings(settingsStore, gameLogSettings, settingsWarning)
 	tray.configureConnection(os.Getenv("LOCALAPPDATA"), gameLogSettings)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	runtimeDone := make(chan struct{})
+	runtimeTaskDone := make(chan struct{})
+	heartbeatDone := make(chan struct{})
 	shutdown := newShutdownController(cancel, runtimeDone)
 	exitPostDone := make(chan struct{})
 	exitRequested := false
@@ -59,9 +63,14 @@ func runWindowsTray() error {
 	store.SetLiveWake(tray.postLiveStatusUpdate)
 
 	go func() {
-		defer close(runtimeDone)
+		defer close(runtimeTaskDone)
 		_ = runTelemetryWithSettings(ctx, store, store, gameLogSettings, settingsWarning)
 	}()
+	go func() {
+		defer close(heartbeatDone)
+		(connection.HeartbeatMonitor{Store: tray.credentialStore}).Run(ctx, tray.heartbeatConfig, tray.heartbeatUpdates, store)
+	}()
+	go func() { <-runtimeTaskDone; <-heartbeatDone; close(runtimeDone) }()
 
 	return runTrayLifecycle(trayLifecycle{
 		run:         tray.run,

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/compumark/verselink-telemetry/internal/connection"
 	"github.com/compumark/verselink-telemetry/internal/gamelog"
 	"github.com/compumark/verselink-telemetry/internal/runtimehost"
 	"github.com/compumark/verselink-telemetry/internal/settings"
@@ -261,6 +262,7 @@ func TestLiveTelemetryPresentationIncludesCurrentStructuredState(t *testing.T) {
 		"Quantum destination: Baijini Point",
 		"Quantum state: traveling",
 		"Party members: 1",
+		"Connection: Not connected",
 	}, "\n")
 	if got := formatLiveTelemetry(p); got != want {
 		t.Errorf("live text mismatch\n got: %q\nwant: %q", got, want)
@@ -288,6 +290,19 @@ func TestLiveTelemetryPresentationUsesUnknownForUnavailableValues(t *testing.T) 
 		if strings.Contains(formatted, forbidden) {
 			t.Errorf("live text exposed untrusted runtime message %q", forbidden)
 		}
+	}
+}
+
+func TestConnectionHealthIsObservableInExistingLocalSurfaces(t *testing.T) {
+	store := &statusStore{}
+	lastSuccess := time.Date(2026, 9, 27, 10, 11, 12, 0, time.UTC)
+	store.OnConnectionHealth(connection.HealthStatus{State: connection.HealthTemporarilyOffline, DeviceID: "device-id", LastSuccess: lastSuccess, Error: "server_unavailable"})
+	if got := store.CurrentHealth(); got.State != connection.HealthTemporarilyOffline || got.DeviceID != "device-id" || !got.LastSuccess.Equal(lastSuccess) {
+		t.Fatalf("connection health = %#v", got)
+	}
+	presentation := store.CurrentLivePresentation()
+	if !strings.Contains(presentation.connection, "Temporarily offline") || !strings.Contains(presentation.connection, lastSuccess.Format(time.RFC3339)) || !strings.Contains(presentation.connection, "server_unavailable") {
+		t.Fatalf("connection presentation = %q", presentation.connection)
 	}
 }
 

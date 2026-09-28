@@ -21,10 +21,12 @@ import (
 const (
 	MaxResponseBytes = 8 << 10
 	PairTimeout      = 10 * time.Second
+	HeartbeatTimeout = 10 * time.Second
 )
 
 var (
 	ErrInvalidURL        = errors.New("invalid VerseLink server URL")
+	ErrInvalidCredential = errors.New("invalid stored device credential")
 	ErrServerUnavailable = errors.New("VerseLink server unavailable; the one-time pairing code may have been consumed, so confirm its status before retrying")
 	ErrInvalidResponse   = errors.New("VerseLink returned an invalid response; the one-time pairing code may have been consumed, so confirm its status before retrying")
 )
@@ -32,9 +34,26 @@ var (
 type APIError struct {
 	Code       string
 	RetryAfter time.Duration
+	HTTPStatus int
 }
 
 func (e *APIError) Error() string {
+	if e.HTTPStatus != 0 {
+		switch e.Code {
+		case "invalid_device_credential":
+			return "VerseLink rejected the saved device credential. Re-pair this device."
+		case "device_revoked":
+			return "This telemetry device was revoked in VerseLink."
+		case "account_inactive":
+			return "The VerseLink account is inactive. Resolve the account status before reconnecting."
+		case "rate_limited":
+			return "VerseLink rate-limited telemetry requests."
+		case "server_unavailable":
+			return "VerseLink is temporarily unavailable."
+		default:
+			return "VerseLink rejected the telemetry request."
+		}
+	}
 	message := publicMessage(e.Code)
 	if e.Code == "rate_limited" && e.RetryAfter > 0 {
 		return fmt.Sprintf("Too many pairing attempts. Wait about %d seconds before trying again.", int((e.RetryAfter+time.Second-1)/time.Second))
@@ -212,6 +231,103 @@ func (c Client) Claim(ctx context.Context, code, name string) (ClaimResponse, er
 	return result, nil
 }
 
+type HeartbeatResponse struct {
+	ReceivedAt time.Time
+}
+
+// Heartbeat performs one authenticated health request. Credential bytes and
+// response buffers are kept out of returned errors and cleared when possible.
+func (c Client) Heartbeat(ctx context.Context, credential []byte) (HeartbeatResponse, error) {
+	defer clear(credential)
+	base, err := ValidateBaseURL(c.BaseURL, c.AllowHTTP)
+	if err != nil {
+		return HeartbeatResponse{}, ErrInvalidURL
+	}
+	if !validCredential(credential) {
+		clear(credential)
+		return HeartbeatResponse{}, ErrInvalidCredential
+	}
+	body := []byte(`{"schema":1}`)
+	defer clear(body)
+	ctx, cancel := context.WithTimeout(ctx, HeartbeatTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/telemetry/heartbeat", bytes.NewReader(body))
+	if err != nil {
+		return HeartbeatResponse{}, ErrServerUnavailable
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+string(credential))
+	client := c.HTTP
+	if client == nil {
+		client = &http.Client{Timeout: HeartbeatTimeout}
+	} else {
+		copy := *client
+		client = &copy
+	}
+	client.Jar = nil
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(req)
+	if err != nil {
+		return HeartbeatResponse{}, ErrServerUnavailable
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return HeartbeatResponse{}, &APIError{Code: "rate_limited", HTTPStatus: resp.StatusCode, RetryAfter: parseHeartbeatRetryAfter(resp.Header.Get("Retry-After"))}
+	}
+	if resp.StatusCode >= 500 {
+		return HeartbeatResponse{}, &APIError{Code: "server_unavailable", HTTPStatus: resp.StatusCode, RetryAfter: parseHeartbeatRetryAfter(resp.Header.Get("Retry-After"))}
+	}
+	response, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBytes+1))
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		code := "invalid_device_credential"
+		if resp.StatusCode == http.StatusForbidden {
+			code = "account_inactive"
+		}
+		if err == nil && len(response) <= MaxResponseBytes {
+			var payload struct {
+				Error string `json:"error"`
+			}
+			if json.Unmarshal(response, &payload) == nil {
+				if resp.StatusCode == http.StatusUnauthorized && payload.Error == "device_revoked" {
+					code = payload.Error
+				} else if payload.Error == "invalid_device_credential" || payload.Error == "account_inactive" {
+					code = payload.Error
+				}
+			}
+		}
+		if response != nil {
+			clear(response)
+		}
+		return HeartbeatResponse{}, &APIError{Code: code, HTTPStatus: resp.StatusCode}
+	}
+	if err != nil || len(response) > MaxResponseBytes {
+		return HeartbeatResponse{}, ErrInvalidResponse
+	}
+	defer clear(response)
+	if resp.StatusCode != http.StatusOK {
+		var payload struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(response, &payload) != nil || payload.Error == "" {
+			return HeartbeatResponse{}, ErrInvalidResponse
+		}
+		return HeartbeatResponse{}, &APIError{Code: payload.Error, HTTPStatus: resp.StatusCode}
+	}
+	var payload struct {
+		Schema     int    `json:"schema"`
+		OK         bool   `json:"ok"`
+		ReceivedAt string `json:"received_at"`
+	}
+	if json.Unmarshal(response, &payload) != nil || payload.Schema != 1 || !payload.OK {
+		return HeartbeatResponse{}, ErrInvalidResponse
+	}
+	received, err := time.Parse(time.RFC3339Nano, payload.ReceivedAt)
+	if err != nil || !strings.HasSuffix(payload.ReceivedAt, "Z") {
+		return HeartbeatResponse{}, ErrInvalidResponse
+	}
+	return HeartbeatResponse{ReceivedAt: received.UTC()}, nil
+}
+
 func parseClaimResponse(response []byte) (ClaimResponse, error) {
 	defer clear(response)
 	var wire claimResponseWire
@@ -327,6 +443,47 @@ func parseRetryAfter(value string) time.Duration {
 	}
 	return 0
 }
+
+func parseHeartbeatRetryAfter(value string) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if digitsOnly(value) {
+		n, err := strconv.ParseUint(value, 10, 64)
+		if err != nil || n > 300 {
+			return RetryAfterCap
+		}
+		if n < 1 {
+			return time.Second
+		}
+		return time.Duration(n) * time.Second
+	}
+	if at, err := http.ParseTime(value); err == nil {
+		delay := time.Until(at)
+		if delay < time.Second {
+			return time.Second
+		}
+		if delay > RetryAfterCap {
+			return RetryAfterCap
+		}
+		return delay
+	}
+	return 0
+}
+
+func digitsOnly(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func CredentialTarget(serverURL, deviceID string) string {
 	// Callers accept only ValidateBaseURL output. Re-validating here canonicalizes
 	// equivalent default ports before hashing without putting credentials in the

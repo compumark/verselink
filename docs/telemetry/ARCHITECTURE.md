@@ -385,7 +385,7 @@ device-management/revocation API. Future C6/C7 handlers consume this helper;
 C8 / Issue #94 owns the user-facing device management and remote-revocation
 API/UI.
 
-### C5 Windows pairing client (implemented locally; review pending)
+### C5 Windows pairing client (implemented)
 
 The native tray Settings window accepts an explicit VerseLink instance URL,
 optional device name, and one-time C3 pairing code. A client-side
@@ -427,6 +427,39 @@ allocator is present for future snapshot creation but is not called by C5: no
 revision is incremented until C7 has an actual presence snapshot to send. C5
 adds no heartbeat, presence upload, authentication probe, management route, or
 server-side code.
+
+### C6 heartbeat and connection health (implemented locally; review pending)
+
+`POST /api/telemetry/heartbeat` reuses C4 device authentication for each
+request and refreshes only that device's `telemetry_devices.last_seen_at` from
+the database server clock. Requests are limited to 120 per device per minute
+with the bounded request-count limiter. Before C4 authentication, a syntactically
+valid credential is mapped to an ephemeral bucket using the existing
+domain-separated credential HMAC; malformed or missing Bearer credentials use
+the direct socket peer. This value is only a limiter key: every admitted request
+still performs fresh C4 database authentication. A separate in-flight guard
+admits at most four auth lookups per direct socket peer and eight globally,
+without a waiting queue. Each request consumes its one request-count unit before
+the guard; saturation returns the existing `429 rate_limited` response with
+`Retry-After: 1` and does not start an auth lookup. This reuses the documented 429
+contract rather than adding an endpoint or response shape. The response
+timestamp is server receipt metadata; heartbeat never changes gameplay
+timestamps, reducer state, or presence data.
+
+The paired Windows tray client reads the credential for its validated server
+and device target from Windows Credential Manager for each attempt. It sends
+an immediate heartbeat and then schedules 30-second intervals. Transient
+transport/timeout and server failures use capped full-jitter exponential
+backoff; `Retry-After` controls 429 retries. Authentication failures and
+revocation stop authenticated retries until pairing configuration changes.
+Shutdown cancels pending waits and in-flight HTTP requests. Connection state
+and the last successful server receipt are shown in Settings, the tray status,
+and the existing local live monitor. Local Game.log tracking remains
+independent of network health.
+
+The server's online TTL is 90 seconds and means connection health only. It does
+not imply an active gameplay session or shared presence; C7 owns snapshot
+ingestion and `telemetry_presence` persistence.
 
 ## Privacy boundary
 

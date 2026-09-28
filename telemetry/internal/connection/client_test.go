@@ -14,6 +14,31 @@ import (
 	"time"
 )
 
+func TestParseHeartbeatRetryAfterHTTPDate(t *testing.T) {
+	now := time.Now().UTC()
+	tests := []struct {
+		name  string
+		value string
+		min   time.Duration
+		max   time.Duration
+	}{
+		{name: "future date", value: now.Add(2 * time.Minute).Format(http.TimeFormat), min: 90 * time.Second, max: 2 * time.Minute},
+		{name: "expired date clamps to one second", value: now.Add(-2 * time.Second).Format(http.TimeFormat), min: time.Second, max: time.Second},
+		{name: "upper date cap", value: now.Add(10 * time.Minute).Format(http.TimeFormat), min: RetryAfterCap, max: RetryAfterCap},
+		{name: "integer lower clamp", value: "0", min: time.Second, max: time.Second},
+		{name: "integer upper cap", value: "301", min: RetryAfterCap, max: RetryAfterCap},
+		{name: "malformed date", value: "tomorrow-ish", min: 0, max: 0},
+		{name: "empty", value: "", min: 0, max: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseHeartbeatRetryAfter(tt.value); got < tt.min || got > tt.max {
+				t.Fatalf("parseHeartbeatRetryAfter(%q) = %v, want [%v, %v]", tt.value, got, tt.min, tt.max)
+			}
+		})
+	}
+}
+
 func TestValidateBaseURL(t *testing.T) {
 	for _, raw := range []string{"", "http://example.test", "https://user:pass@example.test", "https://example.test/path", "https://example.test/?x=1", "https://example.test/#frag", "https://example.test#", "https://example.test:", "https://example.test:99999", "file:///tmp"} {
 		if _, err := ValidateBaseURL(raw, false); err == nil {
@@ -289,7 +314,7 @@ func TestPairingControllerNeverReturnsSecretAndModelsStates(t *testing.T) {
 	store := &fakeStore{values: map[string]string{}}
 	controller := Controller{Service: PairingService{Client: Client{BaseURL: server.URL, HTTP: server.Client()}, Store: store}}
 	response, err := controller.Pair(context.Background(), "target", "7K3M9D2F6R8W1Q5C", "")
-	if err != nil || controller.Current.State != Connected || len(response.DeviceCredential) != 0 || store.values["target"] != credential {
+	if err != nil || controller.Current.State != Connecting || len(response.DeviceCredential) != 0 || store.values["target"] != credential {
 		t.Fatalf("Pair() response=%#v state=%#v err=%v", response, controller.Current, err)
 	}
 	controller.SetAuthenticationState(DeviceRevoked, "revoked")

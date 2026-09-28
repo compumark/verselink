@@ -112,7 +112,7 @@ func createLiveMonitorWindow() (*liveMonitorWindow, error) {
 	add("BUTTON", "Location", bsGroupBox, 12, 346, 736, 94, 0)
 	add("BUTTON", "Ship", bsGroupBox, 12, 446, 360, 96, 0)
 	add("BUTTON", "Quantum Travel", bsGroupBox, 380, 446, 368, 96, 0)
-	add("BUTTON", "Party", bsGroupBox, 12, 548, 736, 64, 0)
+	add("BUTTON", "Party / Connection", bsGroupBox, 12, 548, 736, 76, 0)
 	labels := []struct {
 		text    string
 		x, y, w int32
@@ -122,13 +122,13 @@ func createLiveMonitorWindow() (*liveMonitorWindow, error) {
 		{"Session:", 20, 234, 126}, {"Player:", 20, 258, 126}, {"Shard:", 20, 282, 126}, {"Last event:", 20, 306, 126},
 		{"Location:", 20, 368, 126}, {"Observed:", 20, 392, 126}, {"Jurisdiction:", 20, 416, 126},
 		{"Ship:", 20, 470, 80}, {"Owner:", 20, 500, 80}, {"Destination:", 388, 470, 112}, {"QT state:", 388, 500, 112},
-		{"Members:", 20, 574, 126},
+		{"Members:", 20, 574, 126}, {"Connection:", 20, 598, 126},
 	}
 	for _, item := range labels {
 		add("STATIC", item.text, ssLeft, item.x, item.y, item.w, 20, 0)
 	}
-	window.values = make([]uintptr, 19)
-	positions := [][4]int32{{150, 34, 580, 20}, {150, 56, 580, 20}, {150, 78, 580, 20}, {150, 100, 580, 42}, {150, 146, 580, 20}, {150, 164, 580, 20}, {150, 182, 580, 20}, {150, 234, 580, 20}, {150, 258, 580, 20}, {150, 282, 580, 20}, {150, 306, 580, 20}, {150, 368, 580, 20}, {150, 392, 580, 20}, {150, 416, 580, 20}, {104, 470, 250, 20}, {104, 500, 250, 20}, {504, 470, 232, 20}, {504, 500, 232, 20}, {150, 574, 580, 20}}
+	window.values = make([]uintptr, 20)
+	positions := [][4]int32{{150, 34, 580, 20}, {150, 56, 580, 20}, {150, 78, 580, 20}, {150, 100, 580, 42}, {150, 146, 580, 20}, {150, 164, 580, 20}, {150, 182, 580, 20}, {150, 234, 580, 20}, {150, 258, 580, 20}, {150, 282, 580, 20}, {150, 306, 580, 20}, {150, 368, 580, 20}, {150, 392, 580, 20}, {150, 416, 580, 20}, {104, 470, 250, 20}, {104, 500, 250, 20}, {504, 470, 232, 20}, {504, 500, 232, 20}, {150, 574, 580, 20}, {150, 598, 580, 20}}
 	for i, position := range positions {
 		style := uintptr(ssLeft | ssNoPrefix)
 		if i == 3 {
@@ -159,7 +159,7 @@ func (t *windowsTray) refreshLiveMonitor() {
 		return
 	}
 	p := t.store.CurrentLivePresentation()
-	values := []string{p.status, p.channel, p.strategy, p.path, p.lines, p.events, p.resets, p.session, p.player, p.shard, p.lastEvent, p.location, p.locationAt, p.zone, p.ship, p.owner, p.quantumDestination, p.quantumState, p.partyCount}
+	values := []string{p.status, p.channel, p.strategy, p.path, p.lines, p.events, p.resets, p.session, p.player, p.shard, p.lastEvent, p.location, p.locationAt, p.zone, p.ship, p.owner, p.quantumDestination, p.quantumState, p.partyCount, p.connection}
 	for i, value := range values {
 		setNativeText(t.liveWindow.values[i], value)
 	}
