@@ -93,11 +93,13 @@ to a VerseLink account.
 | C4 | Telemetry Device Authentication and Revocation | COMPLETE |
 | C5 | Windows Pairing Flow and Secure Credential Storage | COMPLETE |
 | C6 | Telemetry Heartbeat and Connection Health | COMPLETE |
-| C7 | Telemetry Presence Snapshot Ingest and Persistence | IN REVIEW |
+| C7 | Telemetry Presence Snapshot Ingest and Persistence | COMPLETE |
 | C8 | Telemetry Device Management in VerseLink | TODO |
 | C9 | Telemetry End-to-End Integration, Resilience and Security Tests | TODO |
 
 C6 validation note: The manual DEV smoke test was NOT RUN before merge and is expressly approved as post-merge validation after `ghcr.io/compumark/verselink:dev` is deployed to the DEV Portainer instance. This test is not covered by CI; production and `latest` are out of scope.
+
+C7 validation note: The user-confirmed post-merge DEV smoke test received and persisted a changed location snapshot for the paired device: jurisdiction `UEE`, location `RR_MIC_L1`, revision advanced from 1 to 7, and `shard`/`party_count` were absent from the database representation. Production and `latest` were not used.
 
 Start C7 — Telemetry Presence Snapshot Ingest and Persistence (#93) only after C6 has passed review and CI, been merged, and its status has been marked COMPLETE.
 
