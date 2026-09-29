@@ -41,7 +41,7 @@ test("C7 stores the latest allowlisted snapshot with atomic per-device revision 
     await pool.query("INSERT INTO app_users (id,email,display_name,account_status,is_admin) VALUES ($1,$2,'Presence Owner','active',false),($3,$4,'Presence Admin','active',true)", [ownerId, `c7-${ownerId}@example.test`, adminId, `c7-${adminId}@example.test`]);
     const ownerSession = await createSession(pool, pepper, ownerId);
     const adminSession = await createSession(pool, pepper, adminId);
-    runtime = await startMissionTestServer({ databaseUrl: scoped.toString(), pepper, logDirectory });
+    runtime = await startMissionTestServer({ databaseUrl: scoped.toString(), pepper, logDirectory, extraEnv: { APP_ADMIN_USER_IDS: adminId } });
     const created = await apiRequest(runtime.baseUrl, "/api/me/telemetry/pairing", { method: "POST", session: ownerSession, json: { schema: 1 } });
     assert.equal(created.status, 201);
     const claimed = await apiRequest(runtime.baseUrl, "/api/telemetry/pair", { method: "POST", json: { schema: 1, code: created.body.code } });
@@ -101,6 +101,8 @@ test("C7 stores the latest allowlisted snapshot with atomic per-device revision 
       assert.equal(device.rows[0].last_presence_revision, "3");
       assert.equal(device.rows[0].revoked_at, null);
       assert.equal((await request(runtime.baseUrl, { credential, body: payload(4) })).status, 403);
+      const clearedSessions = await pool.query("SELECT count(*)::int AS count FROM dashboard_sessions WHERE app_user_id=$1", [ownerId]);
+      assert.equal(clearedSessions.rows[0].count, 0, "account deactivation removes the owner's dashboard session");
 
       const reactivated = await fetch(`${runtime.baseUrl}/api/admin/users/status`, { method: "POST", headers: { cookie: `bp_session=${adminSession}`, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ user_id: ownerId, status: "active" }) });
       assert.equal(reactivated.status, 200);
@@ -214,7 +216,11 @@ test("C7 stores the latest allowlisted snapshot with atomic per-device revision 
       const currentDevices = await pool.query("SELECT id FROM telemetry_devices WHERE app_user_id=$1", [ownerId]);
       assert.equal(currentDevices.rowCount, 2);
 
+      const sessionsBeforeReauth = await pool.query("SELECT count(*)::int AS count FROM dashboard_sessions WHERE app_user_id=$1", [ownerId]);
+      assert.equal(sessionsBeforeReauth.rows[0].count, 0, "deactivation left no old owner session");
       await createSession(pool, pepper, ownerId);
+      const sessionsAfterReauth = await pool.query("SELECT count(*)::int AS count FROM dashboard_sessions WHERE app_user_id=$1", [ownerId]);
+      assert.equal(sessionsAfterReauth.rows[0].count, 1, "hard-delete setup creates exactly one fresh owner session");
       const ownerSessions = await pool.query("DELETE FROM dashboard_sessions WHERE app_user_id=$1 RETURNING session_hash", [ownerId]);
       assert.equal(ownerSessions.rowCount, 1, "remove only the test owner's session before hard delete");
       const deleted = await pool.query("DELETE FROM app_users WHERE id=$1 RETURNING id", [ownerId]);
@@ -233,12 +239,14 @@ test("C7 stores the latest allowlisted snapshot with atomic per-device revision 
       const deleteOwnerId = randomUUID();
       await pool.query("INSERT INTO app_users (id,email,display_name,account_status,is_admin) VALUES ($1,$2,'Hard Delete Owner','active',false)", [deleteOwnerId, `c7-delete-${deleteOwnerId}@example.test`]);
       const deleteOwnerSession = await createSession(pool, pepper, deleteOwnerId);
+      assert.equal((await pool.query("SELECT count(*)::int AS count FROM dashboard_sessions WHERE app_user_id=$1", [deleteOwnerId])).rows[0].count, 1);
       const deletePairing = await apiRequest(runtime.baseUrl, "/api/me/telemetry/pairing", { method: "POST", session: deleteOwnerSession, json: { schema: 1 } });
       assert.equal(deletePairing.status, 201);
       const deleteClaim = await apiRequest(runtime.baseUrl, "/api/telemetry/pair", { method: "POST", json: { schema: 1, code: deletePairing.body.code } });
       assert.equal(deleteClaim.status, 201);
       const deleteCredential = deleteClaim.body.device_credential;
       const deleteDeviceId = deleteClaim.body.device_id;
+      assert.equal((await pool.query("SELECT count(*)::int AS count FROM dashboard_sessions WHERE app_user_id=$1", [deleteOwnerId])).rows[0].count, 1, "pairing and claim do not create extra dashboard sessions");
       const createdPresence = await request(runtime.baseUrl, { credential: deleteCredential, body: payload(1) });
       assert.deepEqual([createdPresence.status, createdPresence.body.accepted, createdPresence.body.revision], [200, true, 1]);
 
