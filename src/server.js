@@ -10,6 +10,7 @@ import { hashRecoveryToken, isRecoveryToken, generateRecoveryToken } from "./aut
 import { clientKey, createRateLimiter, createRequestRateLimiter } from "./rate-limit.js";
 import { createTelemetryAuthInFlightLimiter } from "./telemetry-auth-inflight.js";
 import { createTelemetryHeartbeatHandler } from "./telemetry-heartbeat-handler.js";
+import { createTelemetryPresenceHandler, PRESENCE_REQUEST_LIMIT, PRESENCE_REQUEST_WINDOW_MS } from "./telemetry-presence.js";
 import { generateDeviceCredential, generatePairingCode, hashDeviceCredential, hashPairingCode, normalizeDeviceName, normalizePairingCode } from "./telemetry-pairing.js";
 import { authenticateTelemetryDevice } from "./telemetry-device-auth.js";
 import { normalizeScmdbSinkBaseUrl, scmdbSinkUrl } from "./scmdb-sink-config.js";
@@ -191,6 +192,23 @@ CREATE TABLE IF NOT EXISTS telemetry_devices (
   last_presence_revision bigint NOT NULL DEFAULT 0 CHECK (last_presence_revision BETWEEN 0 AND 9007199254740991)
 );
 CREATE INDEX IF NOT EXISTS telemetry_devices_app_user_id_idx ON telemetry_devices(app_user_id);
+CREATE TABLE IF NOT EXISTS telemetry_presence (
+  device_id uuid PRIMARY KEY REFERENCES telemetry_devices(id) ON DELETE CASCADE,
+  schema_version integer NOT NULL CHECK (schema_version = 1),
+  revision bigint NOT NULL CHECK (revision BETWEEN 1 AND 9007199254740991),
+  session_active boolean,
+  location_raw text CHECK (location_raw IS NULL OR octet_length(location_raw) BETWEEN 1 AND 256),
+  location_observed_at text,
+  jurisdiction text CHECK (jurisdiction IS NULL OR octet_length(jurisdiction) <= 128),
+  ship_name text CHECK (ship_name IS NULL OR octet_length(ship_name) BETWEEN 1 AND 128),
+  quantum_destination text CHECK (quantum_destination IS NULL OR octet_length(quantum_destination) <= 256),
+  quantum_state text CHECK (quantum_state IS NULL OR quantum_state IN ('target_selected','fuel_requested','arrived')),
+  last_event_at text,
+  received_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  CHECK ((location_raw IS NULL) = (location_observed_at IS NULL)),
+  CHECK (quantum_state IS NOT NULL OR quantum_destination IS NULL)
+);
+CREATE INDEX IF NOT EXISTS telemetry_presence_received_at_idx ON telemetry_presence(received_at);
 CREATE TABLE IF NOT EXISTS telemetry_pairing_codes (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   app_user_id uuid NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
@@ -624,6 +642,7 @@ const telemetryPairingCreateRateLimit = createRequestRateLimiter({ limit: 5, win
 const telemetryPairingClaimRateLimit = createRequestRateLimiter({ limit: 20, windowMs: 15 * 60_000 });
 const telemetryHeartbeatRateLimit = createRequestRateLimiter({ limit: 120, windowMs: 60_000 });
 const telemetryHeartbeatAuthInFlight = createTelemetryAuthInFlightLimiter();
+const telemetryPresenceRateLimit = createRequestRateLimiter({ limit: PRESENCE_REQUEST_LIMIT, windowMs: PRESENCE_REQUEST_WINDOW_MS });
 const tooManyRequests = (res, req, event = "auth.rate_limited") => { logger.warn(event, { reason: "rate_limited" }, { request_id: req?.requestId }); return json(res, 429, { error: "too many requests" }); };
 const sameVerseLinkOrigin = (req) => {
   const origin = req.headers.origin;
@@ -1079,10 +1098,10 @@ const telemetryRateLimited = (res, req, route, result) => {
   return telemetryError(res, 429, "rate_limited", result.retryAfter);
 };
 
-const readTelemetryJson = async (req) => {
+const readTelemetryJson = async (req, maxBytes = 4 * 1024) => {
   if (!/^application\/json(?:\s*;|$)/i.test(String(req.headers["content-type"] || ""))) return { error: "invalid_payload", status: 400 };
   let text;
-  try { text = await readBody(req, 4 * 1024); }
+  try { text = await readBody(req, maxBytes); }
   catch (error) { return error.code === "PAYLOAD_TOO_LARGE" ? { error: "payload_too_large", status: 413 } : { error: "invalid_payload", status: 400 }; }
   let body;
   try { body = JSON.parse(text); } catch { return { error: "invalid_payload", status: 400 }; }
@@ -1179,7 +1198,7 @@ const logValue = (value) => String(value ?? "unknown").replace(/[\r\n\t]/g, " ")
 const requestLogContext = (req, user) => ({ request_id: req.requestId, user_id: user?.id, user: user?.verselink_name || user?.display_name });
 const pollingPaths = new Set(["/api/notifications", "/api/session", "/api/me", "/api/me/status", "/api/profile", "/api/profile/scmdb", "/api/version"]);
 const authLogPaths = new Set(["/auth/register", "/auth/login", "/auth/recover", "/logout"]);
-const telemetrySecretRoutes = new Set(["/api/me/telemetry/pairing", "/api/telemetry/pair", "/api/telemetry/heartbeat"]);
+const telemetrySecretRoutes = new Set(["/api/me/telemetry/pairing", "/api/telemetry/pair", "/api/telemetry/heartbeat", "/api/telemetry/presence"]);
 const logApiRequest = (req, res, url, startedAt) => {
   if (!url.pathname.startsWith("/api/") && !authLogPaths.has(url.pathname)) return;
   res.once("finish", () => {
@@ -1625,6 +1644,19 @@ const handleTelemetryHeartbeat = createTelemetryHeartbeatHandler({
   pool,
   pepper,
   requestRateLimit: telemetryHeartbeatRateLimit,
+  authInFlight: telemetryHeartbeatAuthInFlight,
+  authenticate: authenticateTelemetryDevice,
+  readJson: readTelemetryJson,
+  sendJson: json,
+  sendError: telemetryError,
+  sendRateLimited: telemetryRateLimited,
+  logger
+});
+
+const handleTelemetryPresence = createTelemetryPresenceHandler({
+  pool,
+  pepper,
+  requestRateLimit: telemetryPresenceRateLimit,
   authInFlight: telemetryHeartbeatAuthInFlight,
   authenticate: authenticateTelemetryDevice,
   readJson: readTelemetryJson,
@@ -2910,7 +2942,7 @@ const server = createServer(async (req, res) => {
       const params = new URLSearchParams(await readBody(req)); const userId = params.get("user_id"), status = params.get("status");
       if (!/^[0-9a-f-]{36}$/i.test(userId || "") || !["active", "blocked", "deleted"].includes(status)) return json(res, 400, { error: "invalid user or status" });
       const client = await pool.connect();
-      try { await client.query("BEGIN"); const updated = await client.query("UPDATE app_users SET account_status=$1 WHERE id=$2 AND id<>$3 RETURNING id", [status, userId, current.id]); if (!updated.rowCount) { await client.query("ROLLBACK"); return json(res, 400, { error: "user not available" }); } if (status !== "active") { await client.query("DELETE FROM dashboard_sessions WHERE app_user_id=$1", [userId]); await client.query("UPDATE telemetry_pairing_codes SET invalidated_at=now() WHERE app_user_id=$1 AND consumed_at IS NULL AND invalidated_at IS NULL", [userId]); await unassignOpenMissionTasksForInactiveUser(client, userId); } await client.query("COMMIT"); return json(res, 200, { ok: true }); } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+      try { await client.query("BEGIN"); const updated = await client.query("UPDATE app_users SET account_status=$1 WHERE id=$2 AND id<>$3 RETURNING id", [status, userId, current.id]); if (!updated.rowCount) { await client.query("ROLLBACK"); return json(res, 400, { error: "user not available" }); } if (status !== "active") { await client.query("DELETE FROM dashboard_sessions WHERE app_user_id=$1", [userId]); await client.query("UPDATE telemetry_pairing_codes SET invalidated_at=now() WHERE app_user_id=$1 AND consumed_at IS NULL AND invalidated_at IS NULL", [userId]); await client.query("DELETE FROM telemetry_presence WHERE device_id IN (SELECT id FROM telemetry_devices WHERE app_user_id=$1)", [userId]); await unassignOpenMissionTasksForInactiveUser(client, userId); } await client.query("COMMIT"); return json(res, 200, { ok: true }); } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
     }
 
     if (req.method === "POST" && url.pathname === "/api/admin/users/delete") {
@@ -3161,6 +3193,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/api/me/telemetry/pairing") return handleTelemetryPairingCreate(req, res);
     if (req.method === "POST" && url.pathname === "/api/telemetry/pair") return handleTelemetryPairClaim(req, res);
     if (req.method === "POST" && url.pathname === "/api/telemetry/heartbeat") return handleTelemetryHeartbeat(req, res);
+    if (req.method === "PUT" && url.pathname === "/api/telemetry/presence") return handleTelemetryPresence(req, res);
 
     if (req.method === "GET" && url.pathname === "/api/me") {
       const current = await getCurrentAppUser(req);

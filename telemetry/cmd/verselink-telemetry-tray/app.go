@@ -15,15 +15,16 @@ import (
 )
 
 type statusStore struct {
-	mu          sync.RWMutex
-	status      runtimehost.Status
-	wake        func()
-	liveStatus  runtimehost.Status
-	liveWake    func()
-	liveVisible bool
-	liveLast    liveTelemetryPresentation
-	hasLiveLast bool
-	health      connection.HealthStatus
+	mu                sync.RWMutex
+	status            runtimehost.Status
+	wake              func()
+	liveStatus        runtimehost.Status
+	liveWake          func()
+	liveVisible       bool
+	liveLast          liveTelemetryPresentation
+	hasLiveLast       bool
+	health            connection.HealthStatus
+	presenceSnapshots chan connection.PresenceSnapshot
 }
 
 func (s *statusStore) OnConnectionHealth(status connection.HealthStatus) {
@@ -48,6 +49,21 @@ func (s *statusStore) CurrentHealth() connection.HealthStatus {
 
 func (s *statusStore) OnLiveSnapshot(status runtimehost.Status) {
 	status.Diagnostics = runtimehost.SafeDiagnostics(status.Diagnostics)
+	if s.presenceSnapshots != nil {
+		snapshot := connection.PresenceSnapshot{State: status.Diagnostics.State, Available: status.HasDiagnostics}
+		select {
+		case s.presenceSnapshots <- snapshot:
+		default:
+			select {
+			case <-s.presenceSnapshots:
+			default:
+			}
+			select {
+			case s.presenceSnapshots <- snapshot:
+			default:
+			}
+		}
+	}
 	presentation := presentLiveTelemetry(status)
 	s.mu.Lock()
 	s.liveStatus = status

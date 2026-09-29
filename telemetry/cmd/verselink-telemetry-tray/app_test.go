@@ -329,3 +329,25 @@ func TestLiveSnapshotWakeTracksPresentationOnlyWhileVisible(t *testing.T) {
 		t.Fatalf("hidden monitor caused wake, count = %d", wakes)
 	}
 }
+
+func TestLiveSnapshotPublishesLatestPresenceWithoutPartyIdentities(t *testing.T) {
+	snapshots := make(chan connection.PresenceSnapshot, 1)
+	store := &statusStore{presenceSnapshots: snapshots}
+	store.OnLiveSnapshot(runtimehost.Status{HasDiagnostics: true, Diagnostics: gamelog.SessionDiagnostics{State: telemetry.TelemetryState{
+		SessionActive: true, PlayerHandle: "PRIVATE_HANDLE", Party: []string{"CrewMate", "SecondMate"},
+	}}})
+	first := <-snapshots
+	if !first.Available || !first.State.SessionActive || len(first.State.Party) != 2 {
+		t.Fatalf("presence snapshot lost current fields: %#v", first)
+	}
+	for _, name := range first.State.Party {
+		if name != "" {
+			t.Fatalf("Party identity passed to uploader: %q", name)
+		}
+	}
+	store.OnLiveSnapshot(runtimehost.Status{HasDiagnostics: false})
+	latest := <-snapshots
+	if latest.Available || latest.State.PlayerHandle != "" {
+		t.Fatalf("latest snapshot was not detached: %#v", latest)
+	}
+}

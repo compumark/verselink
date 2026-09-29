@@ -163,6 +163,8 @@ type windowsTray struct {
 	connectionMessage       string
 	heartbeatUpdates        chan connection.HeartbeatConfig
 	heartbeatConfig         connection.HeartbeatConfig
+	presenceUpdates         chan connection.PresenceConfig
+	presenceConfig          connection.PresenceConfig
 	revisionLock            *revision.Lock
 	revisionLockUnavailable bool
 	revisionDirectory       string
@@ -324,6 +326,25 @@ func (t *windowsTray) publishHeartbeatConfig(value connection.HeartbeatConfig) {
 	}
 	select {
 	case t.heartbeatUpdates <- value:
+	default:
+	}
+}
+
+func (t *windowsTray) publishPresenceConfig(value connection.PresenceConfig) {
+	if t == nil || t.presenceUpdates == nil {
+		return
+	}
+	select {
+	case t.presenceUpdates <- value:
+		return
+	default:
+	}
+	select {
+	case <-t.presenceUpdates:
+	default:
+	}
+	select {
+	case t.presenceUpdates <- value:
 	default:
 	}
 }

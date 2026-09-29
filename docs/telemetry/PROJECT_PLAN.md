@@ -93,7 +93,7 @@ to a VerseLink account.
 | C4 | Telemetry Device Authentication and Revocation | COMPLETE |
 | C5 | Windows Pairing Flow and Secure Credential Storage | COMPLETE |
 | C6 | Telemetry Heartbeat and Connection Health | COMPLETE |
-| C7 | Telemetry Presence Snapshot Ingest and Persistence | TODO |
+| C7 | Telemetry Presence Snapshot Ingest and Persistence | IN REVIEW |
 | C8 | Telemetry Device Management in VerseLink | TODO |
 | C9 | Telemetry End-to-End Integration, Resilience and Security Tests | TODO |
 

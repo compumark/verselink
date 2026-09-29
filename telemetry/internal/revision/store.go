@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 const MaxValue int64 = 9007199254740991
@@ -20,6 +21,7 @@ type State struct {
 	Revision int64  `json:"revision"`
 }
 type Lock struct {
+	mu        sync.Mutex
 	file      *os.File
 	unlock    func(*os.File) error
 	deviceID  string
@@ -55,7 +57,12 @@ func Acquire(directory, deviceID string) (*Lock, State, error) {
 }
 
 func (l *Lock) Release() error {
-	if l == nil || l.file == nil {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.file == nil {
 		return nil
 	}
 	err := l.unlock(l.file)
@@ -69,12 +76,30 @@ func (l *Lock) Release() error {
 
 // Advance allocates and durably stores one revision. Call only after a new snapshot exists.
 func (l *Lock) Advance() (State, error) {
-	if l == nil || l.file == nil {
+	return l.AdvanceAtLeast(0)
+}
+
+// AdvanceAtLeast durably reconciles the local counter with a server high-water
+// mark before allocating the next revision. The held per-device OS lock keeps
+// this update single-writer across processes; mu also serializes Release.
+func (l *Lock) AdvanceAtLeast(minimum int64) (State, error) {
+	if l == nil {
 		return State{}, errors.New("revision lock is not held")
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.file == nil {
+		return State{}, errors.New("revision lock is not held")
+	}
+	if minimum < 0 || minimum > MaxValue {
+		return State{}, errors.New("revision lock is not held or server revision is invalid")
 	}
 	state, err := load(l.statePath, l.deviceID)
 	if err != nil {
 		return State{}, err
+	}
+	if state.Revision < minimum {
+		state.Revision = minimum
 	}
 	if state.Revision >= MaxValue {
 		return State{}, errors.New("revision space exhausted; pair a new device")
@@ -87,7 +112,11 @@ func (l *Lock) Advance() (State, error) {
 }
 
 func (l *Lock) save(state State) error {
-	if l == nil || l.file == nil {
+	if l == nil {
+		return errors.New("revision lock is not held")
+	}
+	// save is called only while AdvanceAtLeast holds mu.
+	if l.file == nil {
 		return errors.New("revision lock is not held")
 	}
 	if state.DeviceID != l.deviceID {
