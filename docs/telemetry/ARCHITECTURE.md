@@ -335,9 +335,15 @@ The normative endpoint, request/response, error, rate-limit, lifecycle,
 ordering/idempotency, and privacy contract is in
 [`CONNECTION_CONTRACT.md`](CONNECTION_CONTRACT.md). This architecture document
 summarizes that contract; it does not define a second copy of its field-level
-details. C3 implements only the pairing-creation and pairing-claim routes;
-C4 adds the reusable device-authentication layer described below. Heartbeat,
-presence, and device-management routes remain future work.
+details. C3 implements the pairing-creation and pairing-claim routes; C4 adds
+the reusable device-authentication layer described below. C6 implements the
+connection-health heartbeat. C7 validates an explicit schema-1 snapshot,
+transactionally advances the per-device revision high-water mark and upserts
+one private current-presence row. It validates but discards `shard` and
+`party_count`; those fields are neither stored nor used for duplicate
+comparison. The Windows client maps reducer state through a DTO allowlist and
+uses C5's durable per-device revision lock. No history/event stream is added.
+Device management remains C8 scope.
 
 ### C2 persistence foundation (implemented)
 
@@ -428,7 +434,7 @@ revision is incremented until C7 has an actual presence snapshot to send. C5
 adds no heartbeat, presence upload, authentication probe, management route, or
 server-side code.
 
-### C6 heartbeat and connection health (implemented locally; review pending)
+### C6 heartbeat and connection health (implemented)
 
 `POST /api/telemetry/heartbeat` reuses C4 device authentication for each
 request and refreshes only that device's `telemetry_devices.last_seen_at` from
@@ -460,6 +466,25 @@ independent of network health.
 The server's online TTL is 90 seconds and means connection health only. It does
 not imply an active gameplay session or shared presence; C7 owns snapshot
 ingestion and `telemetry_presence` persistence.
+
+### C7 presence snapshot ingest and persistence (implemented; review pending)
+
+`PUT /api/telemetry/presence` requires the C4 Bearer credential and applies a
+bounded request-count limit before authentication. The server validates every
+required schema-1 field, including `shard` and `party_count`, then explicitly
+projects only the approved current-state columns. Those two validated fields
+are discarded and do not affect client meaningful-change detection, stored
+state, or server idempotency comparison. A per-device row is replaced only
+when a strictly newer revision is accepted; revision high-water update and
+upsert share one PostgreSQL transaction. Exact duplicates preserve the
+original receipt timestamp, while stale/conflicting revisions return the
+server high-water for durable client reconciliation. Account deactivation
+deletes the account's presence rows transactionally without revoking its
+devices; reactivation permits the same non-revoked credentials to resume.
+The Windows tray maps live reducer snapshots through a dedicated allowlist,
+uses C5's locked durable revision file, and retries an unchanged request with
+the same revision/body. No history, read endpoint, player handle, ship owner,
+Party identity, raw parser/log data, or peer sharing is introduced.
 
 ## Privacy boundary
 

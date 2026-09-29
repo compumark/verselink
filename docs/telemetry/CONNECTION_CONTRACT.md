@@ -388,7 +388,9 @@ transaction:
   semantically identical to the stored snapshot: treat as an idempotent
   duplicate; do not rewrite payload or refresh `received_at`; return 200 with
   `accepted:false` and the current revision. JSON key order/whitespace and
-  ignored unknown members do not affect semantic comparison.
+  ignored unknown members do not affect semantic comparison. `shard` and
+  `party_count` are validated wire fields but are excluded from persisted
+  state, client meaningful-change comparison, and server revision equality.
 - `incoming revision == last_presence_revision` but the DTO differs: do not
   change state or `received_at`; return `409 revision_conflict` with the
   current revision. The client must persist `current_revision` and retry its

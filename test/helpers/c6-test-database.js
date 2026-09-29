@@ -2,6 +2,7 @@ import { isIP } from "node:net";
 import { createTestPool } from "./mission-integration.js";
 
 const schemaPattern = /^c6_heartbeat_[a-f0-9]{32}$/;
+const c7SchemaPattern = /^c7_presence_[a-f0-9]{32}$/;
 
 const loopbackHost = (hostname) => {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
@@ -55,5 +56,19 @@ export const createC6TestSchema = async (pool, schemaName) => {
 
 export const dropC6TestSchema = async (pool, schemaName) => {
   assertC6SchemaName(schemaName);
+  return pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
+};
+
+export const createC7TestSchema = async (pool, schemaName) => {
+  if (typeof schemaName !== "string" || !c7SchemaPattern.test(schemaName)) {
+    throw new Error("refusing database operation outside an owned C7 test schema");
+  }
+  return pool.query(`CREATE SCHEMA "${schemaName}"`);
+};
+
+export const dropC7TestSchema = async (pool, schemaName) => {
+  if (typeof schemaName !== "string" || !c7SchemaPattern.test(schemaName)) {
+    throw new Error("refusing database operation outside an owned C7 test schema");
+  }
   return pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
 };

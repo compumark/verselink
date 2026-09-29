@@ -115,13 +115,23 @@ test("C6 heartbeat authenticates C3 devices, updates connection metadata, and en
 
     await t.test("heartbeat changes no gameplay or presence state", async () => {
       const before = await pool.query("SELECT id,app_user_id,name,credential_hash,created_at,revoked_at,last_presence_revision FROM telemetry_devices WHERE id=$1", [second.id]);
+      await pool.query(`INSERT INTO telemetry_presence
+        (device_id,schema_version,revision,session_active,location_raw,location_observed_at,jurisdiction,
+         ship_name,quantum_destination,quantum_state,last_event_at,received_at)
+        VALUES ($1,1,23,true,'RR_CRU_L1','2026-09-24T12:00:00Z','Stanton','RSI_Hermes',
+                'LOC_CRU_L1','target_selected','2026-09-24T12:00:02Z',$2)`, [second.id, old]);
+      const presenceBefore = await pool.query(`SELECT device_id,schema_version,revision,session_active,location_raw,
+        location_observed_at,jurisdiction,ship_name,quantum_destination,quantum_state,last_event_at,received_at
+        FROM telemetry_presence WHERE device_id=$1`, [second.id]);
       await pool.query("UPDATE app_users SET account_status='active' WHERE id=$1", [ownerId]);
       const response = await heartbeat(runtime.baseUrl, { credential: second.credential });
       assert.equal(response.status, 200);
       const after = await pool.query("SELECT id,app_user_id,name,credential_hash,created_at,revoked_at,last_presence_revision FROM telemetry_devices WHERE id=$1", [second.id]);
       assert.deepEqual(after.rows, before.rows);
-      const presence = await pool.query("SELECT to_regclass($1) AS table_name", [`${schemaName}.telemetry_presence`]);
-      assert.equal(presence.rows[0].table_name, null);
+      const presenceAfter = await pool.query(`SELECT device_id,schema_version,revision,session_active,location_raw,
+        location_observed_at,jurisdiction,ship_name,quantum_destination,quantum_state,last_event_at,received_at
+        FROM telemetry_presence WHERE device_id=$1`, [second.id]);
+      assert.deepEqual(presenceAfter.rows, presenceBefore.rows);
     });
     await t.test("authentication database failures consume the credential bucket and remain service errors", async () => {
       await pool.query("UPDATE app_users SET account_status='active' WHERE id=$1", [ownerId]);

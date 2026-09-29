@@ -32,9 +32,10 @@ var (
 )
 
 type APIError struct {
-	Code       string
-	RetryAfter time.Duration
-	HTTPStatus int
+	Code            string
+	RetryAfter      time.Duration
+	HTTPStatus      int
+	CurrentRevision int64
 }
 
 func (e *APIError) Error() string {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createC6TestPool, createC6TestSchema, dropC6TestSchema, resolveC6TestDatabaseUrl } from "./helpers/c6-test-database.js";
+import { createC6TestPool, createC6TestSchema, createC7TestSchema, dropC6TestSchema, dropC7TestSchema, resolveC6TestDatabaseUrl } from "./helpers/c6-test-database.js";
 
 test("C6 database guard accepts only PostgreSQL verselink_test on loopback", async () => {
   for (const value of [
@@ -53,6 +53,23 @@ test("C6 cleanup and schema creation are confined to the generated C6 schema", a
   for (const unsafe of ["public", "app", "c6_heartbeat_not-a-uuid"]) {
     await assert.rejects(dropC6TestSchema(pool, unsafe));
     await assert.rejects(createC6TestSchema(pool, unsafe));
+  }
+  assert.equal(calls.length, 2);
+});
+
+test("C7 schema creation and cleanup are confined to a generated presence schema", async () => {
+  const calls = [];
+  const pool = { query: async (sql) => { calls.push(sql); } };
+  const ownedSchema = `c7_presence_${"b".repeat(32)}`;
+  await createC7TestSchema(pool, ownedSchema);
+  await dropC7TestSchema(pool, ownedSchema);
+  assert.deepEqual(calls, [
+    `CREATE SCHEMA "${ownedSchema}"`,
+    `DROP SCHEMA IF EXISTS "${ownedSchema}" CASCADE`
+  ]);
+  for (const unsafe of ["public", "app", "c7_presence_not-a-uuid", `c6_heartbeat_${"a".repeat(32)}`]) {
+    await assert.rejects(dropC7TestSchema(pool, unsafe));
+    await assert.rejects(createC7TestSchema(pool, unsafe));
   }
   assert.equal(calls.length, 2);
 });

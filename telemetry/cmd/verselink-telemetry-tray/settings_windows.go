@@ -647,8 +647,10 @@ func (t *windowsTray) applyPairingResult(result pairingResult, updateUI bool) {
 	t.connectionState = connection.Connecting
 	t.connectionMessage = "Paired locally; waiting for the first authenticated heartbeat."
 	t.heartbeatConfig = connection.HeartbeatConfig{BaseURL: result.baseURL, DeviceID: result.response.DeviceID, AllowHTTP: os.Getenv("VERSELINK_TELEMETRY_ALLOW_HTTP") == "1"}
+	t.presenceConfig = connection.PresenceConfig{BaseURL: result.baseURL, DeviceID: result.response.DeviceID, AllowHTTP: os.Getenv("VERSELINK_TELEMETRY_ALLOW_HTTP") == "1", RevisionLock: lock}
 	if updateUI {
 		t.publishHeartbeatConfig(t.heartbeatConfig)
+		t.publishPresenceConfig(t.presenceConfig)
 	}
 	if updateUI && t.settingsWindow != nil {
 		t.settingsWindow.value = value
@@ -725,6 +727,8 @@ func (w *settingsWindow) disconnectLocally() {
 	value.Connection.Revision = 0
 	activeTray.heartbeatConfig = connection.HeartbeatConfig{}
 	activeTray.publishHeartbeatConfig(activeTray.heartbeatConfig)
+	activeTray.presenceConfig = connection.PresenceConfig{}
+	activeTray.publishPresenceConfig(activeTray.presenceConfig)
 	if w.store.Path != "" {
 		if err := w.store.Save(value); err != nil {
 			w.setError("Local credential was removed, but settings could not be updated. No server-side revocation was performed.")
@@ -815,6 +819,7 @@ func (t *windowsTray) configureConnection(localAppData string, value settings.Se
 	t.connectionState = connection.Connecting
 	t.connectionMessage = fmt.Sprintf("Paired locally (revision %d); checking server authentication.", state.Revision)
 	t.heartbeatConfig = connection.HeartbeatConfig{BaseURL: serverURL, DeviceID: value.Connection.DeviceID, AllowHTTP: allowHTTP}
+	t.presenceConfig = connection.PresenceConfig{BaseURL: serverURL, DeviceID: value.Connection.DeviceID, AllowHTTP: allowHTTP, RevisionLock: lock}
 }
 
 func (w *settingsWindow) refreshSummary() {

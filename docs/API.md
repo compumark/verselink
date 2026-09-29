@@ -116,8 +116,25 @@ checks the current device revocation and account status in PostgreSQL on every
 authentication attempt, without caching. Outcomes are `invalid_device_credential`
 (401, with a Bearer challenge), `device_revoked` (401), `account_inactive`
 (403), or a minimal internal device/owner context on success.
-Heartbeat, presence, and device-management endpoints are not added here; C6,
-C7, and C8 respectively own those behaviors.
+C6 owns the device-authenticated heartbeat; C7 adds the device-authenticated
+presence route; device management is owned by C8. Presence accepts only the
+explicit C1 schema-1 current snapshot:
+
+```http
+PUT /api/telemetry/presence
+Authorization: Bearer vlt_<device credential>
+Content-Type: application/json
+
+{"schema":1,"revision":42,"session_active":true,"shard":"pu-test-01","location":{"raw":"RR_CRU_L1","observed_at":"2026-09-24T12:00:00.123Z"},"jurisdiction":"Stanton","ship":{"name":"RSI_Hermes"},"quantum":{"destination":"LOC_CRU_L1","state":"target_selected"},"party_count":2,"last_event_at":"2026-09-24T12:00:02.456Z"}
+```
+
+The server validates the complete schema-1 DTO and stores only the approved
+current-state allowlist. `shard` and `party_count` are validated but are not
+persisted or included in revision equality checks. Newer revisions replace the
+single per-device snapshot transactionally; exact duplicates are idempotent,
+while stale revisions and same-revision conflicts return `409` with the current
+revision. The full contract is in
+[`telemetry/CONNECTION_CONTRACT.md`](telemetry/CONNECTION_CONTRACT.md).
 
 ## Request-Beispiele
 
