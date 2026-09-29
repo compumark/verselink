@@ -84,7 +84,7 @@ Goal: turn the core into a usable Windows background application.
 Goal: provide a local Windows test monitor, then securely connect a local device
 to a VerseLink account.
 
-| ID | Work item | Status |
+| Item | Description | Status |
 | --- | --- | --- |
 | C0 | Live Telemetry Monitor Window for Windows Testers | COMPLETE |
 | C1 | Telemetry Connection Contract and Device Security Model | COMPLETE |
