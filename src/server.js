@@ -8,7 +8,10 @@ import pg from "pg";
 import { selectWikiCandidate, selectWikiImageFile, shouldRefreshReference, wikiSourceMatchesProduct } from "./reference-resolver.js";
 import { hashRecoveryToken, isRecoveryToken, generateRecoveryToken } from "./auth-primitives.js";
 import { clientKey, createRateLimiter, createRequestRateLimiter } from "./rate-limit.js";
+import { createTelemetryAuthInFlightLimiter } from "./telemetry-auth-inflight.js";
+import { createTelemetryHeartbeatHandler } from "./telemetry-heartbeat-handler.js";
 import { generateDeviceCredential, generatePairingCode, hashDeviceCredential, hashPairingCode, normalizeDeviceName, normalizePairingCode } from "./telemetry-pairing.js";
+import { authenticateTelemetryDevice } from "./telemetry-device-auth.js";
 import { normalizeScmdbSinkBaseUrl, scmdbSinkUrl } from "./scmdb-sink-config.js";
 import { createDiscordAdminNotifier } from "./discord-admin-dm.js";
 import { createLogger } from "./logger.js";
@@ -619,6 +622,8 @@ const recoveryRateLimit = createRateLimiter({ limit: 5, windowMs: 15 * 60_000 })
 const recoveryRotationRateLimit = createRateLimiter({ limit: 5, windowMs: 15 * 60_000 });
 const telemetryPairingCreateRateLimit = createRequestRateLimiter({ limit: 5, windowMs: 60 * 60_000 });
 const telemetryPairingClaimRateLimit = createRequestRateLimiter({ limit: 20, windowMs: 15 * 60_000 });
+const telemetryHeartbeatRateLimit = createRequestRateLimiter({ limit: 120, windowMs: 60_000 });
+const telemetryHeartbeatAuthInFlight = createTelemetryAuthInFlightLimiter();
 const tooManyRequests = (res, req, event = "auth.rate_limited") => { logger.warn(event, { reason: "rate_limited" }, { request_id: req?.requestId }); return json(res, 429, { error: "too many requests" }); };
 const sameVerseLinkOrigin = (req) => {
   const origin = req.headers.origin;
@@ -1174,7 +1179,7 @@ const logValue = (value) => String(value ?? "unknown").replace(/[\r\n\t]/g, " ")
 const requestLogContext = (req, user) => ({ request_id: req.requestId, user_id: user?.id, user: user?.verselink_name || user?.display_name });
 const pollingPaths = new Set(["/api/notifications", "/api/session", "/api/me", "/api/me/status", "/api/profile", "/api/profile/scmdb", "/api/version"]);
 const authLogPaths = new Set(["/auth/register", "/auth/login", "/auth/recover", "/logout"]);
-const telemetrySecretRoutes = new Set(["/api/me/telemetry/pairing", "/api/telemetry/pair"]);
+const telemetrySecretRoutes = new Set(["/api/me/telemetry/pairing", "/api/telemetry/pair", "/api/telemetry/heartbeat"]);
 const logApiRequest = (req, res, url, startedAt) => {
   if (!url.pathname.startsWith("/api/") && !authLogPaths.has(url.pathname)) return;
   res.once("finish", () => {
@@ -1615,6 +1620,19 @@ const handleTelemetryPairClaim = async (req, res) => {
     client?.release();
   }
 };
+
+const handleTelemetryHeartbeat = createTelemetryHeartbeatHandler({
+  pool,
+  pepper,
+  requestRateLimit: telemetryHeartbeatRateLimit,
+  authInFlight: telemetryHeartbeatAuthInFlight,
+  authenticate: authenticateTelemetryDevice,
+  readJson: readTelemetryJson,
+  sendJson: json,
+  sendError: telemetryError,
+  sendRateLimited: telemetryRateLimited,
+  logger
+});
 
 const server = createServer(async (req, res) => {
   req.requestId = randomUUID();
@@ -3142,6 +3160,7 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/me/telemetry/pairing") return handleTelemetryPairingCreate(req, res);
     if (req.method === "POST" && url.pathname === "/api/telemetry/pair") return handleTelemetryPairClaim(req, res);
+    if (req.method === "POST" && url.pathname === "/api/telemetry/heartbeat") return handleTelemetryHeartbeat(req, res);
 
     if (req.method === "GET" && url.pathname === "/api/me") {
       const current = await getCurrentAppUser(req);

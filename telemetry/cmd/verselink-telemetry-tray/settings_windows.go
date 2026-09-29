@@ -240,7 +240,7 @@ func createSettingsWindow(store settings.Store, value settings.Settings, warning
 	add("BUTTON", "VerseLink connection", wsChild|wsVisible|bsGroupBox, 16, 430, 648, 208, 0)
 	add("STATIC", "Server URL (VERSELINK_APP_URL or explicit instance URL):", wsChild|wsVisible|ssLeft, 34, 452, 606, 20, 0)
 	initialServerURL := value.Connection.ServerURL
-	if environmentURL := strings.TrimSpace(os.Getenv("VERSELINK_APP_URL")); environmentURL != "" && (activeTray == nil || activeTray.connectionState != connection.Connected) {
+	if environmentURL := strings.TrimSpace(os.Getenv("VERSELINK_APP_URL")); environmentURL != "" && (activeTray == nil || activeTray.settingsValue.Connection.DeviceID == "") {
 		initialServerURL = environmentURL
 	}
 	window.serverURL = add("EDIT", initialServerURL, wsChild|wsVisible|wsTabStop|wsBorder|esAutoHScroll, 34, 474, 606, 25, settingsServerURLID)
@@ -503,7 +503,7 @@ func (w *settingsWindow) beginPairing() {
 	if activeTray == nil || activeTray.connectionState == connection.Pairing {
 		return
 	}
-	if activeTray.connectionState == connection.Connected {
+	if activeTray.settingsValue.Connection.DeviceID != "" {
 		w.setError("Disconnect the currently paired local device before pairing another device.")
 		return
 	}
@@ -644,8 +644,12 @@ func (t *windowsTray) applyPairingResult(result pairingResult, updateUI bool) {
 	t.revisionLock = lock
 	t.revisionLockUnavailable = false
 	t.settingsValue = value
-	t.connectionState = connection.Connected
-	t.connectionMessage = fmt.Sprintf("Paired %s locally (device %s). Server authentication is not verified until C6 adds heartbeat.", result.response.DeviceName, result.response.DeviceID)
+	t.connectionState = connection.Connecting
+	t.connectionMessage = "Paired locally; waiting for the first authenticated heartbeat."
+	t.heartbeatConfig = connection.HeartbeatConfig{BaseURL: result.baseURL, DeviceID: result.response.DeviceID, AllowHTTP: os.Getenv("VERSELINK_TELEMETRY_ALLOW_HTTP") == "1"}
+	if updateUI {
+		t.publishHeartbeatConfig(t.heartbeatConfig)
+	}
 	if updateUI && t.settingsWindow != nil {
 		t.settingsWindow.value = value
 		t.settingsWindow.draft.reset(value)
@@ -719,6 +723,8 @@ func (w *settingsWindow) disconnectLocally() {
 	value.Connection.DeviceID = ""
 	value.Connection.DeviceName = ""
 	value.Connection.Revision = 0
+	activeTray.heartbeatConfig = connection.HeartbeatConfig{}
+	activeTray.publishHeartbeatConfig(activeTray.heartbeatConfig)
 	if w.store.Path != "" {
 		if err := w.store.Save(value); err != nil {
 			w.setError("Local credential was removed, but settings could not be updated. No server-side revocation was performed.")
@@ -748,12 +754,12 @@ func (w *settingsWindow) refreshConnection() {
 		message = string(activeTray.connectionState) + " — " + activeTray.connectionMessage
 	}
 	envURL := strings.TrimSpace(os.Getenv("VERSELINK_APP_URL"))
-	if envURL != "" && (activeTray == nil || activeTray.connectionState != connection.Connected) {
+	if envURL != "" && (activeTray == nil || activeTray.settingsValue.Connection.DeviceID == "") {
 		message += " (pairing URL from VERSELINK_APP_URL)"
 	}
 	w.setText(w.connectionStatus, message)
 	enabled := uintptr(0)
-	if (envURL != "" || strings.TrimSpace(w.controlText(w.serverURL)) != "") && (activeTray == nil || activeTray.connectionState != connection.Pairing && activeTray.connectionState != connection.Connected) {
+	if (envURL != "" || strings.TrimSpace(w.controlText(w.serverURL)) != "") && (activeTray == nil || activeTray.connectionState != connection.Pairing && activeTray.settingsValue.Connection.DeviceID == "") {
 		enabled = 1
 	}
 	procEnableWindow.Call(w.pairButton, enabled)
@@ -799,15 +805,16 @@ func (t *windowsTray) configureConnection(localAppData string, value settings.Se
 	clear(secret)
 	lock, state, err := revision.Acquire(t.revisionDirectory, value.Connection.DeviceID)
 	if err != nil {
-		t.connectionState = connection.Connected
+		t.connectionState = connection.NotConnected
 		t.revisionLockUnavailable = true
 		t.connectionMessage = "Paired credential found, but the per-device revision lock is held by another instance."
 		return
 	}
 	t.revisionLock = lock
 	t.revisionLockUnavailable = false
-	t.connectionState = connection.Connected
-	t.connectionMessage = fmt.Sprintf("Paired locally (revision %d); server authentication is not verified until C6.", state.Revision)
+	t.connectionState = connection.Connecting
+	t.connectionMessage = fmt.Sprintf("Paired locally (revision %d); checking server authentication.", state.Revision)
+	t.heartbeatConfig = connection.HeartbeatConfig{BaseURL: serverURL, DeviceID: value.Connection.DeviceID, AllowHTTP: allowHTTP}
 }
 
 func (w *settingsWindow) refreshSummary() {

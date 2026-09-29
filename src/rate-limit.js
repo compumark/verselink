@@ -39,26 +39,41 @@ export const createRequestRateLimiter = ({ limit, windowMs, maxEntries = 10000, 
     throw new TypeError("invalid request rate limiter configuration");
   }
   const entries = new Map();
+  let overflowBucket = null;
   const cleanup = (timestamp = now()) => {
     for (const [key, entry] of entries) if (entry.resetAt <= timestamp) entries.delete(key);
-    while (entries.size > maxEntries) entries.delete(entries.keys().next().value);
+    if (overflowBucket?.resetAt <= timestamp) overflowBucket = null;
   };
   return {
+    allow(key, timestamp = now()) {
+      cleanup(timestamp);
+      const entry = entries.get(String(key || "unknown"));
+      if (!entry) return entries.size < maxEntries;
+      return entry.resetAt <= timestamp || entry.count < limit;
+    },
     consume(key, timestamp = now()) {
       cleanup(timestamp);
       const normalizedKey = String(key || "unknown");
       let entry = entries.get(normalizedKey);
-      if (!entry || entry.resetAt <= timestamp) {
+      if (!entry && entries.size >= maxEntries) {
+        let resetAt = Infinity;
+        for (const active of entries.values()) resetAt = Math.min(resetAt, active.resetAt);
+        if (!overflowBucket || overflowBucket.resetAt !== resetAt) overflowBucket = { count: 0, resetAt };
+        overflowBucket.count = Math.min(Number.MAX_SAFE_INTEGER, overflowBucket.count + 1);
+        return {
+          allowed: false,
+          remaining: 0,
+          resetAt,
+          retryAfter: Math.max(1, Math.ceil((resetAt - timestamp) / 1000)),
+          capacityLimited: true
+        };
+      }
+      if (!entry) {
         entry = { count: 0, resetAt: timestamp + windowMs };
-        entries.delete(normalizedKey);
-        entries.set(normalizedKey, entry);
-      } else {
-        entries.delete(normalizedKey);
         entries.set(normalizedKey, entry);
       }
       const allowed = entry.count < limit;
       if (allowed) entry.count += 1;
-      cleanup(timestamp);
       return {
         allowed,
         remaining: Math.max(0, limit - entry.count),
@@ -67,7 +82,8 @@ export const createRequestRateLimiter = ({ limit, windowMs, maxEntries = 10000, 
       };
     },
     cleanup,
-    size: () => entries.size
+    size: () => entries.size,
+    overflowCount: () => overflowBucket?.count || 0
   };
 };
 

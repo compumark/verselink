@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/compumark/verselink-telemetry/internal/connection"
@@ -160,6 +161,8 @@ type windowsTray struct {
 	credentialStore         connection.CredentialStore
 	connectionState         connection.State
 	connectionMessage       string
+	heartbeatUpdates        chan connection.HeartbeatConfig
+	heartbeatConfig         connection.HeartbeatConfig
 	revisionLock            *revision.Lock
 	revisionLockUnavailable bool
 	revisionDirectory       string
@@ -306,18 +309,66 @@ func (t *windowsTray) postLiveStatusUpdate() {
 	procPostMessage.Call(t.hwnd, liveStatusUpdate, 0, 0)
 }
 
+func (t *windowsTray) publishHeartbeatConfig(value connection.HeartbeatConfig) {
+	if t == nil || t.heartbeatUpdates == nil {
+		return
+	}
+	select {
+	case t.heartbeatUpdates <- value:
+		return
+	default:
+	}
+	select {
+	case <-t.heartbeatUpdates:
+	default:
+	}
+	select {
+	case t.heartbeatUpdates <- value:
+	default:
+	}
+}
+
 func (t *windowsTray) postClose() {
 	procPostMessage.Call(t.hwnd, wmClose, 0, 0)
 }
 
 func (t *windowsTray) refreshStatus() {
 	text := statusText(t.store.Current())
+	health := t.store.CurrentHealth()
+	switch health.State {
+	case connection.HealthNotConnected:
+		t.connectionState = connection.NotConnected
+	case connection.HealthConnecting:
+		t.connectionState = connection.Connecting
+	case connection.HealthConnected:
+		t.connectionState = connection.Connected
+	case connection.HealthTemporarilyOffline:
+		t.connectionState = connection.TemporarilyOffline
+	case connection.HealthAuthenticationFailed:
+		t.connectionState = connection.AuthenticationFailed
+	case connection.HealthDeviceRevoked:
+		t.connectionState = connection.DeviceRevoked
+	}
+	if health.State != "" {
+		t.connectionMessage = health.Error
+		if !health.LastSuccess.IsZero() {
+			t.connectionMessage = "Last successful heartbeat: " + health.LastSuccess.UTC().Format(time.RFC3339)
+			if health.Error != "" {
+				t.connectionMessage += " — " + health.Error
+			}
+		}
+	}
 	if t.settingsWindow != nil {
 		t.settingsWindow.refreshSummary()
+		t.settingsWindow.refreshConnection()
 	}
-	menuText, _ := syscall.UTF16PtrFromString("Status: " + text)
+	connectionText := string(t.connectionState)
+	if connectionText == "" {
+		connectionText = "Not connected"
+	}
+	menuText, _ := syscall.UTF16PtrFromString("Connection: " + connectionText + " | " + text)
 	procModifyMenu.Call(t.menu, statusMenuID, mfByCommand|mfString|mfGray, statusMenuID, uintptr(unsafe.Pointer(menuText)))
-	copyUTF16(t.icon.Tip[:], "VerseLink Telemetry — "+text)
+	copyUTF16(t.icon.Tip[:], "VerseLink — "+connectionText+" — "+text)
 	t.icon.Flags = nifTip
 	procShellNotifyIcon.Call(nimModify, uintptr(unsafe.Pointer(&t.icon)))
 }

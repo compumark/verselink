@@ -85,7 +85,7 @@ func TestRunTrayLifecycleUnexpectedExitDrainsPairingWithoutUIPost(t *testing.T) 
 	if !cleaned || posted || store.writes != 1 {
 		t.Fatalf("shutdown cleanup=%v posted=%v credential writes=%d", cleaned, posted, store.writes)
 	}
-	if tray.connectionState != connection.Connected || !allBytesZero(credential) {
+	if tray.connectionState != connection.Connecting || !allBytesZero(credential) {
 		t.Fatalf("shutdown state=%q credential cleared=%v", tray.connectionState, allBytesZero(credential))
 	}
 	select {
@@ -159,7 +159,7 @@ func TestRunTrayLifecyclePanicDrainsAndCleansUpBeforeRepanicking(t *testing.T) {
 	if !cleaned || posted || store.writes != 1 {
 		t.Fatalf("shutdown cleanup=%v posted=%v credential writes=%d", cleaned, posted, store.writes)
 	}
-	if tray.connectionState != connection.Connected || !allBytesZero(credential) {
+	if tray.connectionState != connection.Connecting || !allBytesZero(credential) {
 		t.Fatalf("shutdown state=%q credential cleared=%v", tray.connectionState, allBytesZero(credential))
 	}
 	select {
@@ -228,7 +228,7 @@ func TestStopPairingAndDrainPersistsReceivedClaimWithoutUIPost(t *testing.T) {
 	if posted {
 		t.Fatal("shutdown posted a pairing completion to a stopped UI")
 	}
-	if tray.connectionState != connection.Connected || tray.settingsValue.Connection.DeviceID == "" {
+	if tray.connectionState != connection.Connecting || tray.settingsValue.Connection.DeviceID == "" {
 		t.Fatalf("received claim was not persisted: state=%q settings=%#v", tray.connectionState, tray.settingsValue.Connection)
 	}
 	if got := store.values[connection.CredentialTarget("https://pair.example.test", tray.settingsValue.Connection.DeviceID)]; string(got) == "" {

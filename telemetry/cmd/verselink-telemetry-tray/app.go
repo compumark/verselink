@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/compumark/verselink-telemetry/internal/connection"
 	"github.com/compumark/verselink-telemetry/internal/diagnostics"
 	"github.com/compumark/verselink-telemetry/internal/gamelog"
 	"github.com/compumark/verselink-telemetry/internal/runtimehost"
@@ -22,6 +23,27 @@ type statusStore struct {
 	liveVisible bool
 	liveLast    liveTelemetryPresentation
 	hasLiveLast bool
+	health      connection.HealthStatus
+}
+
+func (s *statusStore) OnConnectionHealth(status connection.HealthStatus) {
+	s.mu.Lock()
+	s.health = status
+	wake := s.wake
+	visible, liveWake := s.liveVisible, s.liveWake
+	s.mu.Unlock()
+	if wake != nil {
+		wake()
+	}
+	if visible && liveWake != nil {
+		liveWake()
+	}
+}
+
+func (s *statusStore) CurrentHealth() connection.HealthStatus {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.health
 }
 
 func (s *statusStore) OnLiveSnapshot(status runtimehost.Status) {
@@ -71,8 +93,19 @@ func (s *statusStore) SetLiveVisible(visible bool) {
 func (s *statusStore) CurrentLivePresentation() liveTelemetryPresentation {
 	s.mu.RLock()
 	status := s.liveStatus
+	health := s.health
 	s.mu.RUnlock()
-	return presentLiveTelemetry(status)
+	presentation := presentLiveTelemetry(status)
+	if health.State != "" {
+		presentation.connection = string(health.State)
+		if !health.LastSuccess.IsZero() {
+			presentation.connection += " — last success " + health.LastSuccess.UTC().Format(time.RFC3339)
+		}
+		if health.Error != "" {
+			presentation.connection += " — " + health.Error
+		}
+	}
+	return presentation
 }
 
 func (s *statusStore) Current() runtimehost.Status {
@@ -220,7 +253,7 @@ type liveTelemetryPresentation struct {
 	status, channel, strategy, path  string
 	lines, events, resets            string
 	session, player, shard           string
-	lastEvent                        string
+	lastEvent, connection            string
 	location, locationAt, zone       string
 	ship, owner                      string
 	quantumDestination, quantumState string
@@ -233,7 +266,7 @@ func presentLiveTelemetry(status runtimehost.Status) liveTelemetryPresentation {
 		lines: "Unknown", events: "Unknown", resets: "Unknown", session: "Inactive",
 		player: "Unknown", shard: "Unknown", lastEvent: "Unknown", location: "Unknown",
 		locationAt: "Unknown", zone: "Unknown", ship: "Unknown", owner: "Unknown",
-		quantumDestination: "Unknown", quantumState: "Unknown", partyCount: "Unknown",
+		quantumDestination: "Unknown", quantumState: "Unknown", partyCount: "Unknown", connection: "Not connected",
 	}
 	configuration := status.Configuration
 	if configuration.Channel != "" {
@@ -368,6 +401,7 @@ func formatLiveTelemetry(p liveTelemetryPresentation) string {
 		"Quantum destination: " + p.quantumDestination,
 		"Quantum state: " + p.quantumState,
 		"Party members: " + p.partyCount,
+		"Connection: " + p.connection,
 	}, "\n")
 }
 

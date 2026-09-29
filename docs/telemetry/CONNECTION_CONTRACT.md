@@ -272,7 +272,11 @@ bucket. Initial enforcement is per process and bounded in memory. The existing
 must not use that failure-only behavior unchanged for request-count limits.
 They may extend the existing bounded in-memory limiter with request-count
 semantics where appropriate or add a small repository-consistent bounded
-in-memory request limiter. Limits remain best-effort across multiple server
+in-memory request limiter. When the per-process bucket map is full, expired
+buckets are removed first; active buckets are never evicted. A request for a
+new key is counted in a single bounded overflow bucket and rejected with 429
+until the earliest active window expires. Existing keys continue consuming
+their own buckets. Limits remain best-effort across multiple server
 replicas and process resets; they are not a substitute for pairing-code
 entropy, atomic single-use database operations, request-size limits, or
 authentication. Phase C does not require distributed/global enforcement. A

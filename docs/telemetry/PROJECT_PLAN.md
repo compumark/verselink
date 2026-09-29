@@ -92,12 +92,14 @@ to a VerseLink account.
 | C3 | Telemetry Pairing API and Device Credential Issuance | COMPLETE |
 | C4 | Telemetry Device Authentication and Revocation | COMPLETE |
 | C5 | Windows Pairing Flow and Secure Credential Storage | COMPLETE |
-| C6 | Telemetry Heartbeat and Connection Health | TODO |
+| C6 | Telemetry Heartbeat and Connection Health | COMPLETE |
 | C7 | Telemetry Presence Snapshot Ingest and Persistence | TODO |
 | C8 | Telemetry Device Management in VerseLink | TODO |
 | C9 | Telemetry End-to-End Integration, Resilience and Security Tests | TODO |
 
-Next planned item: C6 — Telemetry Heartbeat and Connection Health (#92). C6 will begin as a separate work item only after the C5 PR is completed and merged.
+C6 validation note: The manual DEV smoke test was NOT RUN before merge and is expressly approved as post-merge validation after `ghcr.io/compumark/verselink:dev` is deployed to the DEV Portainer instance. This test is not covered by CI; production and `latest` are out of scope.
+
+Start C7 — Telemetry Presence Snapshot Ingest and Persistence (#93) only after C6 has passed review and CI, been merged, and its status has been marked COMPLETE.
 
 No browser session cookie or VerseLink password is stored by the telemetry client.
 
