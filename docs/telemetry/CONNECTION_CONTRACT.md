@@ -1,13 +1,16 @@
 # VerseLink Telemetry Connection Contract
 
-Status: Proposed implementation contract (C1, in review)
+Status: Implemented Milestone-C contract (C1–C8; C9 verification in review)
 Applies to: Milestone C (C2–C9)
 Last updated: 2026-09-24
 
 This document is the normative API, security, payload, privacy, and lifecycle
-contract for the first VerseLink Telemetry connection. It describes future
-behavior; it does not document implemented endpoints. If this contract changes,
-update it and the related decisions before dependent implementation proceeds.
+contract for VerseLink Telemetry's implemented Milestone-C connection. C2–C8
+implement the routes and behavior described here; C9 verifies their combined
+behavior, resilience, and security. Treat code and passing integration tests as
+evidence for implementation status, not as permission to silently change this
+contract. If implementation and contract differ, resolve the discrepancy
+explicitly before changing either.
 
 ## 1. Scope and connection model
 
@@ -178,9 +181,9 @@ device credential survives as independently usable.
 All paths are under the existing VerseLink API host. JSON requests use
 `Content-Type: application/json`. Browser-authenticated mutations retain the
 application's same-origin/CSRF protections; they do not enable permissive
-cross-origin credentialed requests. Every API below is a future contract, not
-an implemented route. Control/management JSON request bodies are capped at
-4 KiB; presence is capped separately at 16 KiB.
+cross-origin credentialed requests. The C2–C8 routes below are implemented;
+their automated integration coverage is part of C9. Control/management JSON
+request bodies are capped at 4 KiB; presence is capped separately at 16 KiB.
 
 The canonical safe device summary used by list and rename responses is:
 

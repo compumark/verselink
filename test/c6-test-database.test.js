@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createC6TestPool, createC6TestSchema, createC7TestSchema, dropC6TestSchema, dropC7TestSchema, resolveC6TestDatabaseUrl } from "./helpers/c6-test-database.js";
+import { createC6TestPool, createC6TestSchema, createC7TestSchema, createC8TestSchema, dropC6TestSchema, dropC7TestSchema, dropC8TestSchema, resolveC6TestDatabaseUrl } from "./helpers/c6-test-database.js";
 
 test("C6 database guard accepts only PostgreSQL verselink_test on loopback", async () => {
   for (const value of [
@@ -72,4 +72,35 @@ test("C7 schema creation and cleanup are confined to a generated presence schema
     await assert.rejects(createC7TestSchema(pool, unsafe));
   }
   assert.equal(calls.length, 2);
+});
+
+test("C8 and C9 schema creation and cleanup accept only their generated owned schemas", async () => {
+  const calls = [];
+  const pool = { query: async (sql) => { calls.push(sql); } };
+  const c8Schema = `c8_history_${"a".repeat(32)}`;
+  const c9Schema = `c9_e2e_${"b".repeat(32)}`;
+  await createC8TestSchema(pool, c8Schema);
+  await dropC8TestSchema(pool, c8Schema);
+  await createC8TestSchema(pool, c9Schema);
+  await dropC8TestSchema(pool, c9Schema);
+  assert.deepEqual(calls, [
+    `CREATE SCHEMA "${c8Schema}"`,
+    `DROP SCHEMA IF EXISTS "${c8Schema}" CASCADE`,
+    `CREATE SCHEMA "${c9Schema}"`,
+    `DROP SCHEMA IF EXISTS "${c9Schema}" CASCADE`
+  ]);
+
+  for (const unsafe of [
+    "public",
+    "c8_history_not-a-uuid",
+    `c8_history_${"A".repeat(32)}`,
+    `c9_e2e_${"b".repeat(31)}`,
+    `c9_e2e_${"b".repeat(32)}x`,
+    `c9_history_${"b".repeat(32)}`,
+    `c8_e2e_${"a".repeat(32)}`
+  ]) {
+    await assert.rejects(createC8TestSchema(pool, unsafe));
+    await assert.rejects(dropC8TestSchema(pool, unsafe));
+  }
+  assert.equal(calls.length, 4, "rejected schemas must not issue SQL");
 });

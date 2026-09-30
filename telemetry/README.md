@@ -1,16 +1,16 @@
 # VerseLink Telemetry
 
-VerseLink Telemetry is the planned read-only telemetry companion for
-VerseLink. This repository currently contains the early Milestone A scaffold,
-event-contract fixtures, and an internal Windows `Game.log` locator. These
-prove that the future telemetry component can build and run as an independent
-Go module.
+VerseLink Telemetry is a Windows tray client and server-side connection for
+private, allowlisted gameplay presence. The client reads Star Citizen's
+`Game.log` locally, derives a structured current state, and—after explicit
+pairing with a configured VerseLink instance—sends authenticated heartbeat and
+schema-1 presence requests. The server stores current per-device presence and
+the owner's bounded private history; it does not receive raw logs or parser
+event streams.
 
-The initial implementation lives in `telemetry/` inside the VerseLink
-repository. It is technically independent from the Node.js application and
-from `companion/`, which remains a separate OCR project. The module path is
-already suitable for a future move to `compumark/verselink-telemetry`; that
-move should mainly require repository and CI relocation, not code redesign.
+The Go client lives in `telemetry/` and the VerseLink API/persistence live in
+the existing Node.js server. They remain separate from `companion/`, which is
+an independent OCR project.
 
 ## Requirements
 
@@ -28,29 +28,11 @@ go vet ./...
 go run ./cmd/verselink-telemetry
 ```
 
-The B1 executable now performs the first local Windows runtime integration.
-After printing its identity and build information it locates `Game.log`,
-restores the latest current login session, starts the existing live tailer, and
-prints privacy-safe diagnostics when meaningful state changes. A3 adds an
-internal, read-only Windows `Game.log` locator for later callers. A4 adds an
-internal, read-only live line tailer: it emits only newly appended complete raw
-lines, buffers partial writes, and accepts an explicit path-change hook. A5
-parses the three session events `player_login`, `server_joined`, and
-`player_spawned` into local structured events. A6 adds internal parsing for
-the `location_change` observation and `jurisdiction_entered` events. A7 adds
-internal parsing for ship boarding and exiting channel notifications. A8 adds
-internal Quantum Travel event parsing. A9 adds internal Party join, leave, and
-disbanded-event parsing with only the minimal pending operation needed for
-multi-line observations. A10 adds local, platform-neutral reduction of the 13
-P0 events into current session, location, ship, Quantum, Party, and timing
-state. A11 adds local current-session restoration and restart handling: it
-replays only the latest `player_login` session and continues from an exact
-live-tail byte offset while resetting local state on log restarts. A12 adds a
-small manifest-driven regression corpus covering all 13 P0 events, an
-end-to-end restore regression, monotonic Session diagnostics counters, and a
-deterministic local current-state formatter. There is still no backend or API
-integration. B1 provides the foreground Windows console runtime, and B2 adds
-a minimal Windows tray entry point over the same local runtime pipeline.
+Milestone A provides the sanitized parser contract, regression corpus, and
+local telemetry reducer. Milestone B adds the foreground runtime, Windows
+tray, settings, pairing UX, secure Credential Manager storage, and local live
+monitor. Milestone C implements the pairing/device lifecycle, heartbeat,
+presence ingest, and private device/history management described below.
 
 ## Regression corpus
 
@@ -67,17 +49,21 @@ cd telemetry
 go test -v ./...
 ```
 
-The reusable local diagnostics core summarizes Session counters and structured
-current state without retaining raw Game.log lines or GEIDs. It is not yet
-wired to the command executable or an end-user diagnostics UI. Backend/API and
-runtime UI work remain outside Milestone A.
+The local diagnostics and live monitor summarize structured state without
+retaining raw Game.log lines or GEIDs. Connection secrets are excluded from
+settings and diagnostics.
 
-## Planned direction
+## Connection and privacy boundary
 
-Later milestones may add further parsing, platform adapters, an end-user
-diagnostics experience, and a future VerseLink API client. A12 remains local
-core and test behavior only: there is no backend, API integration, or
-persistent state.
+The client sends only the explicit schema-1 presence DTO over HTTPS to the
+configured VerseLink origin. Pairing credentials are device-scoped and stored
+in the current Windows user's Credential Manager. Heartbeat health is separate
+from gameplay state; network outages do not stop local log monitoring.
+Presence starts private to its owning account. C8 history is an allowlisted
+projection retained for 90 days, survives device revocation for the remaining
+retention period, and can be deleted by its owner. See
+[`CONNECTION_CONTRACT.md`](CONNECTION_CONTRACT.md) for the normative contract
+and [`C9_TESTER_GUIDE.md`](C9_TESTER_GUIDE.md) for safe DEV validation.
 
 ## First Windows runtime test
 
@@ -161,8 +147,9 @@ tail, or parse `Game.log` itself. Missing values are shown as **Unknown**.
 **Copy current status** copies a deterministic plain-text snapshot using the
 Windows Unicode clipboard. It includes only the listed structured fields and
 Party count. It excludes Party identities, raw log lines, raw event maps,
-GEIDs, credentials, cookies, passwords, and tokens. Nothing is transmitted to
-a backend; VerseLink account connection and upload are not implemented.
+GEIDs, credentials, cookies, passwords, and tokens. The monitor itself makes
+no network request; paired connection workers send only heartbeat and the
+allowlisted current-presence DTO.
 
 The monitor intentionally reports the telemetry core's current observations
 without compensating for known live compatibility limitations: shard
@@ -306,7 +293,8 @@ The Settings status follows the authenticated heartbeat state; local pairing
 storage alone is shown as Connecting until the server accepts a heartbeat.
 **Disconnect locally** removes
 the local Credential Manager entry and local device metadata only; it does
-not revoke the device on VerseLink. Remote revoke/device management is C8.
+not revoke the device on VerseLink. Remote revoke/device management is
+available in the C8 VerseLink device-management UI.
 Local Game.log monitoring continues to work when the VerseLink server is
 unavailable. The C5 per-device OS lock is held while a paired app instance is
 running; a second instance cannot manage that same local device simultaneously.
@@ -345,12 +333,23 @@ per-device revision advances under the existing C5 OS lock; a retry reuses the
 same revision and body, while a `409` high-water response is reconciled before
 retry. Presence failures do not stop local monitoring or C6 heartbeat.
 
-This is ingestion only: no presence read API, peer sharing, historical event
-stream, or C8 device-management behavior is added. Account deactivation
-transactionally removes its presence rows without revoking devices; hard device
-or account deletion cascades through the existing ownership schema.
+Presence ingestion does not provide peer sharing or a parser-event stream.
+Owner-only reads are limited to the C8 private history API. Account
+deactivation transactionally removes current presence without revoking
+devices; hard device or account deletion cascades through the ownership schema.
 
 The security boundary is explicit. VerseLink Telemetry will not use process
 memory reading, DLL injection, kernel drivers, packet sniffing, keyboard hooks,
-automated chat input, or modification of Star Citizen files. Its initial future
-data source is `Game.log`, read-only.
+automated chat input, or modification of Star Citizen files. `Game.log` is
+read-only and is never uploaded.
+
+## C9 end-to-end verification
+
+The PostgreSQL integration suite includes a composed C3–C8 path covering
+pairing, device heartbeat, multiple accepted presence revisions, private
+history persistence, and revocation isolation. The Go connection tests cover
+client-side mapping, durable revisions, retry/recovery, authentication failure,
+and cancellation with controlled HTTP servers. These automated checks do not
+replace the manual Windows DEV acceptance procedure in
+[`C9_TESTER_GUIDE.md`](C9_TESTER_GUIDE.md); no production endpoint or database
+is used by that procedure.
