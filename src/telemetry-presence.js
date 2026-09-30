@@ -102,6 +102,7 @@ export const createTelemetryPresenceHandler = ({
   sendError,
   sendRateLimited,
   logger,
+  onAcceptedSnapshot = async () => {},
   getClientKey = clientKey,
   parseAuthorization = parseDeviceAuthorization,
   hashCredential = hashDeviceCredential
@@ -201,6 +202,12 @@ export const createTelemetryPresenceHandler = ({
         snapshot.location_raw, snapshot.location_observed_at, snapshot.jurisdiction, snapshot.ship_name,
         snapshot.quantum_destination, snapshot.quantum_state, snapshot.last_event_at]
     );
+    await onAcceptedSnapshot(client, {
+      deviceId: admitted.auth.context.deviceId,
+      revision: validated.revision,
+      snapshot,
+      receivedAt: saved.rows[0].received_at
+    });
     await client.query("COMMIT");
     return sendJson(res, 200, { schema: 1, accepted: true, revision: validated.revision, received_at: saved.rows[0].received_at });
   } catch {

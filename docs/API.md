@@ -136,6 +136,34 @@ while stale revisions and same-revision conflicts return `409` with the current
 revision. The full contract is in
 [`telemetry/CONNECTION_CONTRACT.md`](telemetry/CONNECTION_CONTRACT.md).
 
+### Telemetry device management and private history (C8)
+
+The signed-in user's MobiGlass profile calls only owner-scoped browser-session
+routes:
+
+| Method | Path | Purpose / limit |
+|---|---|---|
+| GET | `/api/me/telemetry/devices` | List own device summaries; 60 requests per user per minute. |
+| PATCH | `/api/me/telemetry/devices/:id` | Rename an own device; 30 mutations per user per minute. |
+| DELETE | `/api/me/telemetry/devices/:id` | Revoke an own device; 30 mutations per user per minute. |
+| GET | `/api/me/telemetry/history?limit=50&cursor=…` | Read own private history; 50 default, 100 maximum per page; 60 requests per user per minute. |
+| DELETE | `/api/me/telemetry/history` | Delete all of the caller's history without changing devices or current presence; 30 mutations per user per minute. |
+
+Device summaries never include credential material or hashes. A device revoke
+transaction marks only that owned device revoked and deletes its current
+presence row; C4 rejects later device-authenticated requests. Existing history
+is retained through the device's revocation for the remaining rolling
+90-day period, but the device cannot write further entries. History is made
+only from successfully accepted C7 snapshots, is private to the owning
+account, and contains only location raw identifier, jurisdiction, ship name,
+observed time, server received time, and source device/revision metadata.
+Identical projection snapshots are deduplicated; pagination order is
+deterministic. Missing location/ship remains unknown and missing observation
+time is displayed as server-received time. Expired history is cleaned at
+startup and daily. Account deactivation blocks access and writes but does not
+reset retention; hard account deletion cascades remaining history immediately.
+No crew/friend, public, or administrative history route is provided.
+
 ## Request-Beispiele
 
 Session:
@@ -175,7 +203,9 @@ Erfolg liefert je nach Endpunkt JSON mit `ok`, Datenobjekten oder Listen. Typisc
 - 413: zu großer Sink-Body
 - 500: interner Fehler
 
-Es sind im Code keine formalen Rate-Limits dokumentiert. Die Ingestion akzeptiert Schema-1-POSTs mit begrenzter Body-Größe. Request-Beispiele enthalten absichtlich keine echten Secrets.
+Allgemeine Anwendungsrouten haben kein einheitliches globales Rate-Limit;
+Telemetry-Routen verwenden die oben dokumentierten endpoint-spezifischen
+Limits. Request-Beispiele enthalten absichtlich keine echten Secrets.
 ## Trading
 
 `GET /trading` ist für eingeloggte Benutzer verfügbar. Die Seite ruft intern `GET /api/trading/routes?system=stanton&ship=railen` auf. Die Route nutzt ausschließlich die serverseitige UEX-API-2.0-Anbindung; `UEX_API_TOKEN` wird als Umgebungsvariable gesetzt und nie an den Browser zurückgegeben. UEX-Preisdaten werden fünf Minuten im Speicher gecacht.

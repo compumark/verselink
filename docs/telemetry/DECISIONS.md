@@ -384,3 +384,29 @@ the `vlt_` credential form and protects pairing-code values.
 This uses standard transport security and the repository's existing
 domain-separated HMAC/logger conventions while keeping future API behavior
 consistent with the privacy boundary.
+
+---
+
+## ADR-019 — C8 private presence history is bounded and owner-deletable
+
+Date: 2026-09-29
+Status: Accepted for C8
+
+### Decision
+
+C8 stores an allowlisted projection of successfully accepted C7 snapshots as
+private self-history. Rows expire 90 days after server receipt. The account
+owner may delete all of their history at any time. Existing entries remain
+available to the owner for their remaining retention period after a device is
+revoked, while that device is immediately prevented from adding new entries.
+Account deactivation blocks access and writes but does not reset the retention
+clock; hard account deletion removes all remaining history through the device
+foreign-key cascade.
+
+### Reason
+
+A concrete rolling limit and immediate user-controlled deletion avoid
+accidental indefinite retention. Retaining an already-recorded private trail
+after device revocation preserves the user's history while revocation only
+stops future collection from that device. Server receipt time provides a
+non-client-controlled retention clock.

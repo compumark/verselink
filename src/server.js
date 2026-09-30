@@ -11,6 +11,9 @@ import { clientKey, createRateLimiter, createRequestRateLimiter } from "./rate-l
 import { createTelemetryAuthInFlightLimiter } from "./telemetry-auth-inflight.js";
 import { createTelemetryHeartbeatHandler } from "./telemetry-heartbeat-handler.js";
 import { createTelemetryPresenceHandler, PRESENCE_REQUEST_LIMIT, PRESENCE_REQUEST_WINDOW_MS } from "./telemetry-presence.js";
+import { createTelemetryManagementHandlers, insertAcceptedPresenceHistory } from "./telemetry-management.js";
+import { createTelemetryHistoryCleanupRunner } from "./telemetry-history-cleanup.js";
+import { createOriginChecker } from "./request-origin.js";
 import { generateDeviceCredential, generatePairingCode, hashDeviceCredential, hashPairingCode, normalizeDeviceName, normalizePairingCode } from "./telemetry-pairing.js";
 import { authenticateTelemetryDevice } from "./telemetry-device-auth.js";
 import { normalizeScmdbSinkBaseUrl, scmdbSinkUrl } from "./scmdb-sink-config.js";
@@ -57,6 +60,7 @@ const cleanupTelemetryPairingCodes = async () => {
   `);
   logger.info("telemetry.pairing.cleanup", { removed: result.rowCount });
 };
+let telemetryHistoryCleanup;
 const scheduleInviteCleanup = () => {
   const now = new Date();
   const next = new Date(now);
@@ -65,6 +69,7 @@ const scheduleInviteCleanup = () => {
   setTimeout(async () => {
     try { await cleanupExpiredInvites(); } catch (error) { logger.warn("invites.cleanup.failed", { error: error.message }); }
     try { await cleanupTelemetryPairingCodes(); } catch (error) { logger.warn("telemetry.pairing.cleanup.failed", { reason: "database_unavailable" }); }
+    await telemetryHistoryCleanup();
     scheduleInviteCleanup();
   }, Math.max(1000, next.getTime() - now.getTime()));
 };
@@ -132,6 +137,7 @@ const pool = new Pool(databaseUrl ? { connectionString: databaseUrl, max: 10 } :
   password: process.env.PGPASSWORD,
   max: 10
 });
+telemetryHistoryCleanup = createTelemetryHistoryCleanupRunner({ db: pool, logger });
 
 const corsHeaders = {
   "access-control-allow-origin": "*",
@@ -209,6 +215,22 @@ CREATE TABLE IF NOT EXISTS telemetry_presence (
   CHECK (quantum_state IS NOT NULL OR quantum_destination IS NULL)
 );
 CREATE INDEX IF NOT EXISTS telemetry_presence_received_at_idx ON telemetry_presence(received_at);
+CREATE TABLE IF NOT EXISTS telemetry_presence_history (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  device_id uuid NOT NULL REFERENCES telemetry_devices(id) ON DELETE CASCADE,
+  revision bigint NOT NULL CHECK (revision BETWEEN 1 AND 9007199254740991),
+  location_raw text CHECK (location_raw IS NULL OR octet_length(location_raw) BETWEEN 1 AND 256),
+  location_observed_at text,
+  jurisdiction text CHECK (jurisdiction IS NULL OR octet_length(jurisdiction) <= 128),
+  ship_name text CHECK (ship_name IS NULL OR octet_length(ship_name) BETWEEN 1 AND 128),
+  received_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  UNIQUE (device_id,revision),
+  CHECK ((location_raw IS NULL) = (location_observed_at IS NULL))
+);
+CREATE INDEX IF NOT EXISTS telemetry_presence_history_device_page_idx
+  ON telemetry_presence_history(device_id,received_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS telemetry_presence_history_retention_idx
+  ON telemetry_presence_history(received_at,id);
 CREATE TABLE IF NOT EXISTS telemetry_pairing_codes (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   app_user_id uuid NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
@@ -643,12 +665,12 @@ const telemetryPairingClaimRateLimit = createRequestRateLimiter({ limit: 20, win
 const telemetryHeartbeatRateLimit = createRequestRateLimiter({ limit: 120, windowMs: 60_000 });
 const telemetryHeartbeatAuthInFlight = createTelemetryAuthInFlightLimiter();
 const telemetryPresenceRateLimit = createRequestRateLimiter({ limit: PRESENCE_REQUEST_LIMIT, windowMs: PRESENCE_REQUEST_WINDOW_MS });
+const telemetryManagementListRateLimit = createRequestRateLimiter({ limit: 60, windowMs: 60_000 });
+const telemetryManagementMutationRateLimit = createRequestRateLimiter({ limit: 30, windowMs: 60_000 });
+const telemetryHistoryRateLimit = createRequestRateLimiter({ limit: 60, windowMs: 60_000 });
 const tooManyRequests = (res, req, event = "auth.rate_limited") => { logger.warn(event, { reason: "rate_limited" }, { request_id: req?.requestId }); return json(res, 429, { error: "too many requests" }); };
-const sameVerseLinkOrigin = (req) => {
-  const origin = req.headers.origin;
-  if (!origin) return true;
-  try { return new URL(origin).origin === new URL(verseLinkAppUrl).origin; } catch { return false; }
-};
+const sameVerseLinkOrigin = createOriginChecker(verseLinkAppUrl);
+const sameVerseLinkOriginRequired = createOriginChecker(verseLinkAppUrl, { requireOrigin: true, exactOrigin: true });
 const publicTokenPattern = /^[A-Za-z0-9_-]{40,128}$/;
 const publicRate = new Map();
 const publicRateLimit = (req) => {
@@ -1663,7 +1685,21 @@ const handleTelemetryPresence = createTelemetryPresenceHandler({
   sendJson: json,
   sendError: telemetryError,
   sendRateLimited: telemetryRateLimited,
+  onAcceptedSnapshot: (db, accepted) => insertAcceptedPresenceHistory(db, accepted),
   logger
+});
+
+const telemetryManagement = createTelemetryManagementHandlers({
+  pool,
+  getAccount: getCurrentAppUser,
+  readJson: readTelemetryJson,
+  logger,
+  listRateLimit: telemetryManagementListRateLimit,
+  mutationRateLimit: telemetryManagementMutationRateLimit,
+  historyRateLimit: telemetryHistoryRateLimit,
+  sendJson: json,
+  sendError: telemetryError,
+  sendRateLimited: (res, route, rate) => telemetryError(res, 429, "rate_limited", rate.retryAfter)
 });
 
 const server = createServer(async (req, res) => {
@@ -3194,6 +3230,18 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/api/telemetry/pair") return handleTelemetryPairClaim(req, res);
     if (req.method === "POST" && url.pathname === "/api/telemetry/heartbeat") return handleTelemetryHeartbeat(req, res);
     if (req.method === "PUT" && url.pathname === "/api/telemetry/presence") return handleTelemetryPresence(req, res);
+    if (req.method === "GET" && url.pathname === "/api/me/telemetry/devices") return telemetryManagement.listDevices(req, res);
+    const telemetryDeviceManagementMatch = url.pathname.match(/^\/api\/me\/telemetry\/devices\/([^/]+)$/);
+    if ((req.method === "PATCH" || req.method === "DELETE") && telemetryDeviceManagementMatch) {
+      if (!sameVerseLinkOriginRequired(req)) return telemetryError(res, 401, "login required");
+      if (req.method === "PATCH") return telemetryManagement.renameDevice(req, res, telemetryDeviceManagementMatch[1]);
+      return telemetryManagement.revokeDevice(req, res, telemetryDeviceManagementMatch[1]);
+    }
+    if (req.method === "GET" && url.pathname === "/api/me/telemetry/history") return telemetryManagement.listHistory(req, res, url);
+    if (req.method === "DELETE" && url.pathname === "/api/me/telemetry/history") {
+      if (!sameVerseLinkOriginRequired(req)) return telemetryError(res, 401, "login required");
+      return telemetryManagement.deleteHistory(req, res);
+    }
 
     if (req.method === "GET" && url.pathname === "/api/me") {
       const current = await getCurrentAppUser(req);
@@ -3473,6 +3521,7 @@ ensureSchema().then(() => isTestRuntime ? undefined : syncReferenceData()).then(
     logger.system("server.started", { app_environment: appEnvironment, app_version: appVersion, app_commit: appCommit, effective_log_level: logger.getState().effective_level, log_directory: logDirectory, retention_days: logger.getState().retention_days, port });
     logger.cleanupRetention();
     if (!isTestRuntime) {
+      void telemetryHistoryCleanup();
       scheduleInviteCleanup();
       syncWikiImages();
       syncWikiMaterials();
