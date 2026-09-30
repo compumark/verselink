@@ -94,7 +94,7 @@ to a VerseLink account.
 | C5 | Windows Pairing Flow and Secure Credential Storage | COMPLETE |
 | C6 | Telemetry Heartbeat and Connection Health | COMPLETE |
 | C7 | Telemetry Presence Snapshot Ingest and Persistence | COMPLETE |
-| C8 | Telemetry Device Management in VerseLink | IN REVIEW |
+| C8 | Telemetry Device Management in VerseLink | COMPLETE |
 | C9 | Telemetry End-to-End Integration, Resilience and Security Tests | TODO |
 
 C6 validation note: The manual DEV smoke test was NOT RUN before merge and is expressly approved as post-merge validation after `ghcr.io/compumark/verselink:dev` is deployed to the DEV Portainer instance. This test is not covered by CI; production and `latest` are out of scope.
@@ -102,6 +102,8 @@ C6 validation note: The manual DEV smoke test was NOT RUN before merge and is ex
 C7 validation note: The user-confirmed post-merge DEV smoke test received and persisted a changed location snapshot for the paired device: jurisdiction `UEE`, location `RR_MIC_L1`, revision advanced from 1 to 7, and `shard`/`party_count` were absent from the database representation. Production and `latest` were not used.
 
 C8 privacy/retention decision: private presence history expires after a rolling 90 days from server receipt. The account owner may delete all history at any time. Existing history remains available to the owner after device revocation until expiry; revocation stops future writes. Account deactivation blocks access/writes while retention continues; hard account deletion cascades remaining history immediately.
+
+C8 validation note: GitHub CI run #36688002051 passed on implementation head `b2777a7d086ca5ce14c7ee6b0a48bd04aa4ebda5` (325 passed, 0 failed, 0 skipped; PostgreSQL C8 integration passed). CodeQL run #36688000104 succeeded. No manual DEV smoke test or deployment is claimed.
 
 After Milestone C is completed, Milestone D — Crew Presence is the next planned milestone. No Phase-D sharing or C9 work is included in C8.
 
