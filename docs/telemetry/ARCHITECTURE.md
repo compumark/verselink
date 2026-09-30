@@ -490,7 +490,7 @@ failed auth, revoked devices, inactive accounts, and database failures do not
 write history. No player handle, ship owner, Party identity, raw parser/log
 data, or peer sharing is introduced.
 
-### C8 device management and private history (implemented; review pending)
+### C8 device management and private history (complete)
 
 The MobiGlass profile lists and renames only the authenticated user's devices,
 derives online status from the existing 90-second heartbeat TTL, and offers
