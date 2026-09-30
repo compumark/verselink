@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -17,6 +18,8 @@ import (
 const (
 	wmDestroy         = 0x0002
 	wmClose           = 0x0010
+	wmQueryEndSession = 0x0011
+	wmEndSession      = 0x0016
 	wmCommand         = 0x0111
 	wmLButtonUp       = 0x0202
 	wmRButtonUp       = 0x0205
@@ -152,6 +155,9 @@ type windowsTray struct {
 	icon                    notifyIconData
 	store                   *statusStore
 	onExit                  func()
+	shuttingDown            bool
+	workerGroup             *sync.WaitGroup
+	autostart               autostartManager
 	removed                 bool
 	settingsStore           settings.Store
 	settingsValue           settings.Settings
@@ -405,9 +411,12 @@ func (t *windowsTray) showMenu() {
 }
 
 func (t *windowsTray) handleCommand(command uintptr) {
+	if t.shuttingDown && command != exitMenuID {
+		return
+	}
 	switch command {
 	case diagnosticsMenuID:
-		showNativeMessage("VerseLink Telemetry Diagnostics", diagnosticsText(t.store.Current()), mbOK|mbIconInfo)
+		showNativeMessage("VerseLink Telemetry Diagnostics", diagnosticsTextWithLifecycle(t.store.Current(), t.store.LifecycleEvents()), mbOK|mbIconInfo)
 	case liveMonitorMenuID:
 		t.openLiveMonitor()
 	case settingsMenuID:
@@ -416,6 +425,23 @@ func (t *windowsTray) handleCommand(command uintptr) {
 		if t.onExit != nil {
 			t.onExit()
 		}
+	}
+}
+
+func (t *windowsTray) beginShutdown() {
+	if t == nil || t.shuttingDown {
+		return
+	}
+	t.shuttingDown = true
+	t.cancelPairing()
+	if t.hwnd != 0 {
+		procEnableWindow.Call(t.hwnd, 0)
+	}
+	if t.settingsWindow != nil {
+		procEnableWindow.Call(t.settingsWindow.hwnd, 0)
+	}
+	if t.liveWindow != nil {
+		procEnableWindow.Call(t.liveWindow.hwnd, 0)
 	}
 }
 
@@ -476,6 +502,13 @@ func windowProcedure(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 			return 0
 		case wmCommand:
 			tray.handleCommand(wParam & 0xffff)
+			return 0
+		case wmQueryEndSession:
+			// Windows may still cancel the session end after this affirmative,
+			// non-mutating response. Actual shutdown begins only on WM_ENDSESSION.
+			return respondToSessionQuery()
+		case wmEndSession:
+			handleSessionEnd(wParam != 0, tray.onExit)
 			return 0
 		case wmClose:
 			// The shutdown controller posts WM_CLOSE only after the telemetry

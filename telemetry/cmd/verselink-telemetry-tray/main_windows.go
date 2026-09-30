@@ -4,35 +4,75 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
+	"sync"
 
 	"github.com/compumark/verselink-telemetry/internal/connection"
 	"github.com/compumark/verselink-telemetry/internal/settings"
 )
 
+var errAlreadyRunning = errors.New("VerseLink Telemetry is already running")
+
 func main() {
-	// A Win32 window and its message queue are thread-affine. Keep creation,
-	// dispatch, and destruction on this OS thread for the complete tray lifetime.
+	// The native tray message queue and the owned mutex must stay on this thread.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	if err := runWindowsTray(); err != nil {
+	autostart, err := parseLaunchArguments(os.Args[1:])
+	if err != nil {
+		showNativeError("VerseLink Telemetry could not start:\n\n" + err.Error())
+		return
+	}
+	if err := runWindowsTray(autostart); err != nil {
+		if errors.Is(err, errAlreadyRunning) {
+			emitLifecycleDebug("duplicate_start")
+			if !autostart {
+				showNativeMessage("VerseLink Telemetry", "VerseLink Telemetry is already running", mbOK|mbIconInfo)
+			}
+			return
+		}
 		showNativeError(fmt.Sprintf("VerseLink Telemetry could not start:\n\n%v", err))
 	}
 }
 
-func runWindowsTray() error {
+func runWindowsTray(autostart bool) error {
+	releaseMutex, alreadyRunning, err := acquireApplicationMutex()
+	if err != nil {
+		emitLifecycleDebug("single_instance_error")
+		return err
+	}
+	if alreadyRunning {
+		return errAlreadyRunning
+	}
+	mutexReleased := false
+	defer func() {
+		if !mutexReleased {
+			releaseMutex()
+		}
+	}()
+
+	currentExe, err := currentExecutablePath()
+	if err != nil {
+		emitLifecycleDebug("executable_path_error")
+		return err
+	}
 	store := &statusStore{presenceSnapshots: make(chan connection.PresenceSnapshot, 1)}
+	if autostart {
+		store.RecordLifecycle("start_autostart")
+	} else {
+		store.RecordLifecycle("start_manual")
+	}
 	settingsPath, pathErr := settings.LocalSettingsPath(os.Getenv("LOCALAPPDATA"))
 	settingsStore := settings.Store{Path: settingsPath}
 	gameLogSettings := settings.Defaults()
 	var settingsWarning string
 	if pathErr != nil {
 		settingsWarning = "Settings cannot be stored because LOCALAPPDATA is unavailable."
-	} else if loaded, err := settingsStore.Load(); err != nil {
-		settingsWarning = err.Error()
+	} else if loaded, loadErr := settingsStore.Load(); loadErr != nil {
+		settingsWarning = loadErr.Error()
 	} else {
 		gameLogSettings = loaded
 	}
@@ -42,52 +82,49 @@ func runWindowsTray() error {
 	}
 	tray.heartbeatUpdates = make(chan connection.HeartbeatConfig, 1)
 	tray.presenceUpdates = make(chan connection.PresenceConfig, 1)
+	tray.workerGroup = &sync.WaitGroup{}
+	tray.autostart = autostartManager{store: nativeRunValueStore{}, executable: currentExe}
 	tray.configureSettings(settingsStore, gameLogSettings, settingsWarning)
 	tray.configureConnection(os.Getenv("LOCALAPPDATA"), gameLogSettings)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	runtimeDone := make(chan struct{})
-	runtimeTaskDone := make(chan struct{})
-	heartbeatDone := make(chan struct{})
-	presenceDone := make(chan struct{})
-	shutdown := newShutdownController(cancel, runtimeDone)
-	exitPostDone := make(chan struct{})
-	exitRequested := false
-	tray.onExit = func() {
-		exitRequested = true
-		tray.cancelPairing()
-		shutdown.Request(func() {
-			tray.closeWhenPairingDone()
-			close(exitPostDone)
-		})
-	}
+	workersDone := make(chan struct{})
+	tray.workerGroup.Add(3)
+	shutdown := newShutdownController(cancel, workersDone, func() {
+		tray.beginShutdown()
+		go func() {
+			tray.workerGroup.Wait()
+			close(workersDone)
+		}()
+	}, store.RecordLifecycle, func() {
+		emitLifecycleDebug("shutdown_timeout")
+		// Process exit lets Windows release owned handles. Never release locks
+		// while a worker may still write presence or revision state.
+		os.Exit(2)
+	}, applicationShutdownTimeout)
+	tray.onExit = func() { shutdown.Request(tray.postClose) }
 	store.SetWake(tray.postStatusUpdate)
 	store.SetLiveWake(tray.postLiveStatusUpdate)
 
 	go func() {
-		defer close(runtimeTaskDone)
+		defer tray.workerGroup.Done()
 		_ = runTelemetryWithSettings(ctx, store, store, gameLogSettings, settingsWarning)
 	}()
 	go func() {
-		defer close(heartbeatDone)
+		defer tray.workerGroup.Done()
 		(connection.HeartbeatMonitor{Store: tray.credentialStore}).Run(ctx, tray.heartbeatConfig, tray.heartbeatUpdates, store)
 	}()
 	go func() {
-		defer close(presenceDone)
+		defer tray.workerGroup.Done()
 		(connection.PresenceMonitor{Store: tray.credentialStore}).Run(ctx, tray.presenceConfig, tray.presenceUpdates, store.presenceSnapshots)
 	}()
-	go func() { <-runtimeTaskDone; <-heartbeatDone; <-presenceDone; close(runtimeDone) }()
 
-	return runTrayLifecycle(trayLifecycle{
-		run:         tray.run,
-		stopPairing: tray.stopPairingAndDrain,
-		cancel:      cancel,
-		runtimeDone: runtimeDone,
-		waitExit: func() {
-			if exitRequested {
-				<-exitPostDone
-			}
-		},
-		cleanup: tray.cleanup,
+	err = runTrayLifecycle(trayLifecycle{
+		run: tray.run, stopPairing: tray.stopPairingAndDrain, shutdown: shutdown, cleanup: tray.cleanup,
 	})
+	if err == nil {
+		releaseMutex()
+		mutexReleased = true
+	}
+	return err
 }

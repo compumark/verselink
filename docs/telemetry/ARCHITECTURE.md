@@ -70,6 +70,48 @@ Game.log
 
 The UI and server must not parse raw Star Citizen log lines.
 
+## B4 Windows application lifecycle
+
+The Windows tray entry point acquires a named mutex in the `Local` namespace,
+including the current user's SID, before it loads settings or starts the tray,
+Credential Manager access, telemetry Runtime, Heartbeat, or Presence workers.
+This limits the client to one process per interactive user session. The
+per-device revision file lock remains independent and continues to protect
+revision updates for one paired device.
+
+Windows autostart is opt-in and stored only as the VerseLink-owned
+`VerseLinkTelemetry` value in the current user's `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run`
+key. It points at the absolute executable path and passes only the fixed
+`--autostart` switch. Registry state is authoritative. A value that no longer
+matches the running executable requires an explicit Repair or Disable action;
+startup does not silently replace it. No service, scheduled task, elevation,
+shell invocation, or settings-file mirror is used.
+
+Application shutdown is coordinated on the tray's UI thread without blocking
+its message loop. The same controller handles user Exit, message-loop failure,
+confirmed `WM_ENDSESSION`, and partial startup cleanup. `WM_QUERYENDSESSION`
+is answered promptly and has no shutdown side effect; an aborted session end
+therefore leaves the client active. On a confirmed end, new UI/pairing actions
+are disabled, pairing is canceled, then Runtime/Heartbeat/Presence are
+canceled through their shared context. The app waits for all four worker
+classes under one 8-second deadline. It drains a completed pairing result,
+destroys UI/tray resources, releases the per-device revision lock, and then
+releases the application mutex only after workers have ended.
+
+If the deadline expires, the client records a bounded in-memory event, emits
+`OutputDebugString`, and exits with code 2 immediately. The event is not
+persisted and cannot be reopened from the next process. It does not flush
+network requests or release locks while workers may still be active. Process
+termination lets Windows reclaim the mutex and file handles. Lifecycle events
+contain fixed event names only; the recent in-memory list is bounded. No
+credentials, pairing codes, request data, GEIDs, raw Game.log lines, or
+presence payloads enter lifecycle diagnostics.
+
+The existing 15-second locator retry, session restore, live tailer, and source
+reset behavior are reused unchanged. A Game.log path setting still takes
+effect after an application restart. B4 does not create a second runtime,
+queue stale presence data, or change Heartbeat/Presence protocol behavior.
+
 The parser receives one raw complete line from the tailer and returns at most
 one allowlisted `TelemetryEvent`. A timestamp is parsed only from a valid
 RFC3339/RFC3339Nano value at the start of the line; missing or malformed

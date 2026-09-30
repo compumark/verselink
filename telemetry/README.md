@@ -210,6 +210,76 @@ The effective channel is derived from the path shape
 directory names can be shown without storing a separate channel setting.
 Settings are local only and are never uploaded.
 
+## B4 Windows startup and application lifecycle
+
+The tray Settings window includes **Start with Windows**. It is off by
+default. Enabling it writes one VerseLink-owned value to the current Windows
+user's `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` key. The value
+contains the absolute path to this executable and the fixed `--autostart`
+argument. No administrator rights, service, scheduled task, or shell command
+is used. The setting is stored in the registry, not duplicated in
+`settings.json`.
+
+Settings reads the current registry value when opened and after changes. If the
+value points to a different or moved executable, it is shown as needing
+attention. **Repair** explicitly changes it to the currently running
+executable; **Disable** removes only VerseLink Telemetry's named Run value.
+Normal application startup never edits the registry. If the executable is
+moved or deleted, the old value can become stale and must be repaired or
+disabled in Settings from the new executable.
+
+The app creates a per-user, per-interactive-session Windows mutex before
+loading settings, accessing Credential Manager, creating the tray, or starting
+runtime/network workers. A second manual launch shows “VerseLink Telemetry is
+already running” and exits without starting workers. A duplicate started with
+`--autostart` exits silently. The existing per-device revision lock remains a
+separate protection for device revision state.
+
+Exit, an unexpected tray-loop exit, and a confirmed Windows session end use the
+same shutdown path. A session-end query is answered promptly without starting
+shutdown, so an aborted sign-out leaves the app running. Shutdown stops new UI
+and pairing actions, cancels pairing and the shared runtime context, then waits
+for Runtime, Heartbeat, Presence, and Pairing under one 8-second total budget.
+Only after workers finish are pairing results drained, windows/tray resources
+cleaned up, and locks released. There is no network flush. If workers exceed
+the budget, the process exits with code 2 without running cleanup under live
+workers; Windows releases process-owned handles and locks. The timeout is
+recorded only in the bounded in-memory lifecycle list and emitted through
+`OutputDebugString`; it is not persisted or available after process exit. No
+raw logs, credentials, codes, headers, GEIDs, or presence payloads are recorded.
+
+Missing Game.log discovery continues to retry every 15 seconds, and the
+existing restore, tailing, rotation, truncation, and source-reset behavior is
+unchanged. Changing the selected Game.log path still requires restarting
+VerseLink Telemetry. No B4 path starts a second runtime or queues old presence
+snapshots for a later send.
+
+### B4 Windows DEV smoke test
+
+Use a disposable development executable and account/device. The automated
+registry adapter test uses a unique temporary key under the current user's
+`Software` tree; it does not touch the real Run key. The manual checks below
+are separate and have not been performed by the automated suite:
+
+1. Open Settings, verify Start with Windows is off, enable it, save, reopen,
+   and confirm the actual registry state. Disable it and confirm it remains off
+   after the next sign-in.
+2. Enable it again, sign out and in, and confirm exactly one tray icon and one
+   set of workers. Manually launch the executable a second time and confirm
+   the informational duplicate-start message with no duplicate network updates.
+3. Exit normally and relaunch. Then terminate the process from Task Manager and
+   relaunch; the mutex must be released by Windows in both cases.
+4. Start VerseLink Telemetry before Star Citizen; verify it finds Game.log when
+   Star Citizen starts later. End the game, allow log rotation/truncation, and
+   restart it; verify monitoring and source-reset diagnostics remain coherent.
+5. Start pairing and choose Exit; verify pairing is canceled/drained and the
+   process ends. Test Windows sign-out twice: cancel after the query, then
+   confirm sign-out; only the confirmed end should stop the tray.
+6. Move the executable. Verify Settings reports the old startup entry, then
+   test explicit Repair and Disable. Confirm no other Run value changes.
+7. With the existing DEV pairing active, verify startup, shutdown, and relaunch
+   do not duplicate presence updates or disturb the device revision lock.
+
 ## C5 VerseLink pairing
 
 Open **Settings... → VerseLink connection** to pair this Windows client with a

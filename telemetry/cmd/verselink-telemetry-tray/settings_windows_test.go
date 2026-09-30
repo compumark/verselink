@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/compumark/verselink-telemetry/internal/connection"
 	"github.com/compumark/verselink-telemetry/internal/settings"
@@ -65,6 +66,8 @@ func TestRunTrayLifecycleUnexpectedExitDrainsPairingWithoutUIPost(t *testing.T) 
 		<-runtimeCtx.Done()
 		close(runtimeDone)
 	}()
+	workersDone := joinTestWorkers(runtimeDone, done)
+	shutdown := newShutdownController(cancelRuntime, workersDone, tray.beginShutdown, nil, nil, time.Second)
 	<-resultReady
 
 	unexpected := errors.New("unexpected tray message-loop failure")
@@ -72,8 +75,7 @@ func TestRunTrayLifecycleUnexpectedExitDrainsPairingWithoutUIPost(t *testing.T) 
 	err := runTrayLifecycle(trayLifecycle{
 		run:         func() error { return unexpected },
 		stopPairing: tray.stopPairingAndDrain,
-		cancel:      cancelRuntime,
-		runtimeDone: runtimeDone,
+		shutdown:    shutdown,
 		cleanup:     func() { cleaned = true },
 	})
 	if !errors.Is(err, unexpected) {
@@ -135,6 +137,8 @@ func TestRunTrayLifecyclePanicDrainsAndCleansUpBeforeRepanicking(t *testing.T) {
 		<-runtimeCtx.Done()
 		close(runtimeDone)
 	}()
+	workersDone := joinTestWorkers(runtimeDone, done)
+	shutdown := newShutdownController(cancelRuntime, workersDone, tray.beginShutdown, nil, nil, time.Second)
 	<-resultReady
 
 	originalPanic := &struct{ marker string }{marker: "tray-run-panic"}
@@ -145,8 +149,7 @@ func TestRunTrayLifecyclePanicDrainsAndCleansUpBeforeRepanicking(t *testing.T) {
 		_ = runTrayLifecycle(trayLifecycle{
 			run:         func() error { panic(originalPanic) },
 			stopPairing: tray.stopPairingAndDrain,
-			cancel:      cancelRuntime,
-			runtimeDone: runtimeDone,
+			shutdown:    shutdown,
 			cleanup:     func() { cleaned = true },
 		})
 	}()
@@ -177,6 +180,17 @@ func TestRunTrayLifecyclePanicDrainsAndCleansUpBeforeRepanicking(t *testing.T) {
 	default:
 		t.Fatal("panic did not cancel the application runtime")
 	}
+}
+
+func joinTestWorkers(channels ...<-chan struct{}) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		for _, channel := range channels {
+			<-channel
+		}
+		close(done)
+	}()
+	return done
 }
 
 func (s *memoryCredentialStore) Delete(target string) error { delete(s.values, target); return nil }

@@ -194,7 +194,7 @@ func TestShutdownControllerCancelsAndWaitsBeforeClosing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	runtimeDone := make(chan struct{})
 	closed := make(chan struct{})
-	controller := newShutdownController(cancel, runtimeDone)
+	controller := newShutdownController(cancel, runtimeDone, nil, nil, nil, time.Second)
 
 	controller.Request(func() { close(closed) })
 	select {
@@ -212,6 +212,66 @@ func TestShutdownControllerCancelsAndWaitsBeforeClosing(t *testing.T) {
 	case <-closed:
 	case <-time.After(time.Second):
 		t.Fatal("tray did not close after runtime stopped")
+	}
+	if err := controller.Wait(); err != nil {
+		t.Fatalf("shutdown wait error = %v", err)
+	}
+}
+
+func TestShutdownControllerUsesOneBudgetAndDoesNotReleaseOnTimeout(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	workersDone := make(chan struct{})
+	var events []string
+	cleaned := false
+	controller := newShutdownController(cancel, workersDone, func() {}, func(event string) { events = append(events, event) }, func() {}, 10*time.Millisecond)
+	err := runTrayLifecycle(trayLifecycle{run: func() error { return nil }, shutdown: controller, cleanup: func() { cleaned = true }})
+	if err != errApplicationShutdownTimeout {
+		t.Fatalf("shutdown error = %v, want timeout", err)
+	}
+	if cleaned {
+		t.Fatal("cleanup released resources while workers were still running")
+	}
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("timeout path did not cancel workers")
+	}
+	if len(events) != 2 || events[0] != "shutdown_started" || events[1] != "shutdown_timeout" {
+		t.Fatalf("lifecycle events = %v", events)
+	}
+}
+
+func TestShutdownControllerRequestIsIdempotent(t *testing.T) {
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	started, exits := 0, 0
+	controller := newShutdownController(cancel, done, func() { started++ }, nil, nil, time.Second)
+	controller.Request(func() { exits++ })
+	controller.Request(func() { exits += 100 })
+	close(done)
+	if err := controller.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if started != 1 || exits != 1 {
+		t.Fatalf("shutdown calls: started=%d exit=%d", started, exits)
+	}
+}
+
+func TestWindowsSessionEndOnlyStartsShutdownWhenConfirmed(t *testing.T) {
+	shutdowns := 0
+	callback := func() { shutdowns++ }
+	if result := respondToSessionQuery(); result != 1 || shutdowns != 0 {
+		t.Fatalf("query response=%d shutdowns=%d; query must be affirmative without starting shutdown", result, shutdowns)
+	}
+	handleSessionEnd(false, callback)
+	if shutdowns != 0 {
+		t.Fatal("aborted Windows session end started shutdown")
+	}
+	handleSessionEnd(true, callback)
+	if shutdowns != 1 {
+		t.Fatalf("confirmed session end shutdown calls=%d, want 1", shutdowns)
 	}
 }
 

@@ -48,25 +48,30 @@ const (
 
 	settingsMenuID = 1004
 
-	settingsAutoID         = 1101
-	settingsManualID       = 1102
-	settingsPathLabelID    = 1103
-	settingsPathID         = 1104
-	settingsBrowseID       = 1105
-	settingsModeValueID    = 1106
-	settingsSourceValueID  = 1107
-	settingsChannelValueID = 1108
-	settingsPathValueID    = 1109
-	settingsWarningID      = 1110
-	settingsCancelID       = 1111
-	settingsSaveID         = 1112
-	settingsServerURLID    = 1113
-	settingsDeviceNameID   = 1114
-	settingsPairCodeID     = 1115
-	settingsPairID         = 1116
-	settingsDisconnectID   = 1117
-	settingsConnectionID   = 1118
-	dialogCancelID         = 2
+	settingsAutoID             = 1101
+	settingsManualID           = 1102
+	settingsPathLabelID        = 1103
+	settingsPathID             = 1104
+	settingsBrowseID           = 1105
+	settingsModeValueID        = 1106
+	settingsSourceValueID      = 1107
+	settingsChannelValueID     = 1108
+	settingsPathValueID        = 1109
+	settingsWarningID          = 1110
+	settingsCancelID           = 1111
+	settingsSaveID             = 1112
+	settingsServerURLID        = 1113
+	settingsDeviceNameID       = 1114
+	settingsPairCodeID         = 1115
+	settingsPairID             = 1116
+	settingsDisconnectID       = 1117
+	settingsConnectionID       = 1118
+	settingsAutostartID        = 1120
+	settingsAutostartStatusID  = 1121
+	settingsAutostartRepairID  = 1122
+	settingsAutostartDisableID = 1123
+	dialogCancelID             = 2
+	bsAutoCheckBox             = 0x00000003
 )
 
 var (
@@ -138,6 +143,12 @@ type settingsWindow struct {
 	connectionStatus uintptr
 	pairButton       uintptr
 	disconnectButton uintptr
+	autostartCheck   uintptr
+	autostartStatus  uintptr
+	autostartRepair  uintptr
+	autostartDisable uintptr
+	autostart        autostartManager
+	autostartState   autostartState
 }
 
 func (w *settingsWindow) handle() uintptr {
@@ -163,7 +174,7 @@ func (t *windowsTray) openSettings() {
 		procSetForeground.Call(t.settingsWindow.hwnd)
 		return
 	}
-	window, err := createSettingsWindow(t.settingsStore, t.settingsValue, t.settingsWarning, t.store.Current)
+	window, err := createSettingsWindow(t.settingsStore, t.settingsValue, t.settingsWarning, t.store.Current, t.autostart)
 	if err != nil {
 		showNativeError(fmt.Sprintf("Could not open settings:\n\n%v", err))
 		return
@@ -172,7 +183,7 @@ func (t *windowsTray) openSettings() {
 	procSetFocus.Call(window.auto)
 }
 
-func createSettingsWindow(store settings.Store, value settings.Settings, warning string, status func() runtimehost.Status) (*settingsWindow, error) {
+func createSettingsWindow(store settings.Store, value settings.Settings, warning string, status func() runtimehost.Status, autostart autostartManager) (*settingsWindow, error) {
 	style := uintptr(wsCaption | wsSysMenu)
 	exStyle := uintptr(wsExDlgModal | wsExToolWindow)
 	dpi := uint32(96)
@@ -180,7 +191,7 @@ func createSettingsWindow(store settings.Store, value settings.Settings, warning
 		dpi = uint32(got)
 	}
 	scale := func(value int32) int32 { return int32((int64(value)*int64(dpi) + 48) / 96) }
-	client := settingsWindowRect{Right: scale(680), Bottom: scale(690)}
+	client := settingsWindowRect{Right: scale(680), Bottom: scale(730)}
 	procAdjustWindowRect.Call(uintptr(unsafe.Pointer(&client)), style, 0, exStyle)
 	width, height := client.Right-client.Left, client.Bottom-client.Top
 	instance, _, instanceErr := procGetModuleHandle.Call(0)
@@ -193,7 +204,7 @@ func createSettingsWindow(store settings.Store, value settings.Settings, warning
 	if hwnd == 0 {
 		return nil, windowsCallError("create settings window", createErr)
 	}
-	window := &settingsWindow{hwnd: hwnd, instance: instance, store: store, value: value, draft: newSettingsDraft(value), warningText: warning, status: status}
+	window := &settingsWindow{hwnd: hwnd, instance: instance, store: store, value: value, draft: newSettingsDraft(value), warningText: warning, status: status, autostart: autostart}
 	if activeTray != nil {
 		activeTray.settingsWindow = window
 	}
@@ -237,32 +248,37 @@ func createSettingsWindow(store settings.Store, value settings.Settings, warning
 		window.values[index] = add("STATIC", "", valueStyle, 154, labelY[index], 486, valueHeight, []uintptr{settingsModeValueID, settingsSourceValueID, settingsChannelValueID, settingsPathValueID}[index])
 	}
 	window.warning = add("STATIC", "", wsChild|wsVisible|ssLeft|ssEditControl|ssNoPrefix, 34, 365, 606, 43, settingsWarningID)
-	add("BUTTON", "VerseLink connection", wsChild|wsVisible|bsGroupBox, 16, 430, 648, 208, 0)
-	add("STATIC", "Server URL (VERSELINK_APP_URL or explicit instance URL):", wsChild|wsVisible|ssLeft, 34, 452, 606, 20, 0)
+	window.autostartCheck = add("BUTTON", "Start with Windows", wsChild|wsVisible|wsTabStop|bsAutoCheckBox, 32, 432, 220, 22, settingsAutostartID)
+	window.autostartStatus = add("STATIC", "", wsChild|wsVisible|ssLeftNoWrap, 265, 434, 210, 20, settingsAutostartStatusID)
+	window.autostartRepair = add("BUTTON", "Repair", wsChild|wsVisible|wsTabStop, 481, 428, 74, 28, settingsAutostartRepairID)
+	window.autostartDisable = add("BUTTON", "Disable", wsChild|wsVisible|wsTabStop, 562, 428, 78, 28, settingsAutostartDisableID)
+	add("BUTTON", "VerseLink connection", wsChild|wsVisible|bsGroupBox, 16, 463, 648, 208, 0)
+	add("STATIC", "Server URL (VERSELINK_APP_URL or explicit instance URL):", wsChild|wsVisible|ssLeft, 34, 485, 606, 20, 0)
 	initialServerURL := value.Connection.ServerURL
 	if environmentURL := strings.TrimSpace(os.Getenv("VERSELINK_APP_URL")); environmentURL != "" && (activeTray == nil || activeTray.settingsValue.Connection.DeviceID == "") {
 		initialServerURL = environmentURL
 	}
-	window.serverURL = add("EDIT", initialServerURL, wsChild|wsVisible|wsTabStop|wsBorder|esAutoHScroll, 34, 474, 606, 25, settingsServerURLID)
-	add("STATIC", "Device name (optional):", wsChild|wsVisible|ssLeft, 34, 507, 180, 20, 0)
-	window.deviceName = add("EDIT", value.Connection.DeviceName, wsChild|wsVisible|wsTabStop|wsBorder|esAutoHScroll, 210, 504, 210, 25, settingsDeviceNameID)
-	add("STATIC", "Pairing code:", wsChild|wsVisible|ssLeft, 34, 540, 100, 20, 0)
-	window.pairCode = add("EDIT", "", wsChild|wsVisible|wsTabStop|wsBorder|esAutoHScroll, 140, 537, 280, 25, settingsPairCodeID)
-	window.connectionStatus = add("STATIC", "Not connected. Pairing requires a configured HTTPS VerseLink URL.", wsChild|wsVisible|ssLeft|ssEditControl|ssNoPrefix, 34, 568, 606, 30, settingsConnectionID)
-	window.pairButton = add("BUTTON", "Connect", wsChild|wsVisible|wsTabStop, 430, 535, 96, 28, settingsPairID)
-	window.disconnectButton = add("BUTTON", "Disconnect locally", wsChild|wsVisible|wsTabStop, 530, 535, 110, 28, settingsDisconnectID)
-	window.errorText = add("STATIC", "", wsChild|wsVisible|ssLeftNoWrap, 34, 612, 606, 18, 0)
+	window.serverURL = add("EDIT", initialServerURL, wsChild|wsVisible|wsTabStop|wsBorder|esAutoHScroll, 34, 507, 606, 25, settingsServerURLID)
+	add("STATIC", "Device name (optional):", wsChild|wsVisible|ssLeft, 34, 540, 180, 20, 0)
+	window.deviceName = add("EDIT", value.Connection.DeviceName, wsChild|wsVisible|wsTabStop|wsBorder|esAutoHScroll, 210, 537, 210, 25, settingsDeviceNameID)
+	add("STATIC", "Pairing code:", wsChild|wsVisible|ssLeft, 34, 573, 100, 20, 0)
+	window.pairCode = add("EDIT", "", wsChild|wsVisible|wsTabStop|wsBorder|esAutoHScroll, 140, 570, 280, 25, settingsPairCodeID)
+	window.connectionStatus = add("STATIC", "Not connected. Pairing requires a configured HTTPS VerseLink URL.", wsChild|wsVisible|ssLeft|ssEditControl|ssNoPrefix, 34, 601, 606, 30, settingsConnectionID)
+	window.pairButton = add("BUTTON", "Connect", wsChild|wsVisible|wsTabStop, 430, 568, 96, 28, settingsPairID)
+	window.disconnectButton = add("BUTTON", "Disconnect locally", wsChild|wsVisible|wsTabStop, 530, 568, 110, 28, settingsDisconnectID)
+	window.errorText = add("STATIC", "", wsChild|wsVisible|ssLeftNoWrap, 34, 645, 606, 18, 0)
 	window.autoCheck(value.GameLog.Mode != settings.ModeManual)
 	window.manualCheck(value.GameLog.Mode == settings.ModeManual)
 	window.setModeEnabled(value.GameLog.Mode == settings.ModeManual)
-	window.cancelButton = add("BUTTON", "Cancel", wsChild|wsVisible|wsTabStop, 452, 646, 88, 28, settingsCancelID)
-	window.saveButton = add("BUTTON", "Save", wsChild|wsVisible|wsTabStop|bsDefaultButton, 552, 646, 88, 28, settingsSaveID)
+	window.cancelButton = add("BUTTON", "Cancel", wsChild|wsVisible|wsTabStop, 452, 679, 88, 28, settingsCancelID)
+	window.saveButton = add("BUTTON", "Save", wsChild|wsVisible|wsTabStop|bsDefaultButton, 552, 679, 88, 28, settingsSaveID)
 	if controlCreationErr != nil {
 		procDestroyWindow.Call(hwnd)
 		return nil, controlCreationErr
 	}
 	window.refreshSummary()
 	window.refreshConnection()
+	window.refreshAutostart()
 	procShowWindow.Call(hwnd, swShow)
 	return window, nil
 }
@@ -338,6 +354,9 @@ func (t *windowsTray) handleSettingsMessage(hwnd uintptr, msg uint32, wParam, lP
 		t.settingsWindow = nil
 		return true
 	case wmCommand:
+		if t.shuttingDown {
+			return true
+		}
 		if wParam>>16 != bnClicked {
 			return true
 		}
@@ -358,6 +377,10 @@ func (t *windowsTray) handleSettingsMessage(hwnd uintptr, msg uint32, wParam, lP
 			window.beginPairing()
 		case settingsDisconnectID:
 			window.disconnectLocally()
+		case settingsAutostartRepairID:
+			window.repairAutostart()
+		case settingsAutostartDisableID:
+			window.disableAutostart()
 		case settingsCancelID, dialogCancelID:
 			window.discardChanges()
 			procShowWindow.Call(window.hwnd, swHide)
@@ -468,12 +491,126 @@ func (w *settingsWindow) save() {
 		activeTray.settingsWarning = ""
 	}
 	w.refreshSummary()
+	if err := w.applyAutostart(); err != nil {
+		w.setError(err.Error())
+		return
+	}
 	w.setError("")
 	if changed {
 		showNativeMessage("Settings saved", "Restart VerseLink Telemetry to apply Game.log changes. Connection settings take effect immediately.", mbOK|mbIconInfo)
 	} else {
 		showNativeMessage("Settings saved", "Your settings are saved.", mbOK|mbIconInfo)
 	}
+}
+
+func (w *settingsWindow) refreshAutostart() {
+	state, err := w.autostart.state()
+	if err != nil {
+		w.autostartState = ""
+		w.setText(w.autostartStatus, "Status unavailable; registry access failed.")
+		procSendMessage.Call(w.autostartCheck, bmSetCheck, bstUnchecked, 0)
+		procEnableWindow.Call(w.autostartCheck, 0)
+		procShowWindow.Call(w.autostartRepair, swHide)
+		procShowWindow.Call(w.autostartDisable, swHide)
+		if activeTray != nil {
+			activeTray.store.RecordLifecycle("autostart_read_error")
+		}
+		return
+	}
+	w.autostartState = state
+	procEnableWindow.Call(w.autostartCheck, 1)
+	procSendMessage.Call(w.autostartCheck, bmSetCheck, bstUnchecked, 0)
+	procShowWindow.Call(w.autostartRepair, swHide)
+	procShowWindow.Call(w.autostartDisable, swHide)
+	switch state {
+	case autostartEnabled:
+		procSendMessage.Call(w.autostartCheck, bmSetCheck, bstChecked, 0)
+		w.setText(w.autostartStatus, "Enabled for this executable.")
+	case autostartStale:
+		w.setText(w.autostartStatus, "Existing entry needs attention.")
+		procShowWindow.Call(w.autostartRepair, swShow)
+		procShowWindow.Call(w.autostartDisable, swShow)
+	default:
+		w.setText(w.autostartStatus, "Disabled.")
+	}
+}
+
+func (w *settingsWindow) applyAutostart() error {
+	if w.autostartCheck == 0 {
+		return nil
+	}
+	current, err := w.autostart.state()
+	if err != nil {
+		if activeTray != nil {
+			activeTray.store.RecordLifecycle("autostart_error")
+		}
+		w.refreshAutostart()
+		return fmt.Errorf("Game.log settings were saved, but Start with Windows status could not be read")
+	}
+	desired, _, _ := procSendMessage.Call(w.autostartCheck, bmGetCheck, 0, 0)
+	if current == autostartStale && desired != bstChecked {
+		return nil // Stale values require the explicit Disable button.
+	}
+	if (current == autostartEnabled) == (desired == bstChecked) {
+		return nil
+	}
+	if desired == bstChecked {
+		err = w.autostart.enable()
+	} else {
+		err = w.autostart.disable()
+	}
+	if err != nil {
+		if activeTray != nil {
+			activeTray.store.RecordLifecycle("autostart_error")
+		}
+		if errors.Is(err, errAutostartConflict) {
+			w.refreshAutostart()
+			return fmt.Errorf("Game.log settings were saved. An existing Start with Windows entry points elsewhere; choose Repair to use this executable")
+		}
+		w.refreshAutostart()
+		return fmt.Errorf("Game.log settings were saved, but Start with Windows could not be changed")
+	}
+	if activeTray != nil {
+		if desired == bstChecked {
+			activeTray.store.RecordLifecycle("autostart_enabled")
+		} else {
+			activeTray.store.RecordLifecycle("autostart_disabled")
+		}
+	}
+	w.refreshAutostart()
+	return nil
+}
+
+func (w *settingsWindow) repairAutostart() {
+	if err := w.autostart.repair(); err != nil {
+		if activeTray != nil {
+			activeTray.store.RecordLifecycle("autostart_error")
+		}
+		w.setError("Start with Windows could not be repaired. Check the current user's registry permissions.")
+		w.refreshAutostart()
+		return
+	}
+	if activeTray != nil {
+		activeTray.store.RecordLifecycle("autostart_repaired")
+	}
+	w.refreshAutostart()
+	w.setError("Start with Windows now points to this executable.")
+}
+
+func (w *settingsWindow) disableAutostart() {
+	if err := w.autostart.disable(); err != nil {
+		if activeTray != nil {
+			activeTray.store.RecordLifecycle("autostart_error")
+		}
+		w.setError("Start with Windows could not be disabled. Check the current user's registry permissions.")
+		w.refreshAutostart()
+		return
+	}
+	if activeTray != nil {
+		activeTray.store.RecordLifecycle("autostart_disabled")
+	}
+	w.refreshAutostart()
+	w.setError("Start with Windows is disabled.")
 }
 
 func (w *settingsWindow) discardChanges() {
@@ -500,7 +637,7 @@ type pairingResult struct {
 }
 
 func (w *settingsWindow) beginPairing() {
-	if activeTray == nil || activeTray.connectionState == connection.Pairing {
+	if activeTray == nil || activeTray.shuttingDown || activeTray.connectionState == connection.Pairing {
 		return
 	}
 	if activeTray.settingsValue.Connection.DeviceID != "" {
@@ -547,12 +684,18 @@ func (w *settingsWindow) beginPairing() {
 	activeTray.pairingCancel = cancel
 	activeTray.pairingDone = make(chan struct{})
 	activeTray.pairingActive = true
+	if activeTray.workerGroup != nil {
+		activeTray.workerGroup.Add(1)
+	}
 	w.refreshConnection()
 	w.setError("")
 	procEnableWindow.Call(w.pairCode, 0)
 	procEnableWindow.Call(w.saveButton, 0)
 	tray := activeTray
 	go func() {
+		if tray.workerGroup != nil {
+			defer tray.workerGroup.Done()
+		}
 		defer close(tray.pairingDone)
 		response, pairErr := (connection.Client{BaseURL: baseURL, AllowHTTP: allowHTTP}).Claim(ctx, code, name)
 		tray.pairingResults <- pairingResult{response: response, err: pairErr, baseURL: baseURL}
