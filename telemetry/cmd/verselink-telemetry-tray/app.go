@@ -25,6 +25,25 @@ type statusStore struct {
 	hasLiveLast       bool
 	health            connection.HealthStatus
 	presenceSnapshots chan connection.PresenceSnapshot
+	lifecycle         []string
+}
+
+const maxLifecycleEvents = 12
+
+func (s *statusStore) RecordLifecycle(event string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.lifecycle) == maxLifecycleEvents {
+		copy(s.lifecycle, s.lifecycle[1:])
+		s.lifecycle = s.lifecycle[:len(s.lifecycle)-1]
+	}
+	s.lifecycle = append(s.lifecycle, event)
+}
+
+func (s *statusStore) LifecycleEvents() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]string(nil), s.lifecycle...)
 }
 
 func (s *statusStore) OnConnectionHealth(status connection.HealthStatus) {
@@ -156,14 +175,46 @@ func diagnosticsText(status runtimehost.Status) string {
 	return fmt.Sprintf("%s\n\n%s", header, diagnostics.FormatSession(runtimehost.SafeDiagnostics(status.Diagnostics)))
 }
 
-type shutdownController struct {
-	once   sync.Once
-	cancel context.CancelFunc
-	done   <-chan struct{}
+func diagnosticsTextWithLifecycle(status runtimehost.Status, events []string) string {
+	text := diagnosticsText(status)
+	if len(events) == 0 {
+		return text
+	}
+	return text + "\n\nRecent local lifecycle events:\n" + strings.Join(events, "\n")
 }
 
-func newShutdownController(cancel context.CancelFunc, done <-chan struct{}) *shutdownController {
-	return &shutdownController{cancel: cancel, done: done}
+func respondToSessionQuery() uintptr { return 1 }
+
+func handleSessionEnd(confirmed bool, beginShutdown func()) {
+	if confirmed && beginShutdown != nil {
+		beginShutdown()
+	}
+}
+
+type shutdownController struct {
+	once      sync.Once
+	cancel    context.CancelFunc
+	begin     func()
+	done      <-chan struct{}
+	finished  chan struct{}
+	timedOut  chan struct{}
+	timeout   time.Duration
+	onTimeout func()
+	record    func(string)
+}
+
+const applicationShutdownTimeout = 8 * time.Second
+
+var errApplicationShutdownTimeout = fmt.Errorf("application shutdown exceeded %s", applicationShutdownTimeout)
+
+func newShutdownController(cancel context.CancelFunc, done <-chan struct{}, begin func(), record func(string), onTimeout func(), timeout time.Duration) *shutdownController {
+	if timeout <= 0 {
+		timeout = applicationShutdownTimeout
+	}
+	return &shutdownController{
+		cancel: cancel, begin: begin, done: done, record: record, onTimeout: onTimeout, timeout: timeout,
+		finished: make(chan struct{}), timedOut: make(chan struct{}),
+	}
 }
 
 // trayLifecycle is the shared post-message-loop shutdown sequence. The
@@ -172,9 +223,7 @@ func newShutdownController(cancel context.CancelFunc, done <-chan struct{}) *shu
 type trayLifecycle struct {
 	run         func() error
 	stopPairing func()
-	cancel      context.CancelFunc
-	runtimeDone <-chan struct{}
-	waitExit    func()
+	shutdown    *shutdownController
 	cleanup     func()
 }
 
@@ -188,12 +237,13 @@ func runTrayLifecycle(lifecycle trayLifecycle) error {
 			cleanupPanic, cleanupPanicked = panicValue, true
 		}
 	}
-	runCleanup(lifecycle.stopPairing)
-	runCleanup(lifecycle.cancel)
-	if lifecycle.runtimeDone != nil {
-		runCleanup(func() { <-lifecycle.runtimeDone })
+	if lifecycle.shutdown != nil {
+		lifecycle.shutdown.Request(nil)
+		if waitErr := lifecycle.shutdown.Wait(); waitErr != nil {
+			return waitErr
+		}
 	}
-	runCleanup(lifecycle.waitExit)
+	runCleanup(lifecycle.stopPairing)
 	runCleanup(lifecycle.cleanup)
 	if runPanicked {
 		panic(runPanic)
@@ -238,14 +288,62 @@ func callTrayCleanup(cleanup func()) (panicValue any, panicked bool) {
 
 func (s *shutdownController) Request(after func()) {
 	s.once.Do(func() {
+		timer := time.NewTimer(s.timeout)
+		if s.record != nil {
+			s.record("shutdown_started")
+		}
+		if s.begin != nil {
+			s.begin()
+		}
 		s.cancel()
 		go func() {
-			<-s.done
-			if after != nil {
-				after()
+			defer timer.Stop()
+			select {
+			case <-s.done:
+				if s.record != nil {
+					s.record("shutdown_completed")
+				}
+				if after != nil {
+					after()
+				}
+				close(s.finished)
+			case <-timer.C:
+				select {
+				case <-s.done:
+					if s.record != nil {
+						s.record("shutdown_completed")
+					}
+					if after != nil {
+						after()
+					}
+					close(s.finished)
+					return
+				default:
+				}
+				if s.record != nil {
+					s.record("shutdown_timeout")
+				}
+				close(s.timedOut)
+				if s.onTimeout != nil {
+					s.onTimeout()
+				}
 			}
 		}()
 	})
+}
+
+func (s *shutdownController) Wait() error {
+	select {
+	case <-s.finished:
+		return nil
+	default:
+	}
+	select {
+	case <-s.finished:
+		return nil
+	case <-s.timedOut:
+		return errApplicationShutdownTimeout
+	}
 }
 
 func runTelemetry(ctx context.Context, observer runtimehost.Observer) error {
