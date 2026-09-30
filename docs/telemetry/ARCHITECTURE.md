@@ -342,8 +342,9 @@ transactionally advances the per-device revision high-water mark and upserts
 one private current-presence row. It validates but discards `shard` and
 `party_count`; those fields are neither stored nor used for duplicate
 comparison. The Windows client maps reducer state through a DTO allowlist and
-uses C5's durable per-device revision lock. No history/event stream is added.
-Device management remains C8 scope.
+uses C5's durable per-device revision lock. C8 adds a private, allowlisted
+`telemetry_presence_history` projection only after a C7 snapshot is accepted;
+this is not a raw parser-event stream.
 
 ### C2 persistence foundation (implemented)
 
@@ -483,8 +484,34 @@ deletes the account's presence rows transactionally without revoking its
 devices; reactivation permits the same non-revoked credentials to resume.
 The Windows tray maps live reducer snapshots through a dedicated allowlist,
 uses C5's locked durable revision file, and retries an unchanged request with
-the same revision/body. No history, read endpoint, player handle, ship owner,
-Party identity, raw parser/log data, or peer sharing is introduced.
+the same revision/body. C8 transactionally adds an allowlisted history row
+only for an accepted C7 revision; equal retries, stale/conflicting requests,
+failed auth, revoked devices, inactive accounts, and database failures do not
+write history. No player handle, ship owner, Party identity, raw parser/log
+data, or peer sharing is introduced.
+
+### C8 device management and private history (complete)
+
+The MobiGlass profile lists and renames only the authenticated user's devices,
+derives online status from the existing 90-second heartbeat TTL, and offers
+deliberate per-device revocation. Revocation locks the owned device and
+transactionally marks it revoked while deleting its current presence row; the
+history is retained for the remainder of its 90-day retention. C4 auth checks
+reject later heartbeat/presence requests, while other devices remain
+unchanged.
+
+History contains only device/revision identity, location raw identifier,
+jurisdiction, ship name, event observed time, and server received time. It is
+owner-only, keyset-paginated in deterministic receipt-time/ID order, and kept
+for 90 days from server receipt. The owner may delete all history at any time
+without changing devices or current presence. The timeline labels receipt
+time when no observation time exists, and shows unknown location/ship instead
+of inferring values. Expired rows are hidden immediately; physical cleanup
+runs in bounded batches in the background at startup and daily. Account
+deactivation blocks access and new writes while rows age normally;
+reactivation exposes only unexpired rows. Hard account deletion cascades
+remaining history immediately. No parser-event stream or peer sharing is
+added.
 
 ## Privacy boundary
 

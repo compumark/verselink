@@ -201,6 +201,8 @@ credential hash, or gameplay field.
 | `GET /api/me/telemetry/devices` | Active `bp_session` only | None | `200 {"schema":1,"devices":[<device summary>,…]}` | 401, 429, 503 | 60 requests per user per minute | Never returns credential or hash. Only own devices. `online` derives from heartbeat TTL. |
 | `PATCH /api/me/telemetry/devices/:id` | Active `bp_session` only | `{"schema":1,"name":"Gaming PC"}` | `200 {"schema":1,"device":<device summary>}` | 400 `invalid_payload`/`unsupported_schema`, 401, 404 `not_found` (not found or not owned), 429, 503 | 30 mutations per user per minute | Name only; no credential/hash. |
 | `DELETE /api/me/telemetry/devices/:id` | Active `bp_session` only | None | `204` after marking revoked; repeat revoke is idempotent `204` | 401, 404 (not found or not owned), 429, 503 | 30 mutations per user per minute | Revokes only the addressed device; no secret is accepted or returned. |
+| `GET /api/me/telemetry/history?limit=50&cursor=…` | Active `bp_session` only | None | `200 {"schema":1,"entries":[…],"next_cursor":null}` | 400 `invalid_payload`, 401, 429, 503 | 60 requests per user per minute | Owner-only; at most 100 entries per page; no credential/hash or excluded DTO fields. |
+| `DELETE /api/me/telemetry/history` | Active `bp_session` only | None | `200 {"schema":1,"deleted":N}` | 401, 429, 503 | 30 mutations per user per minute | Deletes only the caller's history; does not revoke devices or delete current presence. |
 
 Device names are optional at claim and default to `Telemetry device`; if
 provided or later renamed they are trimmed using Unicode White_Space rules,
@@ -212,6 +214,19 @@ timestamps, revoked state, and derived online status. They do not expose
 `app_user_id`, credential material, client filesystem data, or gameplay data.
 An ID belonging to another account is indistinguishable from an unknown ID
 (`404`) to prevent device-existence disclosure.
+
+History responses are private to the authenticated account. Each entry
+contains only its history UUID, source device UUID/current device name,
+`location_raw`, `jurisdiction`, `ship_name`, `location_observed_at`, and
+server `received_at`. Pages use a deterministic descending `(received_at,id)`
+cursor and a default size of 50 (maximum 100). `location_observed_at` is the
+event time when present; otherwise the UI must label `received_at` as server
+receipt time. Missing location or ship remains unknown. No location resolver
+is implied by this contract.
+
+The account owner may delete all of their history at any time. This operation
+does not change devices, credentials, or the current `telemetry_presence`
+snapshot. Future accepted snapshots may begin a new history after deletion.
 
 ### 4.2 Pairing claim
 
@@ -489,15 +504,17 @@ claim limiter bounds guesses; none returns ownership information.
 | `telemetry_devices` | C2; server-generated UUID primary key; FK `app_user_id` to `app_users`; unique credential HMAC | Device name; credential HMAC only; `created_at`; `last_seen_at` server receipt time; `revoked_at`; `last_presence_revision` (BIGINT, default 0); only explicitly approved optional metadata. | Explicit revocation is retained as a tombstone while the account exists. A temporary non-active account status does not revoke/delete this device or its HMAC; auth is suspended until reactivation. Hard account deletion removes the row/lookup material and dependent data. Multiple device rows per account are supported; no credential is shared between devices. |
 | `telemetry_pairing_codes` | C2; server-generated UUID primary key; FK owner to `app_users`; unique code HMAC | HMAC only; `created_at`, `expires_at`, `consumed_at`, and `invalidated_at`. | C3 atomically consumes once. A new code invalidates the prior unconsumed/non-invalidated code for that account. Expired, consumed, or invalidated rows are cleaned 30 days after expiry/transition; they can never become valid again. Account deactivation invalidates open codes; deletion cascades/removes them. |
 | `telemetry_presence` | C7; one current row keyed by `device_id` FK to `telemetry_devices` | Exact schema-1 allowlist, latest `revision`, and server `received_at`; owner is derived through device, not duplicated. | Upsert only when revision advances. No historical snapshots/event stream. Delete rows transactionally when the owning account becomes non-active and on explicit device revocation; cascade on hard account/device deletion. Never retain raw logs. |
-| `telemetry_events` | Not part of Phase-C MVP; no C1/C2-C8 table or ingestion route | None. | Historical/event ingestion may be reconsidered in a future phase only with a concrete approved requirement and privacy/retention design. |
+| `telemetry_presence_history` | C8; UUID primary key; `device_id` FK to `telemetry_devices` with `ON DELETE CASCADE`; unique `(device_id,revision)` | Only accepted C7 snapshot projection needed for self-history: `location_raw`, `location_observed_at`, `jurisdiction`, `ship_name`, per-device `revision`, and server `received_at`. No duplicated account ID. | Rolling 90-day retention measured from server `received_at`; expired rows are hidden immediately and physical cleanup runs in bounded batches in the background at startup and daily. Owner may immediately delete all own history. Explicit device revocation retains existing history until its 90-day expiry, but prevents new history writes. Account deactivation blocks access and new writes while existing rows age normally; reactivation restores access only to unexpired rows. Hard account deletion cascades all history immediately. Never retain raw logs or event maps. |
+| `telemetry_events` | Not part of C8 or the Phase-C MVP | None. | No raw or normalized parser-event stream is stored. The bounded C8 table is only an allowlisted projection of successfully accepted C7 snapshots. |
 
 Schema initialization follows the repository's repeat-safe startup-schema
 convention; C2 must not add a repository-wide migration framework. Required
 uniqueness: device credential HMAC; pairing code HMAC; at most one
 unconsumed/non-invalidated pairing-code record per account; one presence row
-per device.
-Indexes must support credential lookup, account device listing, pairing
-expiry/cleanup, and presence-by-device. Do not persist client IP addresses.
+per device; one history row per accepted device revision. Indexes must support
+credential lookup, account device listing, pairing expiry/cleanup,
+presence-by-device, stable history pagination, and 90-day cleanup. Do not
+persist client IP addresses.
 
 Any account status other than `active` immediately blocks device auth and code
 creation, invalidates outstanding pairing codes, and transactionally deletes
@@ -505,9 +522,11 @@ all of that account's `telemetry_presence` rows. Blocking does not set device
 `revoked_at`; device rows, credential HMACs, and each device's
 `last_presence_revision` remain. Reactivation permits
 non-revoked devices to authenticate again. Hard account deletion cascades
-device, pairing, and presence records in the same transaction; no credential
-lookup material survives independently. Explicit device revocation remains
-permanent regardless of later account reactivation.
+device, pairing, presence, and history records in the same transaction; no
+credential lookup material or history survives independently. History rows
+remain private but inaccessible while the account is non-active and continue
+aging against the same 90-day server-receipt retention. Explicit device
+revocation remains permanent regardless of later account reactivation.
 
 ## 10. Revocation and disconnect
 
@@ -515,7 +534,11 @@ Remote revocation is a server-side transition setting `revoked_at`; the server
 checks it on every authenticated request. Once committed, all subsequent
 heartbeat/presence requests fail with `401 device_revoked`. A revoked
 credential cannot reactivate itself. Revoking one device leaves other devices
-and browser sessions unchanged. C5/C6 must surface a clear **Device revoked**
+and browser sessions unchanged. The revoke transaction deletes that device's
+current `telemetry_presence` row but retains already recorded
+`telemetry_presence_history` for the remainder of the rolling 90-day period;
+the retained rows remain visible to their account owner. A revoked device
+cannot write more history. C5/C6 must surface a clear **Device revoked**
 connection state and stop retrying authenticated requests until the user pairs
 again.
 
@@ -595,12 +618,14 @@ path-prefixed deployments to collide.
   structured snapshot exists, locally reconstructed Party count semantics,
   16 KiB cap, atomic revision ordering/idempotency, latest presence upsert,
   timestamps/privacy checks.
-- **C8 (#94):** own-device list/rename/revoke UI and APIs; no credential
-  material in management responses.
+- **C8 (#94):** own-device list/rename/revoke and private owner-only
+  allowlisted presence history, with 90-day rolling retention and owner-triggered
+  deletion; no credential material in management responses.
 - **C9 (#95):** contract-level end-to-end and failure/privacy verification.
 
 No endpoint, table, Windows networking code, or environment variable is
 implemented by C1. The old `/api/telemetry/events`,
 `/api/telemetry/status`, and `telemetry_events` proposal is superseded for
-Phase C by the routes and current-snapshot model above; event history requires
-a separately approved future-phase design.
+Phase C by the routes and current-snapshot model above. C8's approved private
+presence history is a bounded projection of accepted snapshots, not parser
+event history; raw or normalized event-stream storage remains out of scope.
