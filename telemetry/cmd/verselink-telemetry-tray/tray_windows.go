@@ -5,12 +5,15 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
 	"unsafe"
 
 	"github.com/compumark/verselink-telemetry/internal/connection"
+	"github.com/compumark/verselink-telemetry/internal/diagnosticsexport"
 	"github.com/compumark/verselink-telemetry/internal/revision"
 	"github.com/compumark/verselink-telemetry/internal/settings"
 )
@@ -54,12 +57,16 @@ const (
 	mbOK        = 0x00000000
 	mbIconInfo  = 0x00000040
 	mbIconError = 0x00000010
+	mbYesNo     = 0x00000004
+	mbIconWarn  = 0x00000030
+	idYes       = 6
 
 	titleMenuID       = 1000
 	statusMenuID      = 1001
 	diagnosticsMenuID = 1002
 	exitMenuID        = 1003
 	liveMonitorMenuID = 1005
+	exportMenuID      = 1006
 )
 
 var (
@@ -253,6 +260,7 @@ func (t *windowsTray) buildMenu() error {
 		{mfString | mfGray, statusMenuID, "Status: Starting"},
 		{mfString, liveMonitorMenuID, "Open live telemetry"},
 		{mfString, diagnosticsMenuID, "Open diagnostics"},
+		{mfString, exportMenuID, "Export troubleshooting package..."},
 		{mfString, settingsMenuID, "Settings..."},
 		{mfSeparator, 0, ""},
 		{mfString, exitMenuID, "Exit"},
@@ -417,6 +425,8 @@ func (t *windowsTray) handleCommand(command uintptr) {
 	switch command {
 	case diagnosticsMenuID:
 		showNativeMessage("VerseLink Telemetry Diagnostics", diagnosticsTextWithLifecycle(t.store.Current(), t.store.LifecycleEvents()), mbOK|mbIconInfo)
+	case exportMenuID:
+		t.exportDiagnostics()
 	case liveMonitorMenuID:
 		t.openLiveMonitor()
 	case settingsMenuID:
@@ -426,6 +436,35 @@ func (t *windowsTray) handleCommand(command uintptr) {
 			t.onExit()
 		}
 	}
+}
+
+func (t *windowsTray) exportDiagnostics() {
+	const explanation = "This local JSON package includes app/build information, coarse runtime and connection status, aggregate counters, up to 12 lifecycle codes, and up to 24 application-log records (time, severity, fixed event code; at most 4 KiB). It excludes Game.log paths and contents, player/ship/Party names, identifiers, credentials, tokens, pairing codes, and raw errors. Nothing is uploaded. Continue to choose a save location?"
+	if showNativeQuestion(t.hwnd, "Export troubleshooting package", explanation) != idYes {
+		return
+	}
+	path, selected, err := saveDiagnosticsPath(t.hwnd)
+	if err != nil {
+		showNativeError("Could not open the export file dialog. No package was written.")
+		return
+	}
+	if !selected {
+		return
+	}
+	status := t.store.Current()
+	data, err := diagnosticsexport.Marshal(diagnosticsexport.Snapshot{
+		Status: status, Health: t.store.CurrentHealth(), Lifecycle: t.store.LifecycleEvents(),
+		ApplicationLogs: t.store.ApplicationLogs(),
+	})
+	if err != nil {
+		showNativeError("Could not create the diagnostics package. No file was written.")
+		return
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		showNativeError("Could not save the diagnostics package. Check the selected folder and permissions.")
+		return
+	}
+	showNativeMessageFor(t.hwnd, "Diagnostics exported", "A bounded diagnostics package was saved locally as "+filepath.Base(path)+". It was not uploaded.", mbOK|mbIconInfo)
 }
 
 func (t *windowsTray) beginShutdown() {
@@ -539,7 +578,11 @@ func showNativeError(message string) {
 }
 
 func showNativeMessage(title, text string, flags uintptr) {
+	showNativeMessageFor(0, title, text, flags)
+}
+
+func showNativeMessageFor(owner uintptr, title, text string, flags uintptr) {
 	titlePointer, _ := syscall.UTF16PtrFromString(title)
 	textPointer, _ := syscall.UTF16PtrFromString(text)
-	procMessageBox.Call(0, uintptr(unsafe.Pointer(textPointer)), uintptr(unsafe.Pointer(titlePointer)), flags)
+	procMessageBox.Call(owner, uintptr(unsafe.Pointer(textPointer)), uintptr(unsafe.Pointer(titlePointer)), flags)
 }

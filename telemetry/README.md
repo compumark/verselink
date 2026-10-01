@@ -267,6 +267,30 @@ are separate and have not been performed by the automated suite:
 7. With the existing DEV pairing active, verify startup, shutdown, and relaunch
    do not duplicate presence updates or disturb the device revision lock.
 
+## B5 local diagnostics export
+
+Choose **Export troubleshooting package...** from the Windows tray menu. A
+confirmation explains the contents before the native Save dialog opens. The
+result is a deterministic schema-1 JSON snapshot, bounded to 16 KiB, written
+only to the user-selected local path. Canceling either dialog writes nothing;
+save failures are reported without exposing operating-system error details.
+The export is never uploaded or sent to a support/backend endpoint.
+
+The package includes app/build/Go/platform metadata, coarse runtime phase,
+discovery strategy and channel category, Game.log availability, session and
+gameplay-state presence flags, Quantum Travel state category, Party count,
+aggregate line/event/reset counters, connection-state category, up to 12
+allowlisted lifecycle codes, and up to 24 structured local application-log
+entries (maximum 4 KiB). The application log is a thread-safe 64-entry ring
+whose records contain only a UTC timestamp, fixed severity, and fixed event
+code; it never accepts message text or telemetry values. The whole export is
+limited to 16 KiB. It excludes absolute paths, raw Game.log lines,
+player handles, shard/location/destination names, ship-owner and Party names,
+GEIDs, device identifiers, credentials, cookies, pairing codes, tokens,
+headers, and free-form warnings/errors. Unknown categories are normalized to
+safe fallback values and unknown lifecycle entries are omitted. The schema is
+documented in `docs/telemetry/ARCHITECTURE.md`.
+
 ## C5 VerseLink pairing
 
 Open **Settings... → VerseLink connection** to pair this Windows client with a
