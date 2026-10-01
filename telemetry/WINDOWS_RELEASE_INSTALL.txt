@@ -1,5 +1,11 @@
 VerseLink Telemetry for Windows — portable release
 
+RELEASE VERSIONING
+Telemetry has its own tag namespace, separate from VerseLink server/web releases.
+Stable tags use telemetry-vMAJOR.MINOR.PATCH, for example telemetry-v0.1.0.
+The GitHub Release is titled VerseLink Telemetry v0.1.0 and its package is named
+verselink-telemetry-v0.1.0-windows-amd64.zip. The executable reports v0.1.0.
+
 INSTALL
 1. Download the Windows amd64 ZIP from the official VerseLink GitHub Releases page.
 2. Verify the adjacent .sha256 file with PowerShell:
