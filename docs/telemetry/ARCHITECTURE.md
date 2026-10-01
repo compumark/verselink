@@ -640,10 +640,13 @@ The initial telemetry source is read-only `Game.log`.
 
 ## B6 Windows release packaging and manual update contract
 
-Stable version tags use exactly `vMAJOR.MINOR.PATCH` (no leading zeroes,
-pre-release suffix, or build suffix). A tag-only GitHub Actions workflow
-cross-builds the Windows amd64 tray executable with the GUI subsystem and
-embeds the tag and full source commit in linker metadata. DEV/source builds
+Telemetry release tags use exactly `telemetry-vMAJOR.MINOR.PATCH` (no leading
+zeroes, pre-release suffix, or build suffix), independently of the VerseLink
+server/web app's `vMAJOR.MINOR.PATCH` tags. The tag-only GitHub Actions
+workflow triggers only on the `telemetry-v*` namespace, cross-builds the
+Windows amd64 tray executable with the GUI subsystem, and embeds the normalized
+application version (`vMAJOR.MINOR.PATCH`) and full source commit in linker
+metadata. DEV/source builds
 retain `dev` and `unknown` fallbacks. Build flags disable VCS stamping and
 trim source paths and pin the Go toolchain to 1.27.1. The ZIP uses fixed
 timestamps, fixed member order/permissions, and stored (uncompressed) entries
@@ -655,8 +658,10 @@ The chosen format is a portable ZIP, not an installer. It contains exactly
 `verselink-telemetry.exe` and `INSTALLATION.txt`; no settings, credentials,
 logs, update manifests, signatures, helper executable, or other files are
 packaged. The workflow publishes the ZIP and a SHA-256 sidecar only for a
-valid stable version tag. The workflow has `contents: write` only to create
-that release; pull requests and ordinary branch pushes do not trigger it.
+valid stable Telemetry tag. The release uses the full `telemetry-v...` tag and
+a `VerseLink Telemetry v...` title; the ZIP filename uses the normalized app
+version. The workflow has `contents: write` only to create that release; main
+app tags, pull requests, and ordinary branch pushes do not trigger it.
 No release signing key or GitHub secret is used or required.
 
 The SHA-256 sidecar detects accidental transfer/storage corruption. Since
