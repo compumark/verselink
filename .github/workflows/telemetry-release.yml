@@ -1,0 +1,89 @@
+name: Telemetry Windows Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.1"
+
+      - name: Validate stable version tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Refusing non-stable or malformed release tag: $tag" >&2
+            exit 1
+          fi
+          commit="$(git rev-parse HEAD)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Build and package twice; require identical bytes
+        shell: bash
+        working-directory: telemetry
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_COMMIT: ${{ steps.version.outputs.commit }}
+        run: |
+          set -euo pipefail
+          package="verselink-telemetry-${RELEASE_TAG}-windows-amd64.zip"
+          linker="-H=windowsgui -s -w -X github.com/compumark/verselink-telemetry/internal/diagnosticsexport.ReleaseVersion=${RELEASE_TAG} -X github.com/compumark/verselink-telemetry/internal/diagnosticsexport.ReleaseCommit=${RELEASE_COMMIT}"
+          for build in one two; do
+            mkdir -p "../dist/${build}"
+            GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "$linker" -o "../dist/${build}/verselink-telemetry.exe" ./cmd/verselink-telemetry-tray
+            python3 scripts/package_windows_release.py \
+              --exe "../dist/${build}/verselink-telemetry.exe" \
+              --instructions WINDOWS_RELEASE_INSTALL.txt \
+              --output "../dist/${build}/${package}"
+          done
+          cmp "../dist/one/${package}" "../dist/two/${package}"
+          mkdir -p ../dist/release
+          cp "../dist/one/${package}" ../dist/release/
+          (cd ../dist/release && sha256sum "$package" > "$package.sha256")
+
+      - name: Verify package contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="dist/release/verselink-telemetry-${{ steps.version.outputs.tag }}-windows-amd64.zip"
+          python3 - "$package" <<'PY'
+          import sys, zipfile
+          expected = {"verselink-telemetry.exe", "INSTALLATION.txt"}
+          with zipfile.ZipFile(sys.argv[1]) as archive:
+              names = archive.namelist()
+              if len(names) != len(expected) or set(names) != expected:
+                  raise SystemExit(f"unexpected package contents: {names!r}")
+              if any(info.file_size <= 0 for info in archive.infolist()):
+                  raise SystemExit("empty release package member")
+          PY
+
+      - name: Publish stable GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.version.outputs.tag }}" \
+            "dist/release/verselink-telemetry-${{ steps.version.outputs.tag }}-windows-amd64.zip" \
+            "dist/release/verselink-telemetry-${{ steps.version.outputs.tag }}-windows-amd64.zip.sha256" \
+            --title "VerseLink Telemetry ${{ steps.version.outputs.tag }}" \
+            --notes-file telemetry/WINDOWS_RELEASE_INSTALL.txt \
+            --verify-tag

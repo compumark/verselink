@@ -92,6 +92,21 @@ func TestMarshalIsStableBoundedAndAllowlisted(t *testing.T) {
 	}
 }
 
+func TestBuildInfoUsesReleaseMetadataAndKeepsDevelopmentFallbacks(t *testing.T) {
+	oldVersion, oldCommit := ReleaseVersion, ReleaseCommit
+	t.Cleanup(func() { ReleaseVersion, ReleaseCommit = oldVersion, oldCommit })
+	ReleaseVersion, ReleaseCommit = "v2.4.6", "0123456789abcdef0123456789abcdef01234567"
+	version, commit := BuildInfo()
+	if version != ReleaseVersion || commit != ReleaseCommit {
+		t.Fatalf("BuildInfo() = %q, %q; want release linker values", version, commit)
+	}
+	ReleaseVersion, ReleaseCommit = "invalid-version", "not-a-revision"
+	version, commit = BuildInfo()
+	if version == "invalid-version" || commit == "not-a-revision" {
+		t.Fatalf("BuildInfo accepted malformed linker values: %q, %q", version, commit)
+	}
+}
+
 func TestMarshalRejectsOversizedJSONWithoutReturningTruncatedData(t *testing.T) {
 	input := map[string]string{"diagnostic": strings.Repeat("x", 256)}
 	data, err := encodeBounded(input, 64)

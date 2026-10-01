@@ -637,3 +637,46 @@ Explicitly out of scope:
 - modification of Star Citizen files.
 
 The initial telemetry source is read-only `Game.log`.
+
+## B6 Windows release packaging and manual update contract
+
+Stable version tags use exactly `vMAJOR.MINOR.PATCH` (no leading zeroes,
+pre-release suffix, or build suffix). A tag-only GitHub Actions workflow
+cross-builds the Windows amd64 tray executable with the GUI subsystem and
+embeds the tag and full source commit in linker metadata. DEV/source builds
+retain `dev` and `unknown` fallbacks. Build flags disable VCS stamping and
+trim source paths and pin the Go toolchain to 1.27.1. The ZIP uses fixed
+timestamps, fixed member order/permissions, and stored (uncompressed) entries
+to avoid compressor-version drift. The workflow builds and packages the same
+commit twice in separate directories and requires byte-identical ZIPs before
+publishing.
+
+The chosen format is a portable ZIP, not an installer. It contains exactly
+`verselink-telemetry.exe` and `INSTALLATION.txt`; no settings, credentials,
+logs, update manifests, signatures, helper executable, or other files are
+packaged. The workflow publishes the ZIP and a SHA-256 sidecar only for a
+valid stable version tag. The workflow has `contents: write` only to create
+that release; pull requests and ordinary branch pushes do not trigger it.
+No release signing key or GitHub secret is used or required.
+
+The SHA-256 sidecar detects accidental transfer/storage corruption. Since
+the checksum is published beside the archive, it is not an independent
+publisher-authentication or release-provenance proof. B6 binaries are not
+Authenticode-signed. Windows may show SmartScreen's unknown-publisher warning;
+users should obtain artifacts only from the official VerseLink Releases page
+and verify the adjacent checksum. No trusted-publisher signing claim is made.
+
+First installation is a user-level extraction to a writable folder, followed
+by launching the tray executable; no elevation or service is used. Manual
+updates require the user to exit the application, keep a copy of the previous
+executable, verify and extract the new ZIP, replace only the executable, and
+launch it. After confirming startup, the backup may be discarded. If startup
+fails, exit the new process and restore the previous executable. The package
+does not include or modify `%LOCALAPPDATA%\VerseLink\Telemetry\settings.json`
+or Windows Credential Manager entries, so settings and paired credentials
+survive replacement and rollback.
+
+Automatic release checks, background downloads, downloaded-package
+application, self-replacement, helper processes, and automatic update rollback
+are explicitly out of scope. No updater trust mechanism or signed update
+manifest is implemented.

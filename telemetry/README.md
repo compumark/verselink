@@ -158,8 +158,9 @@ confirmed in the current live test (#49), and Party reconstruction can be
 incomplete in some scenarios. These issues are separate from the monitor.
 
 B2 itself did not provide persistent settings or a settings UI. Windows
-autostart, a service, an installer/updater, and network telemetry remain out
-of scope. Known live compatibility investigations for
+autostart and a service were outside B2. B6 later defines portable manual
+release packaging; it does not add an installer or automatic updater. Known
+live compatibility investigations for
 shard detection (#48) and ship-exit confirmation (#49) remain separate work.
 
 ## B3 local Game.log settings
@@ -377,3 +378,35 @@ and cancellation with controlled HTTP servers. These automated checks do not
 replace the manual Windows DEV acceptance procedure in
 [`C9_TESTER_GUIDE.md`](C9_TESTER_GUIDE.md); no production endpoint or database
 is used by that procedure.
+
+## B6 Windows releases and manual updates
+
+Each stable `vMAJOR.MINOR.PATCH` release is a reproducible Windows amd64 GUI
+build. The portable ZIP contains only `verselink-telemetry.exe` and
+`INSTALLATION.txt`; the executable's diagnostics show the release version and
+source commit. Source/DEV builds retain useful `dev` and `unknown` fallbacks.
+The tag-only workflow also publishes a `.sha256` sidecar. See
+[`WINDOWS_RELEASE_INSTALL.txt`](WINDOWS_RELEASE_INSTALL.txt) for concise
+installation, update, and rollback steps.
+
+Download only from the official VerseLink GitHub Releases page. Verify the
+archive using PowerShell:
+
+```powershell
+Get-FileHash .\verselink-telemetry-vX.Y.Z-windows-amd64.zip -Algorithm SHA256
+```
+
+Compare the hash with the matching sidecar. Since both files are distributed
+from the same release, this catches accidental corruption but does not
+independently authenticate publisher identity or release provenance. B6
+artifacts are not Authenticode-signed; Windows SmartScreen may show an
+unknown-publisher warning. No signing key or certificate is configured.
+
+For a manual update, exit the tray app, back up the old executable, verify and
+extract the new ZIP to a temporary folder, and replace only
+`verselink-telemetry.exe`. Launch the new version and keep the backup until it
+starts successfully. If startup fails, exit it and restore the backup. Settings
+remain in `%LOCALAPPDATA%\VerseLink\Telemetry\settings.json`; paired
+credentials remain in the current user's Windows Credential Manager. Neither
+is included in or changed by the ZIP. B6 does not poll for releases, download
+in the background, or automatically replace files.

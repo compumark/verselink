@@ -27,6 +27,13 @@ const (
 	MaxApplicationLogBytes = 4 * 1024
 )
 
+// ReleaseVersion and ReleaseCommit are set by the Windows release build.
+// Empty values deliberately preserve useful source-build metadata fallbacks.
+var (
+	ReleaseVersion = ""
+	ReleaseCommit  = ""
+)
+
 type lifecycleCode string
 
 const (
@@ -219,19 +226,46 @@ func allowedLogEvent(value diagnostics.LogEventCode) string {
 
 func BuildInfo() (version, commit string) {
 	version, commit = "dev", "unknown"
+	if StableBuildVersion(ReleaseVersion) {
+		version = ReleaseVersion
+	}
+	if isHexRevision(ReleaseCommit) {
+		commit = strings.ToLower(ReleaseCommit)
+	}
 	info, ok := debug.ReadBuildInfo()
 	if !ok || info == nil {
 		return version, commit
 	}
-	if info.Main.Version != "" && info.Main.Version != "(devel)" {
+	if ReleaseVersion == "" && info.Main.Version != "" && info.Main.Version != "(devel)" {
 		version = info.Main.Version
 	}
 	for _, setting := range info.Settings {
-		if setting.Key == "vcs.revision" && isHexRevision(setting.Value) {
+		if ReleaseCommit == "" && setting.Key == "vcs.revision" && isHexRevision(setting.Value) {
 			commit = setting.Value
 		}
 	}
 	return version, commit
+}
+
+func StableBuildVersion(value string) bool {
+	if len(value) < 6 || value[0] != 'v' {
+		return false
+	}
+	parts := strings.Split(value[1:], ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || (len(part) > 1 && part[0] == '0') {
+			return false
+		}
+		for _, char := range part {
+			if char < '0' || char > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 var buildMetadata = BuildInfo

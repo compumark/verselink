@@ -1,0 +1,44 @@
+VerseLink Telemetry for Windows — portable release
+
+INSTALL
+1. Download the Windows amd64 ZIP from the official VerseLink GitHub Releases page.
+2. Verify the adjacent .sha256 file with PowerShell:
+   (Get-FileHash .\verselink-telemetry-vX.Y.Z-windows-amd64.zip -Algorithm SHA256).Hash.ToLower()
+   Compare the result with the SHA256 value in the matching .sha256 file.
+3. Extract the ZIP to a folder writable by your Windows user, for example:
+   %LOCALAPPDATA%\Programs\VerseLinkTelemetry
+4. Run verselink-telemetry.exe. No administrator rights or service are required.
+
+MANUAL UPDATE
+1. Exit VerseLink Telemetry from its tray menu and confirm it is no longer running.
+2. Keep a copy of the currently installed verselink-telemetry.exe outside the
+   installation folder until the new version has started successfully.
+3. Download and verify the new ZIP as described above, then extract it to a
+   temporary folder and replace only verselink-telemetry.exe in the install folder.
+4. Start the new executable. If it does not start or behaves incorrectly, exit
+   it, restore the saved previous executable, and start that version.
+
+AUTOSTART PATH
+Replacing the EXE in the same installation folder keeps the existing
+Start with Windows path valid. Moving the installation folder leaves the
+Windows autostart registry entry pointing to the old EXE path. Start the app
+from the new folder, open Settings, and select **Start with Windows → Repair**
+to update it. If you no longer want autostart, select **Disable** instead.
+
+SETTINGS AND CREDENTIALS
+Updates replace only the application executable. Settings remain under
+%LOCALAPPDATA%\VerseLink\Telemetry\settings.json. Paired device credentials
+remain in the current Windows user's Windows Credential Manager. Do not delete
+these locations when updating or rolling back.
+
+TRUST AND WINDOWS WARNINGS
+The .sha256 file detects accidental corruption only; a checksum downloaded
+from the same release is not independent proof of publisher identity or
+release provenance. Releases are published by the VerseLink GitHub repository.
+Current B6 binaries are not Authenticode code-signed. Windows SmartScreen may
+show an unknown-publisher warning; verify the repository and checksum before
+choosing to run the application. Do not bypass warnings for files from an
+untrusted source.
+
+VerseLink Telemetry does not automatically check for, download, or install
+updates. Updates are always a user-initiated manual operation.
