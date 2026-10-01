@@ -3,14 +3,14 @@ name: Telemetry Windows Release
 on:
   push:
     tags:
-      - "v*"
+      - "telemetry-v*"
 
 permissions:
   contents: write
 
 jobs:
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/telemetry-v')
     runs-on: ubuntu-latest
     steps:
       - name: Check out tagged source
@@ -29,24 +29,26 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
-          if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+          if [[ ! "$tag" =~ ^telemetry-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
             echo "Refusing non-stable or malformed release tag: $tag" >&2
             exit 1
           fi
+          version="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
           commit="$(git rev-parse HEAD)"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
       - name: Build and package twice; require identical bytes
         shell: bash
         working-directory: telemetry
         env:
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
           RELEASE_COMMIT: ${{ steps.version.outputs.commit }}
         run: |
           set -euo pipefail
-          package="verselink-telemetry-${RELEASE_TAG}-windows-amd64.zip"
-          linker="-H=windowsgui -s -w -X github.com/compumark/verselink-telemetry/internal/diagnosticsexport.ReleaseVersion=${RELEASE_TAG} -X github.com/compumark/verselink-telemetry/internal/diagnosticsexport.ReleaseCommit=${RELEASE_COMMIT}"
+          package="verselink-telemetry-${RELEASE_VERSION}-windows-amd64.zip"
+          linker="-H=windowsgui -s -w -X github.com/compumark/verselink-telemetry/internal/diagnosticsexport.ReleaseVersion=${RELEASE_VERSION} -X github.com/compumark/verselink-telemetry/internal/diagnosticsexport.ReleaseCommit=${RELEASE_COMMIT}"
           for build in one two; do
             mkdir -p "../dist/${build}"
             GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "$linker" -o "../dist/${build}/verselink-telemetry.exe" ./cmd/verselink-telemetry-tray
@@ -64,7 +66,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          package="dist/release/verselink-telemetry-${{ steps.version.outputs.tag }}-windows-amd64.zip"
+          package="dist/release/verselink-telemetry-${{ steps.version.outputs.version }}-windows-amd64.zip"
           python3 - "$package" <<'PY'
           import sys, zipfile
           expected = {"verselink-telemetry.exe", "INSTALLATION.txt"}
@@ -82,8 +84,8 @@ jobs:
         run: |
           set -euo pipefail
           gh release create "${{ steps.version.outputs.tag }}" \
-            "dist/release/verselink-telemetry-${{ steps.version.outputs.tag }}-windows-amd64.zip" \
-            "dist/release/verselink-telemetry-${{ steps.version.outputs.tag }}-windows-amd64.zip.sha256" \
-            --title "VerseLink Telemetry ${{ steps.version.outputs.tag }}" \
+            "dist/release/verselink-telemetry-${{ steps.version.outputs.version }}-windows-amd64.zip" \
+            "dist/release/verselink-telemetry-${{ steps.version.outputs.version }}-windows-amd64.zip.sha256" \
+            --title "VerseLink Telemetry ${{ steps.version.outputs.version }}" \
             --notes-file telemetry/WINDOWS_RELEASE_INSTALL.txt \
             --verify-tag
