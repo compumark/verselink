@@ -102,23 +102,23 @@ invalidates the previous unused code. Claim accepts
 HTTP 201 claim returns a device UUID, normalized name, and one-time
 `vlt_` Bearer credential. Pairing codes and credentials are persisted only as
 domain-separated HMAC-SHA256 hashes using `SINK_TOKEN_PEPPER`; plaintext is
-never stored or logged. C3 does not implement heartbeat, presence, or
-device-management routes.
+never stored or logged. A successful claim consumes the code once and returns
+the credential once. Reused/invalidated codes return `409 pairing_code_used`;
+expired codes return `410 expired_pairing_code`.
 
 ### Telemetry device authentication (C4)
 
-C4 adds a reusable server-side authentication layer for future device routes,
-but adds no device-authenticated HTTP endpoint itself. Future protected routes
-must use exactly one case-sensitive `Authorization: Bearer vlt_…` credential;
+C4 device authentication is used by the implemented heartbeat and presence
+routes. These require exactly one case-sensitive `Authorization: Bearer vlt_…` credential;
 browser cookies, query/body credentials, and account or recovery tokens are
 not substitutes. The server reuses C3's domain-separated device HMAC and
 checks the current device revocation and account status in PostgreSQL on every
 authentication attempt, without caching. Outcomes are `invalid_device_credential`
 (401, with a Bearer challenge), `device_revoked` (401), `account_inactive`
-(403), or a minimal internal device/owner context on success.
-C6 owns the device-authenticated heartbeat; C7 adds the device-authenticated
-presence route; device management is owned by C8. Presence accepts only the
-explicit C1 schema-1 current snapshot:
+(403), or a minimal internal device/owner context on success. C6 and C7 expose
+the protected device routes; C8 exposes owner-scoped browser-session device
+management and private history. Presence accepts only the explicit schema-1
+current snapshot:
 
 ```http
 PUT /api/telemetry/presence
@@ -136,7 +136,29 @@ while stale revisions and same-revision conflicts return `409` with the current
 revision. The full contract is in
 [`telemetry/CONNECTION_CONTRACT.md`](telemetry/CONNECTION_CONTRACT.md).
 
-### Telemetry device management and private history (C8)
+### Telemetry heartbeat (C6)
+
+`POST /api/telemetry/heartbeat` requires the device Bearer credential and
+`{"schema":1}`. It updates only the authenticated device's server-side
+`last_seen_at` and returns a server receipt timestamp; it does not change
+presence or gameplay timestamps. The request-count limit is 120 per device per
+minute. `429 rate_limited` includes `Retry-After`; database failures return
+`503 server_unavailable` rather than being disguised as authentication errors.
+
+### Telemetry private presence (C7)
+
+`PUT /api/telemetry/presence` requires the device Bearer credential and the
+allowlisted schema-1 snapshot above. The body limit is 16 KiB and the limit is
+120 requests per device per minute. Accepted higher revisions atomically
+advance the device high-water mark and upsert current presence. Equal identical
+snapshots are idempotent; stale and conflicting revisions return `409` with
+the current revision. `shard` and `party_count` are validated but discarded;
+they are not stored or included in revision comparison. A successful accepted
+snapshot may append its privacy-limited C8 history projection in the same
+transaction. Device revocation deletes current presence and prevents later
+heartbeat, presence, and history writes.
+
+### Telemetry device management and private history (C8, implemented)
 
 The signed-in user's MobiGlass profile calls only owner-scoped browser-session
 routes:

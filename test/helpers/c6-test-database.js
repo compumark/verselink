@@ -3,7 +3,7 @@ import { createTestPool } from "./mission-integration.js";
 
 const schemaPattern = /^c6_heartbeat_[a-f0-9]{32}$/;
 const c7SchemaPattern = /^c7_presence_[a-f0-9]{32}$/;
-const c8SchemaPattern = /^c8_history_[a-f0-9]{32}$/;
+const c8OrC9SchemaPattern = /^(?:c8_history_|c9_e2e_)[a-f0-9]{32}$/;
 
 const loopbackHost = (hostname) => {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
@@ -75,15 +75,15 @@ export const dropC7TestSchema = async (pool, schemaName) => {
 };
 
 export const createC8TestSchema = async (pool, schemaName) => {
-  if (typeof schemaName !== "string" || !c8SchemaPattern.test(schemaName)) {
-    throw new Error("refusing database operation outside an owned C8 test schema");
+  if (typeof schemaName !== "string" || !c8OrC9SchemaPattern.test(schemaName)) {
+    throw new Error("refusing database operation outside an owned C8/C9 test schema");
   }
   return pool.query(`CREATE SCHEMA "${schemaName}"`);
 };
 
 export const dropC8TestSchema = async (pool, schemaName) => {
-  if (typeof schemaName !== "string" || !c8SchemaPattern.test(schemaName)) {
-    throw new Error("refusing database operation outside an owned C8 test schema");
+  if (typeof schemaName !== "string" || !c8OrC9SchemaPattern.test(schemaName)) {
+    throw new Error("refusing database operation outside an owned C8/C9 test schema");
   }
   return pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
 };

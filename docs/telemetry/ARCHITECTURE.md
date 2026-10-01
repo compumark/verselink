@@ -364,14 +364,14 @@ integration, persistence, or an end-user diagnostics UI.
 
 ## VerseLink connection — Milestone C contract
 
-Milestone C is planned as a one-time pairing flow, dedicated revocable
-per-device Bearer credentials, a connection-health heartbeat, and an explicit
-versioned current-presence DTO. The local Go reducer remains authoritative for
-Game.log interpretation; the server receives neither raw logs nor an event
-stream. `telemetry_presence` stores only the latest accepted schema-1 snapshot
-per device. `telemetry_devices` and short-lived pairing records own device and
-pairing lifecycle. Phase C does not require `telemetry_events` or a telemetry
-status GET endpoint.
+Milestone C implements one-time pairing, dedicated revocable per-device Bearer
+credentials, a connection-health heartbeat, an explicit versioned
+current-presence DTO, and private device/history management. The local Go
+reducer remains authoritative for Game.log interpretation; the server receives
+neither raw logs nor an event stream. `telemetry_presence` stores only the
+latest accepted schema-1 snapshot per device. `telemetry_devices` and
+short-lived pairing records own device and pairing lifecycle. Phase C does not
+require `telemetry_events` or a telemetry status GET endpoint.
 
 The normative endpoint, request/response, error, rate-limit, lifecycle,
 ordering/idempotency, and privacy contract is in
@@ -396,9 +396,9 @@ with `ON DELETE CASCADE`. Device and pairing secrets are represented only by
 unique lowercase HMAC-SHA256 hashes; plaintext credentials and pairing codes
 are not persisted. `telemetry_devices.last_presence_revision` stores the
 per-device revision high-water mark independently of current presence rows.
-The `telemetry_presence` table and snapshot upsert remain C7 scope. C2 adds
-schema only—no pairing or telemetry HTTP endpoints, auth middleware, or secret
-generation logic.
+The `telemetry_presence` table and snapshot upsert were added by C7. C2 added
+the device/pairing schema only—no pairing or telemetry HTTP endpoints, auth
+middleware, or secret generation logic.
 
 ### C3 pairing API (implemented)
 
@@ -429,10 +429,9 @@ account returns `account_inactive`. Database/dependency errors remain distinct
 from authentication failures.
 
 Device Bearer auth is separate from browser `bp_session` auth in both
-directions. C4 adds no protected HTTP route, heartbeat, presence behavior, or
-device-management/revocation API. Future C6/C7 handlers consume this helper;
-C8 / Issue #94 owns the user-facing device management and remote-revocation
-API/UI.
+directions. C4 provides the shared authentication layer used by the C6
+heartbeat, C7 presence, and C8 revocation flows. Owner-scoped device management
+and private-history routes use browser-session authentication instead.
 
 ### C5 Windows pairing client (implemented)
 
@@ -462,8 +461,9 @@ claim C4 authentication/revocation status, which requires C6's first heartbeat.
 
 Local Disconnect deletes the Windows Credential Manager entry and local
 device metadata only. It does not call the server and explicitly does not
-revoke the remote device; remote device management belongs to C8. The existing
-local Game.log runtime remains independent of network availability.
+revoke the remote device; remote device revocation is available through the
+C8 VerseLink device-management UI. The local Game.log runtime remains
+independent of network availability.
 
 C5 creates a durable per-device revision-state file and holds an exclusive OS
 lock associated with the paired device for the process lifetime. A stable
@@ -471,11 +471,10 @@ sibling lock file is used because the JSON state file is atomically replaced;
 this keeps the OS lock identity stable across replacement. All processes use
 the same lock path derived from the device ID. Neither lock nor state files
 contain credentials or other secrets. The state file is written via synced
-temporary file and write-through atomic replacement on Windows. The revision
-allocator is present for future snapshot creation but is not called by C5: no
-revision is incremented until C7 has an actual presence snapshot to send. C5
-adds no heartbeat, presence upload, authentication probe, management route, or
-server-side code.
+temporary file and write-through atomic replacement on Windows. C7 uses the
+revision allocator when a changed snapshot is ready to send; retries preserve
+the same durable revision and request body. C5 itself adds no heartbeat or
+server-side route.
 
 ### C6 heartbeat and connection health (implemented)
 
@@ -510,7 +509,7 @@ The server's online TTL is 90 seconds and means connection health only. It does
 not imply an active gameplay session or shared presence; C7 owns snapshot
 ingestion and `telemetry_presence` persistence.
 
-### C7 presence snapshot ingest and persistence (implemented; review pending)
+### C7 presence snapshot ingest and persistence (implemented)
 
 `PUT /api/telemetry/presence` requires the C4 Bearer credential and applies a
 bounded request-count limit before authentication. The server validates every
@@ -554,6 +553,17 @@ deactivation blocks access and new writes while rows age normally;
 reactivation exposes only unexpired rows. Hard account deletion cascades
 remaining history immediately. No parser-event stream or peer sharing is
 added.
+
+### C9 end-to-end verification (in review)
+
+C9 adds a PostgreSQL-backed server integration scenario that composes real C3
+pairing and claim, C6 heartbeat, C7 revisioned presence ingest, C8 private
+history, and per-device revocation in one isolated test schema. Existing Go
+tests independently exercise snapshot mapping, durable revisions, retry
+identity, outage recovery, `Retry-After`, cancellation, and authentication-stop
+behavior through controlled HTTP servers. The manual Windows DEV procedure is
+documented in [`../../telemetry/C9_TESTER_GUIDE.md`](../../telemetry/C9_TESTER_GUIDE.md);
+it remains a separate acceptance check and is not implied by automated tests.
 
 ## Privacy boundary
 
