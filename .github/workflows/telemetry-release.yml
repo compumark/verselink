@@ -64,7 +64,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          package="dist/verselink-telemetry-${{ steps.version.outputs.tag }}-windows-amd64.zip"
+          package="dist/release/verselink-telemetry-${{ steps.version.outputs.tag }}-windows-amd64.zip"
           python3 - "$package" <<'PY'
           import sys, zipfile
           expected = {"verselink-telemetry.exe", "INSTALLATION.txt"}
@@ -82,8 +82,8 @@ jobs:
         run: |
           set -euo pipefail
           gh release create "${{ steps.version.outputs.tag }}" \
-            "dist/verselink-telemetry-${{ steps.version.outputs.tag }}-windows-amd64.zip" \
-            "dist/verselink-telemetry-${{ steps.version.outputs.tag }}-windows-amd64.zip.sha256" \
+            "dist/release/verselink-telemetry-${{ steps.version.outputs.tag }}-windows-amd64.zip" \
+            "dist/release/verselink-telemetry-${{ steps.version.outputs.tag }}-windows-amd64.zip.sha256" \
             --title "VerseLink Telemetry ${{ steps.version.outputs.tag }}" \
             --notes-file telemetry/WINDOWS_RELEASE_INSTALL.txt \
             --verify-tag
