@@ -10,6 +10,7 @@ import { createC6TestPool, createC8TestSchema, dropC8TestSchema, resolveC6TestDa
 const databaseUrl = resolveC6TestDatabaseUrl(process.env.TEST_DATABASE_URL);
 const pepper = "telemetry-c9-e2e-integration-test-pepper";
 const presencePath = "/api/telemetry/presence";
+const appOrigin = "http://localhost:3000";
 
 const deviceRequest = async (baseUrl, path, { credential, method = "POST", body } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -26,6 +27,18 @@ const deviceRequest = async (baseUrl, path, { credential, method = "POST", body 
     try { responseBody = JSON.parse(text); } catch { throw new Error("telemetry API returned invalid JSON"); }
   }
   return { status: response.status, body: responseBody, headers: response.headers };
+};
+
+const managementRequest = async (baseUrl, path, { session, method = "GET" } = {}) => {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method,
+    headers: {
+      cookie: `bp_session=${session}`,
+      origin: appOrigin
+    }
+  });
+  const text = await response.text();
+  return { status: response.status, body: text ? JSON.parse(text) : null, headers: response.headers };
 };
 
 const snapshot = (revision, location, observedAt) => ({
@@ -83,7 +96,7 @@ test("C9 end-to-end pairing, heartbeat, presence history, privacy, and revocatio
       databaseUrl: scoped.toString(),
       pepper,
       logDirectory,
-      extraEnv: { VERSELINK_APP_URL: "http://localhost:3000" }
+      extraEnv: { VERSELINK_APP_URL: appOrigin }
     });
 
     const pair = async (session, name) => {
@@ -165,12 +178,20 @@ test("C9 end-to-end pairing, heartbeat, presence history, privacy, and revocatio
     });
 
     await t.test("revocation blocks both device APIs, retains existing private history, and isolates sibling device", async () => {
+      const deviceBeforeRevoke = (await pool.query(
+        "SELECT last_seen_at,last_presence_revision FROM telemetry_devices WHERE id=$1", [device.id]
+      )).rows[0];
       const beforeHistory = Number((await pool.query(
         "SELECT count(*)::int AS count FROM telemetry_presence_history WHERE device_id=$1", [device.id]
       )).rows[0].count);
-      const revoke = await apiRequest(runtime.baseUrl, `/api/me/telemetry/devices/${device.id}`, { method: "DELETE", session: ownerSession });
+      const revoke = await managementRequest(runtime.baseUrl, `/api/me/telemetry/devices/${device.id}`, { method: "DELETE", session: ownerSession });
       assert.equal(revoke.status, 204);
       assert.equal((await pool.query("SELECT 1 FROM telemetry_presence WHERE device_id=$1", [device.id])).rowCount, 0);
+      const deviceAfterRevoke = (await pool.query(
+        "SELECT last_seen_at,last_presence_revision FROM telemetry_devices WHERE id=$1", [device.id]
+      )).rows[0];
+      assert.equal(deviceAfterRevoke.last_seen_at.toISOString(), deviceBeforeRevoke.last_seen_at.toISOString());
+      assert.equal(deviceAfterRevoke.last_presence_revision, deviceBeforeRevoke.last_presence_revision);
       assert.equal(Number((await pool.query(
         "SELECT count(*)::int AS count FROM telemetry_presence_history WHERE device_id=$1", [device.id]
       )).rows[0].count), beforeHistory);
@@ -189,11 +210,23 @@ test("C9 end-to-end pairing, heartbeat, presence history, privacy, and revocatio
         if (method === "POST") {
           const lastSeenAfter = (await pool.query("SELECT last_seen_at FROM telemetry_devices WHERE id=$1", [device.id])).rows[0].last_seen_at.toISOString();
           assert.equal(lastSeenAfter, lastSeenBefore, "rejected revoked heartbeat must not update last_seen_at");
+          const revisionAfterHeartbeat = (await pool.query(
+            "SELECT last_presence_revision FROM telemetry_devices WHERE id=$1", [device.id]
+          )).rows[0].last_presence_revision;
+          assert.equal(revisionAfterHeartbeat, deviceAfterRevoke.last_presence_revision,
+            "rejected revoked heartbeat must not update last_presence_revision");
         }
       }
       assert.equal(Number((await pool.query(
         "SELECT count(*)::int AS count FROM telemetry_presence_history WHERE device_id=$1", [device.id]
       )).rows[0].count), beforeHistory, "rejected revoked requests do not append history");
+      const deviceAfterRejectedRequests = (await pool.query(
+        "SELECT last_seen_at,last_presence_revision FROM telemetry_devices WHERE id=$1", [device.id]
+      )).rows[0];
+      assert.equal(deviceAfterRejectedRequests.last_seen_at.toISOString(), deviceAfterRevoke.last_seen_at.toISOString());
+      assert.equal(deviceAfterRejectedRequests.last_presence_revision, deviceAfterRevoke.last_presence_revision);
+      assert.equal((await pool.query("SELECT 1 FROM telemetry_presence WHERE device_id=$1", [device.id])).rowCount, 0,
+        "rejected revoked requests do not recreate or change current presence");
 
       const siblingHeartbeat = await deviceRequest(runtime.baseUrl, "/api/telemetry/heartbeat", {
         credential: sibling.credential, body: { schema: 1 }
