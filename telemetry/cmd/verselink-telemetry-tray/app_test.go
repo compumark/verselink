@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/compumark/verselink-telemetry/internal/connection"
+	"github.com/compumark/verselink-telemetry/internal/diagnostics"
 	"github.com/compumark/verselink-telemetry/internal/gamelog"
 	"github.com/compumark/verselink-telemetry/internal/runtimehost"
 	"github.com/compumark/verselink-telemetry/internal/settings"
@@ -33,12 +34,43 @@ func TestStatusStoreKeepsOnlyPrivacySafePartyCount(t *testing.T) {
 	})
 
 	text := diagnosticsText(store.Current())
+	for _, expected := range []string{"Version: ", "Commit: ", "Platform: ", "Go: "} {
+		if !strings.Contains(text, expected) {
+			t.Errorf("diagnostics missing build information %q", expected)
+		}
+	}
 	if !strings.Contains(text, "Party members: 4") {
 		t.Fatalf("diagnostics = %q, want Party count", text)
 	}
 	for _, forbidden := range []string{"CrewMate", "SecondMate", "GEID_SECRET_SENTINEL", "RAW_GAME_LOG_SECRET_SENTINEL", "map["} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("diagnostics contain forbidden value %q", forbidden)
+		}
+	}
+}
+
+func TestStatusStoreRecordsOnlyFixedApplicationLogCategories(t *testing.T) {
+	store := &statusStore{}
+	store.OnRuntimeStatus(runtimehost.Status{
+		Phase: runtimehost.PhaseWarning, Message: "PRIVATE_ERROR_SENTINEL",
+		Path:          `C:\Users\PrivatePilot\Game.log`,
+		Configuration: runtimehost.ConfigurationStatus{Warning: "PRIVATE_WARNING_SENTINEL"},
+	})
+	store.RecordLifecycle("autostart_error")
+	store.RecordLifecycle("C:\\Private\\Game.log SECRET_SENTINEL")
+	entries := store.ApplicationLogs()
+	if len(entries) != 2 {
+		t.Fatalf("application log entries=%d, want 2", len(entries))
+	}
+	if entries[0].Severity != diagnostics.SeverityWarning || entries[0].EventCode != diagnostics.LogRuntimeWarning {
+		t.Fatalf("runtime log entry=%#v", entries[0])
+	}
+	if entries[1].Severity != diagnostics.SeverityError || entries[1].EventCode != diagnostics.LogAutostartError {
+		t.Fatalf("lifecycle log entry=%#v", entries[1])
+	}
+	for _, entry := range entries {
+		if strings.Contains(string(entry.EventCode), "PRIVATE") || strings.Contains(string(entry.EventCode), "Game.log") {
+			t.Fatalf("untrusted value reached application log: %#v", entry)
 		}
 	}
 }

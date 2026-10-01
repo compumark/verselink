@@ -112,6 +112,44 @@ reset behavior are reused unchanged. A Game.log path setting still takes
 effect after an application restart. B4 does not create a second runtime,
 queue stale presence data, or change Heartbeat/Presence protocol behavior.
 
+## B5 local diagnostics export
+
+The tray offers an explicit, user-confirmed local troubleshooting export. It
+serializes a dedicated schema-1 allowlist from detached runtime/connection
+snapshots rather than reusing the richer on-screen diagnostics text. The JSON
+has a fixed field order, is capped at 16 KiB, and is saved only to the path
+chosen in the native Save dialog. No network or backend path is involved.
+
+The schema contains application/build/Go/platform metadata; coarse runtime
+phase, discovery strategy, Game.log availability and channel category; boolean
+session/location/jurisdiction/ship indicators; a Quantum Travel state
+category; Party count; aggregate line/event/reset counters; a connection-state
+category; at most 12 recent lifecycle codes; and a separate bounded excerpt of
+structured local application-log records. The in-memory logger is a
+thread-safe 64-entry ring. It accepts only fixed severity and event-code enums;
+there is no message, path, map, or raw-data field. The export includes at most
+24 recent app-log entries, capped at 4 KiB total, with only UTC timestamp,
+severity, and an allowlisted event code. The complete JSON export is capped at
+16 KiB. It excludes absolute paths, Game.log content, handles,
+shard/location/destination names, ship owner, Party names, identifiers,
+credentials, tokens, pairing codes, HTTP data, and free-form warning/error
+text. Unknown enum and lifecycle/log values are replaced or omitted. Export
+cancellation writes nothing; save errors are reported locally.
+
+Schema-1 has these fixed top-level fields: `schema_version`, `application`,
+`runtime`, `counters`, `connection`, `recent_lifecycle_events`, and
+`application_logs`.
+`application` contains `name`, `version`, `commit`, `go_version`, `os`, and
+`architecture`. `runtime` contains `phase`, `discovery_strategy`,
+`game_log_available`, `channel`, `session_active`, `location_known`,
+`jurisdiction_known`, `ship_known`, `quantum_state`, and `party_count`.
+`counters` contains `lines_processed`, `parser_event_count`, and
+`source_reset_count`; `connection` contains only `state`. Each
+`application_logs` element has exactly `timestamp`, `severity`, and
+`event_code`. The enum fields use fixed values, with unknown inputs normalized
+to `unknown` or `other_or_unknown`. The lifecycle and application-log arrays
+contain only known event codes.
+
 The parser receives one raw complete line from the tailer and returns at most
 one allowlisted `TelemetryEvent`. A timestamp is parsed only from a valid
 RFC3339/RFC3339Nano value at the start of the line; missing or malformed
@@ -360,7 +398,8 @@ replacement, and continuity-loss resets even though parser and telemetry state
 are cleared. A thread-safe diagnostics snapshot includes a deep copy of current
 state and can be formatted as a concise deterministic local summary. It does
 not include GEIDs, raw lines, event data maps, network delivery, backend/API
-integration, persistence, or an end-user diagnostics UI.
+integration, or persistence. B5 adds a separate local, bounded export from an
+explicit user action; it does not change the underlying diagnostics snapshot.
 
 ## VerseLink connection — Milestone C contract
 

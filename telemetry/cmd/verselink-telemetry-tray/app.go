@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/compumark/verselink-telemetry/internal/connection"
 	"github.com/compumark/verselink-telemetry/internal/diagnostics"
+	"github.com/compumark/verselink-telemetry/internal/diagnosticsexport"
 	"github.com/compumark/verselink-telemetry/internal/gamelog"
 	"github.com/compumark/verselink-telemetry/internal/runtimehost"
 	"github.com/compumark/verselink-telemetry/internal/settings"
@@ -26,24 +28,47 @@ type statusStore struct {
 	health            connection.HealthStatus
 	presenceSnapshots chan connection.PresenceSnapshot
 	lifecycle         []string
+	applicationLogs   diagnostics.LogBuffer
 }
 
 const maxLifecycleEvents = 12
 
 func (s *statusStore) RecordLifecycle(event string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if len(s.lifecycle) == maxLifecycleEvents {
 		copy(s.lifecycle, s.lifecycle[1:])
 		s.lifecycle = s.lifecycle[:len(s.lifecycle)-1]
 	}
 	s.lifecycle = append(s.lifecycle, event)
+	s.mu.Unlock()
+	s.recordLifecycleLog(event)
+}
+
+func (s *statusStore) recordLifecycleLog(event string) {
+	switch event {
+	case "autostart_enabled":
+		s.applicationLogs.Record(diagnostics.SeverityInfo, diagnostics.LogAutostartEnabled)
+	case "autostart_disabled":
+		s.applicationLogs.Record(diagnostics.SeverityInfo, diagnostics.LogAutostartDisabled)
+	case "autostart_repaired":
+		s.applicationLogs.Record(diagnostics.SeverityInfo, diagnostics.LogAutostartRepaired)
+	case "autostart_error":
+		s.applicationLogs.Record(diagnostics.SeverityError, diagnostics.LogAutostartError)
+	case "autostart_read_error":
+		s.applicationLogs.Record(diagnostics.SeverityWarning, diagnostics.LogAutostartReadError)
+	case "shutdown_timeout":
+		s.applicationLogs.Record(diagnostics.SeverityError, diagnostics.LogShutdownTimeout)
+	}
 }
 
 func (s *statusStore) LifecycleEvents() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return append([]string(nil), s.lifecycle...)
+}
+
+func (s *statusStore) ApplicationLogs() []diagnostics.ApplicationLogEntry {
+	return s.applicationLogs.Snapshot()
 }
 
 func (s *statusStore) OnConnectionHealth(status connection.HealthStatus) {
@@ -99,11 +124,33 @@ func (s *statusStore) OnLiveSnapshot(status runtimehost.Status) {
 func (s *statusStore) OnRuntimeStatus(status runtimehost.Status) {
 	status.Diagnostics = runtimehost.SafeDiagnostics(status.Diagnostics)
 	s.mu.Lock()
+	if status.Phase != s.status.Phase {
+		s.recordRuntimeLog(status.Phase)
+	}
 	s.status = status
 	wake := s.wake
 	s.mu.Unlock()
 	if wake != nil {
 		wake()
+	}
+}
+
+func (s *statusStore) recordRuntimeLog(phase runtimehost.Phase) {
+	switch phase {
+	case runtimehost.PhaseStarting:
+		s.applicationLogs.Record(diagnostics.SeverityInfo, diagnostics.LogAppStarted)
+	case runtimehost.PhaseSearching:
+		s.applicationLogs.Record(diagnostics.SeverityInfo, diagnostics.LogRuntimeSearching)
+	case runtimehost.PhaseMonitoring:
+		s.applicationLogs.Record(diagnostics.SeverityInfo, diagnostics.LogGameLogMonitoring)
+	case runtimehost.PhaseSessionActive:
+		s.applicationLogs.Record(diagnostics.SeverityInfo, diagnostics.LogSessionActive)
+	case runtimehost.PhaseGameLogUnavailable:
+		s.applicationLogs.Record(diagnostics.SeverityWarning, diagnostics.LogGameLogUnavailable)
+	case runtimehost.PhaseWarning:
+		s.applicationLogs.Record(diagnostics.SeverityWarning, diagnostics.LogRuntimeWarning)
+	case runtimehost.PhaseFatal:
+		s.applicationLogs.Record(diagnostics.SeverityError, diagnostics.LogRuntimeError)
 	}
 }
 
@@ -165,7 +212,8 @@ func statusText(status runtimehost.Status) string {
 }
 
 func diagnosticsText(status runtimehost.Status) string {
-	header := fmt.Sprintf("VerseLink Telemetry\n\nStatus: %s\n\n%s", statusText(status), configurationText(status.Configuration))
+	version, commit := diagnosticsexport.BuildInfo()
+	header := fmt.Sprintf("VerseLink Telemetry\nVersion: %s\nCommit: %s\nPlatform: %s/%s\nGo: %s\n\nStatus: %s\n\n%s", version, commit, runtime.GOOS, runtime.GOARCH, runtime.Version(), statusText(status), configurationText(status.Configuration))
 	if !status.HasDiagnostics {
 		if status.Path != "" {
 			return fmt.Sprintf("%s\nGame.log: %s", header, status.Path)
