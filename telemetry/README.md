@@ -381,11 +381,14 @@ is used by that procedure.
 
 ## B6 Windows releases and manual updates
 
-Each stable `vMAJOR.MINOR.PATCH` release is a reproducible Windows amd64 GUI
-build. The portable ZIP contains only `verselink-telemetry.exe` and
+Each stable Telemetry release uses its own `telemetry-vMAJOR.MINOR.PATCH` tag
+(for example, `telemetry-v0.1.0`), separate from VerseLink server/web release
+tags. The executable embeds and displays the normalized app version
+`vMAJOR.MINOR.PATCH`; the portable ZIP contains only `verselink-telemetry.exe` and
 `INSTALLATION.txt`; the executable's diagnostics show the release version and
 source commit. Source/DEV builds retain useful `dev` and `unknown` fallbacks.
-The tag-only workflow also publishes a `.sha256` sidecar. See
+The workflow triggers only on the `telemetry-v*` tag namespace and publishes
+a `VerseLink Telemetry v...` release with the ZIP and a `.sha256` sidecar. See
 [`WINDOWS_RELEASE_INSTALL.txt`](WINDOWS_RELEASE_INSTALL.txt) for concise
 installation, update, and rollback steps.
 
