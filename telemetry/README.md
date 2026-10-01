@@ -384,9 +384,10 @@ is used by that procedure.
 Each stable Telemetry release uses its own `telemetry-vMAJOR.MINOR.PATCH` tag
 (for example, `telemetry-v0.1.0`), separate from VerseLink server/web release
 tags. The executable embeds and displays the normalized app version
-`vMAJOR.MINOR.PATCH`; the portable ZIP contains only `verselink-telemetry.exe` and
-`INSTALLATION.txt`; the executable's diagnostics show the release version and
-source commit. Source/DEV builds retain useful `dev` and `unknown` fallbacks.
+`vMAJOR.MINOR.PATCH`. The portable ZIP contains only
+`verselink-telemetry.exe` and `INSTALLATION.txt`; diagnostics show the
+release version and source commit. Source/DEV builds retain useful `dev` and
+`unknown` fallbacks.
 The workflow triggers only on the `telemetry-v*` tag namespace and publishes
 a `VerseLink Telemetry v...` release with the ZIP and a `.sha256` sidecar. See
 [`WINDOWS_RELEASE_INSTALL.txt`](WINDOWS_RELEASE_INSTALL.txt) for concise
