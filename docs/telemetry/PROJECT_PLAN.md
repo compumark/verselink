@@ -77,7 +77,7 @@ Goal: turn the core into a usable Windows background application.
 | B3 | Settings and Game.log Configuration | COMPLETE |
 | B4 | Windows Startup and Application Lifecycle | COMPLETE |
 | B5 | Local Diagnostics and Troubleshooting Export | COMPLETE |
-| B6 | Windows Packaging, Release Artifacts and Update Strategy | IN REVIEW |
+| B6 | Windows Packaging, Release Artifacts and Update Strategy | COMPLETE |
 
 ## Milestone C — VerseLink Connection
 
