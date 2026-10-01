@@ -95,7 +95,9 @@ to a VerseLink account.
 | C6 | Telemetry Heartbeat and Connection Health | COMPLETE |
 | C7 | Telemetry Presence Snapshot Ingest and Persistence | COMPLETE |
 | C8 | Telemetry Device Management in VerseLink | COMPLETE |
-| C9 | Telemetry End-to-End Integration, Resilience and Security Tests | IN REVIEW |
+| C9 | Telemetry End-to-End Integration, Resilience and Security Tests | COMPLETE |
+
+C9 validation note: GitHub CI run #36826687431 passed on head `d9e0fafd015536e767a1d14d76affa9fa48ba53f`; the PostgreSQL C9 end-to-end test ran successfully (332 passed, 0 failed, 0 skipped). Telemetry Go run #36826687425 and CodeQL run #36826681614 succeeded. The user confirmed that the manual DEV end-to-end test passed on 2026-09-30 using the C8 DEV instance and B4 client, covering pairing, heartbeat, live presence persistence, device revocation, and rejection of a subsequent request. PostgreSQL integration was not run locally because `TEST_DATABASE_URL` was not configured; GitHub CI provided the PostgreSQL validation.
 
 C6 validation note: The manual DEV smoke test was NOT RUN before merge and is expressly approved as post-merge validation after `ghcr.io/compumark/verselink:dev` is deployed to the DEV Portainer instance. This test is not covered by CI; production and `latest` are out of scope.
 
