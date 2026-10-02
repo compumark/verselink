@@ -78,6 +78,7 @@ Goal: turn the core into a usable Windows background application.
 | B4 | Windows Startup and Application Lifecycle | COMPLETE |
 | B5 | Local Diagnostics and Troubleshooting Export | COMPLETE |
 | B6 | Windows Packaging, Release Artifacts and Update Strategy | COMPLETE |
+| B7 | Notify Users When a Newer Telemetry Release Is Available | IN REVIEW |
 
 ## Milestone C — VerseLink Connection
 

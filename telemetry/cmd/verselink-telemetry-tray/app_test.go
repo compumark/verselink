@@ -12,7 +12,38 @@ import (
 	"github.com/compumark/verselink-telemetry/internal/runtimehost"
 	"github.com/compumark/verselink-telemetry/internal/settings"
 	"github.com/compumark/verselink-telemetry/internal/telemetry"
+	"github.com/compumark/verselink-telemetry/internal/updatecheck"
 )
+
+func TestUpdateIndicatorTransitionsAndNotifiesOnlyOnce(t *testing.T) {
+	var indicator updateIndicator
+	if indicator.apply(updatecheck.Result{InstalledVersion: "v1.2.3", AvailableVersion: "v1.2.3"}) || indicator.available() {
+		t.Fatal("current version activated update indicator")
+	}
+	if indicator.apply(updatecheck.Result{InstalledVersion: "dev", AvailableVersion: "v9.0.0"}) || indicator.available() {
+		t.Fatal("invalid installed metadata activated update indicator")
+	}
+	result := updatecheck.Result{InstalledVersion: "v1.9.9", AvailableVersion: "v1.10.0"}
+	if !indicator.apply(result) || !indicator.available() {
+		t.Fatal("newer version did not activate update indicator")
+	}
+	if got := indicator.tooltip(); !strings.Contains(got, "Update available: v1.10.0") {
+		t.Fatalf("update tooltip=%q", got)
+	}
+	text := indicator.notificationText()
+	if !strings.Contains(text, "v1.9.9") || !strings.Contains(text, "v1.10.0") {
+		t.Fatalf("notification does not contain both versions: %q", text)
+	}
+	if indicator.apply(result) {
+		t.Fatal("duplicate update result triggered a second notification")
+	}
+}
+
+func TestReleasePageURLIsFixed(t *testing.T) {
+	if releasePageURL != "https://github.com/compumark/verselink/releases" {
+		t.Fatalf("releasePageURL=%q", releasePageURL)
+	}
+}
 
 func TestStatusStoreKeepsOnlyPrivacySafePartyCount(t *testing.T) {
 	store := &statusStore{}
