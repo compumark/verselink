@@ -12,6 +12,7 @@ import (
 
 	"github.com/compumark/verselink-telemetry/internal/connection"
 	"github.com/compumark/verselink-telemetry/internal/diagnosticsexport"
+	"github.com/compumark/verselink-telemetry/internal/locationcatalog"
 	"github.com/compumark/verselink-telemetry/internal/settings"
 	"github.com/compumark/verselink-telemetry/internal/updatecheck"
 )
@@ -84,6 +85,7 @@ func runWindowsTray(autostart bool) error {
 	}
 	tray.heartbeatUpdates = make(chan connection.HeartbeatConfig, 1)
 	tray.presenceUpdates = make(chan connection.PresenceConfig, 1)
+	tray.locationCatalogUpdates = make(chan connection.LocationCatalogConfig, 1)
 	tray.workerGroup = &sync.WaitGroup{}
 	tray.autostart = autostartManager{store: nativeRunValueStore{}, executable: currentExe}
 	tray.configureSettings(settingsStore, gameLogSettings, settingsWarning)
@@ -91,7 +93,7 @@ func runWindowsTray(autostart bool) error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	workersDone := make(chan struct{})
-	tray.workerGroup.Add(4)
+	tray.workerGroup.Add(5)
 	shutdown := newShutdownController(cancel, workersDone, func() {
 		tray.beginShutdown()
 		go func() {
@@ -119,6 +121,12 @@ func runWindowsTray(autostart bool) error {
 	go func() {
 		defer tray.workerGroup.Done()
 		(connection.PresenceMonitor{Store: tray.credentialStore}).Run(ctx, tray.presenceConfig, tray.presenceUpdates, store.presenceSnapshots)
+	}()
+	go func() {
+		defer tray.workerGroup.Done()
+		cachePath, _ := locationcatalog.LocalCachePath(os.Getenv("LOCALAPPDATA"))
+		monitor := connection.LocationCatalogMonitor{Credentials: tray.credentialStore, Cache: locationcatalog.Store{Path: cachePath}}
+		monitor.Run(ctx, tray.locationCatalogConfig, tray.locationCatalogUpdates, store)
 	}()
 	go func() {
 		defer tray.workerGroup.Done()

@@ -1,4 +1,5 @@
 import { adminCreateInvite, adminTransferOwner, deleteUser, loadAdminState, loadMaterialsSyncState, removeMember, setUserStatus, syncMaterials } from '/js/groups-core.js';
+import '/js/telemetry-location-catalog-admin.js';
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
 const profileName = (name, path) => path ? `<button class="admin-profile-link" type="button" data-admin-profile-id="${esc(path.split('/').pop())}">${esc(name)}</button>` : esc(name);

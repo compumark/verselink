@@ -20,7 +20,12 @@ test("MobiGlass profile contains pairing plus private C8 device and history mana
   assert.match(profile, /LOAD OLDER/);
   assert.match(profile, /DELETE MY HISTORY/);
   assert.match(profile, /window\.confirm/);
-  assert.match(profile, /Location ID \(unresolved\)/);
+  assert.match(profile, /entry\.locationDisplay \|\| entry\.location_raw \|\| 'Unknown'/);
+  assert.match(profile, /System: \$\{esc\(entry\.systemDisplay \|\| 'Unknown'\)\}/);
+  assert.match(profile, /Jurisdiction: \$\{esc\(entry\.jurisdictionDisplay \|\| 'Unknown'\)\}/);
+  assert.match(profile, /Affiliation: \$\{esc\(entry\.affiliationDisplay \|\| 'Unknown'\)\}/);
+  assert.match(profile, /Raw ID:/);
+  assert.match(profile, /entry\.resolutionStatus === 'conflict'/);
   assert.doesNotMatch(profile, /localStorage|sessionStorage|indexedDB/);
   assert.doesNotMatch(profile, /Credential Manager|execFile|powershell|device_credential/);
 });

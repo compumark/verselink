@@ -224,8 +224,13 @@ contains only its history UUID, source device UUID/current device name,
 server `received_at`. Pages use a deterministic descending `(received_at,id)`
 cursor and a default size of 50 (maximum 100). `location_observed_at` is the
 event time when present; otherwise the UI must label `received_at` as server
-receipt time. Missing location or ship remains unknown. No location resolver
-is implied by this contract.
+receipt time. Missing location or ship remains unknown. Each entry also carries
+derived `locationDisplay`, `systemDisplay`, `jurisdictionDisplay`,
+`affiliationDisplay`, and `resolutionStatus` fields. These are joined at read
+time from the exact verified location key; stored history snapshots are not
+rewritten. Unknown raw keys remain visible and unresolved dimensions are
+`Unknown`. A mismatch between the stored telemetry jurisdiction and verified
+catalog jurisdiction is unresolved rather than guessed.
 
 The account owner may delete all of their history at any time. This operation
 does not change devices, credentials, or the current `telemetry_presence`
@@ -281,6 +286,15 @@ client may safely retry before expiry.
 | --- | --- | --- | --- | --- | --- | --- |
 | `POST /api/telemetry/heartbeat` | Device Bearer only | `{"schema":1}` | `200 {"schema":1,"ok":true,"received_at":"…"}` | 400 unsupported schema, 401 invalid/revoked credential, 403 inactive account, 429, 503 | 120 per device per minute | Credential only in Authorization header; never echoed. |
 | `PUT /api/telemetry/presence` | Device Bearer only | Schema-1 snapshot in §5 | Newer: `200 {"schema":1,"accepted":true,"revision":42,"received_at":"…"}`; exact duplicate: `200 {"schema":1,"accepted":false,"revision":42}`; lower revision: `409 stale_revision`; same revision/different snapshot: `409 revision_conflict` (both include current revision) | 400 `unsupported_schema`/`invalid_payload`, 401 invalid/revoked credential, 403 inactive account, 413 `payload_too_large`, 429, 503 | 120 per device per minute; max body 16 KiB | Credential only in Authorization header; body has no secret. |
+| `GET /api/telemetry/v1/location-catalog` | Device Bearer only | Optional `If-None-Match`; no telemetry payload | `200 {"schema":1,"version":N,"generated_at":"…","ttl_seconds":86400,"entries":[…]}` or `304` | 401 invalid/revoked credential, 403 inactive account, 429, 503 | 24 requests per device per day | Bounded versioned bundle of verified exact/manual mappings only. ETag and TTL support caching; no heartbeat/presence update. |
+
+The Windows client downloads the catalog at startup and refreshes it on a
+separate 12-hour schedule, never per parsed event or location change. The local
+cache is server-specific and valid for at most the advertised 24-hour TTL. The
+client sends no log, location state, or presence fields in this GET. On expiry,
+network failure, or unknown key it continues with the raw ID and `Unknown`
+system/jurisdiction/affiliation; it never infers jurisdiction from system,
+affiliation, old telemetry, or raw-key text.
 
 All listed limits count requests/attempts, not only failures: successful
 pairing-code creation, every pairing claim attempt, and successful as well as
