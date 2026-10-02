@@ -48,6 +48,8 @@ jobs:
           RELEASE_COMMIT: ${{ steps.version.outputs.commit }}
         run: |
           set -euo pipefail
+          test -s cmd/verselink-telemetry-tray/rsrc_windows_amd64.syso
+          test -s cmd/verselink-telemetry-tray/verselink.ico
           package="verselink-telemetry-${RELEASE_VERSION}-windows-amd64.zip"
           linker="-H=windowsgui -s -w -X github.com/compumark/verselink-telemetry/internal/diagnosticsexport.ReleaseVersion=${RELEASE_VERSION} -X github.com/compumark/verselink-telemetry/internal/diagnosticsexport.ReleaseCommit=${RELEASE_COMMIT}"
           for build in one two; do
