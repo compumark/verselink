@@ -45,9 +45,10 @@ const (
 
 	niifInfo = 0x00000001
 
-	imageIcon      = 1
-	lrShared       = 0x00008000
-	idiApplication = 32512
+	imageIcon       = 1
+	lrShared        = 0x00008000
+	lrDefaultSize   = 0x00000040
+	appIconResource = 1
 
 	mfString    = 0x00000000
 	mfGray      = 0x00000001
@@ -242,7 +243,11 @@ func newWindowsTray(store *statusStore) (*windowsTray, error) {
 		tray.cleanup()
 		return nil, err
 	}
-	icon, _, _ := procLoadImage.Call(0, idiApplication, imageIcon, 0, 0, lrShared)
+	icon, _, iconErr := procLoadImage.Call(instance, appIconResource, imageIcon, 0, 0, lrDefaultSize|lrShared)
+	if icon == 0 {
+		tray.cleanup()
+		return nil, fmt.Errorf("load VerseLink tray icon resource: %w", iconErr)
+	}
 	tray.icon = notifyIconData{
 		Size:            uint32(unsafe.Sizeof(notifyIconData{})),
 		HWnd:            hwnd,

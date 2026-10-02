@@ -37,6 +37,9 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Verify Windows icon resource
+        run: test -s cmd/verselink-telemetry-tray/rsrc_windows_amd64.syso && test -s cmd/verselink-telemetry-tray/verselink.ico
+
       - name: Windows cross-build
         run: go build ./...
         env:
