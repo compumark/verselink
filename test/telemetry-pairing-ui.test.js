@@ -4,6 +4,7 @@ import test from "node:test";
 
 test("MobiGlass profile contains pairing plus private C8 device and history management", async () => {
   const profile = await readFile(new URL("../public/js/profile-mobiglass.js", import.meta.url), "utf8");
+  const historyView = await readFile(new URL("../public/js/telemetry-history-view.js", import.meta.url), "utf8");
   assert.match(profile, /VERSELINK TELEMETRY/);
   assert.match(profile, /WINDOWS CLIENT/);
   assert.match(profile, /\/api\/me\/telemetry\/pairing/);
@@ -20,7 +21,10 @@ test("MobiGlass profile contains pairing plus private C8 device and history mana
   assert.match(profile, /LOAD OLDER/);
   assert.match(profile, /DELETE MY HISTORY/);
   assert.match(profile, /window\.confirm/);
-  assert.match(profile, /Location ID \(unresolved\)/);
+  assert.match(historyView, /Location ID \(unresolved\)/);
+  assert.match(profile, /renderTelemetryHistory\(telemetryHistory\)/);
+  assert.match(profile, /appendTelemetryHistoryPage\(telemetryHistory, history\.entries \|\| \[\]\)/);
+  assert.match(profile, /aria-live="polite"/);
   assert.doesNotMatch(profile, /localStorage|sessionStorage|indexedDB/);
   assert.doesNotMatch(profile, /Credential Manager|execFile|powershell|device_credential/);
 });
