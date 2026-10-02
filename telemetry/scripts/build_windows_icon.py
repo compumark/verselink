@@ -32,7 +32,12 @@ def generate_icon(output: Path = OUTPUT) -> None:
         alpha = max(0, min(255, (peak - 68) * 2))
         pixels.append((red, green, blue, alpha))
     rgba.putdata(pixels)
-    rgba.save(output, format="ICO", sizes=[(size, size) for size in SIZES])
+    rgba.save(
+        output,
+        format="ICO",
+        sizes=[(size, size) for size in SIZES],
+        bitmap_format="bmp",
+    )
 
 
 def main() -> None:
