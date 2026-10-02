@@ -10,10 +10,10 @@ REPOSITORY = Path(__file__).resolve().parents[1].parent
 SOURCE = REPOSITORY / "public" / "favicon.png"
 OUTPUT = REPOSITORY / "telemetry" / "cmd" / "verselink-telemetry-tray" / "verselink.ico"
 SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
-PINNED_PILLOW_VERSION = "12.1.0"
+PINNED_PILLOW_VERSION = "12.3.0"
 
 
-def main() -> None:
+def generate_icon(output: Path = OUTPUT) -> None:
     if pillow_version != PINNED_PILLOW_VERSION:
         raise SystemExit(
             f"Pillow {PINNED_PILLOW_VERSION} is required for reproducible icon generation; "
@@ -32,7 +32,11 @@ def main() -> None:
         alpha = max(0, min(255, (peak - 68) * 2))
         pixels.append((red, green, blue, alpha))
     rgba.putdata(pixels)
-    rgba.save(OUTPUT, format="ICO", sizes=[(size, size) for size in SIZES])
+    rgba.save(output, format="ICO", sizes=[(size, size) for size in SIZES])
+
+
+def main() -> None:
+    generate_icon()
 
 
 if __name__ == "__main__":
