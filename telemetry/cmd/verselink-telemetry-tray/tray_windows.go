@@ -16,6 +16,7 @@ import (
 	"github.com/compumark/verselink-telemetry/internal/diagnosticsexport"
 	"github.com/compumark/verselink-telemetry/internal/revision"
 	"github.com/compumark/verselink-telemetry/internal/settings"
+	"github.com/compumark/verselink-telemetry/internal/updatecheck"
 )
 
 const (
@@ -32,6 +33,7 @@ const (
 	liveStatusUpdate  = wmApp + 3
 	pairingComplete   = wmApp + 4
 	closeAfterPairing = wmApp + 5
+	updateCheckDone   = wmApp + 6
 
 	nimAdd     = 0x00000000
 	nimModify  = 0x00000001
@@ -39,6 +41,9 @@ const (
 	nifMessage = 0x00000001
 	nifIcon    = 0x00000002
 	nifTip     = 0x00000004
+	nifInfo    = 0x00000010
+
+	niifInfo = 0x00000001
 
 	imageIcon      = 1
 	lrShared       = 0x00008000
@@ -67,6 +72,7 @@ const (
 	exitMenuID        = 1003
 	liveMonitorMenuID = 1005
 	exportMenuID      = 1006
+	viewReleaseMenuID = 1007
 )
 
 var (
@@ -96,6 +102,7 @@ var (
 	procIsChild             = user32.NewProc("IsChild")
 	procIsWindowVisible     = user32.NewProc("IsWindowVisible")
 	procShellNotifyIcon     = shell32.NewProc("Shell_NotifyIconW")
+	procShellExecute        = shell32.NewProc("ShellExecuteW")
 	procGetModuleHandle     = kernel32.NewProc("GetModuleHandleW")
 
 	activeTray *windowsTray
@@ -163,6 +170,10 @@ type windowsTray struct {
 	store                   *statusStore
 	onExit                  func()
 	shuttingDown            bool
+	updateIndicator         updateIndicator
+	updateResults           chan updatecheck.Result
+	updatePostMu            sync.Mutex
+	updatePostClosed        bool
 	workerGroup             *sync.WaitGroup
 	autostart               autostartManager
 	removed                 bool
@@ -225,7 +236,7 @@ func newWindowsTray(store *statusStore) (*windowsTray, error) {
 		procDestroyWindow.Call(hwnd)
 		return nil, fmt.Errorf("create tray menu: %w", menuErr)
 	}
-	tray := &windowsTray{hwnd: hwnd, menu: menu, store: store}
+	tray := &windowsTray{hwnd: hwnd, menu: menu, store: store, updateResults: make(chan updatecheck.Result, 1)}
 	activeTray = tray
 	if err := tray.buildMenu(); err != nil {
 		tray.cleanup()
@@ -262,6 +273,7 @@ func (t *windowsTray) buildMenu() error {
 		{mfString, diagnosticsMenuID, "Open diagnostics"},
 		{mfString, exportMenuID, "Export troubleshooting package..."},
 		{mfString, settingsMenuID, "Settings..."},
+		{mfString, viewReleaseMenuID, "View release"},
 		{mfSeparator, 0, ""},
 		{mfString, exitMenuID, "Exit"},
 	}
@@ -323,6 +335,28 @@ func (t *windowsTray) postStatusUpdate() {
 
 func (t *windowsTray) postLiveStatusUpdate() {
 	procPostMessage.Call(t.hwnd, liveStatusUpdate, 0, 0)
+}
+
+func (t *windowsTray) postUpdateCheckResult(result updatecheck.Result) {
+	if t == nil || !result.HasUpdate() {
+		return
+	}
+	t.updatePostMu.Lock()
+	defer t.updatePostMu.Unlock()
+	if t.updatePostClosed || t.hwnd == 0 {
+		return
+	}
+	select {
+	case t.updateResults <- result:
+	default:
+		return
+	}
+	if posted, _, _ := procPostMessage.Call(t.hwnd, updateCheckDone, 0, 0); posted == 0 {
+		select {
+		case <-t.updateResults:
+		default:
+		}
+	}
 }
 
 func (t *windowsTray) publishHeartbeatConfig(value connection.HeartbeatConfig) {
@@ -403,7 +437,11 @@ func (t *windowsTray) refreshStatus() {
 	}
 	menuText, _ := syscall.UTF16PtrFromString("Connection: " + connectionText + " | " + text)
 	procModifyMenu.Call(t.menu, statusMenuID, mfByCommand|mfString|mfGray, statusMenuID, uintptr(unsafe.Pointer(menuText)))
-	copyUTF16(t.icon.Tip[:], "VerseLink — "+connectionText+" — "+text)
+	tip := "VerseLink — " + connectionText + " — " + text
+	if updateTip := t.updateIndicator.tooltip(); updateTip != "" {
+		tip = updateTip
+	}
+	copyUTF16(t.icon.Tip[:], tip)
 	t.icon.Flags = nifTip
 	procShellNotifyIcon.Call(nimModify, uintptr(unsafe.Pointer(&t.icon)))
 }
@@ -431,11 +469,35 @@ func (t *windowsTray) handleCommand(command uintptr) {
 		t.openLiveMonitor()
 	case settingsMenuID:
 		t.openSettings()
+	case viewReleaseMenuID:
+		t.openReleasePage()
 	case exitMenuID:
 		if t.onExit != nil {
 			t.onExit()
 		}
 	}
+}
+
+func (t *windowsTray) openReleasePage() {
+	verb, _ := syscall.UTF16PtrFromString("open")
+	url, _ := syscall.UTF16PtrFromString(releasePageURL)
+	result, _, _ := procShellExecute.Call(t.hwnd, uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(url)), 0, 0, 1)
+	if result <= 32 {
+		showNativeError("Could not open the VerseLink Releases page.")
+	}
+}
+
+func (t *windowsTray) showUpdateNotification(result updatecheck.Result) {
+	if t.shuttingDown || !t.updateIndicator.apply(result) {
+		return
+	}
+	t.refreshStatus()
+	copyUTF16(t.icon.InfoTitle[:], "VerseLink Telemetry")
+	copyUTF16(t.icon.Info[:], t.updateIndicator.notificationText())
+	t.icon.InfoFlags = niifInfo
+	t.icon.Flags = nifTip | nifInfo
+	procShellNotifyIcon.Call(nimModify, uintptr(unsafe.Pointer(&t.icon)))
+	t.icon.Flags = nifTip
 }
 
 func (t *windowsTray) exportDiagnostics() {
@@ -471,6 +533,9 @@ func (t *windowsTray) beginShutdown() {
 	if t == nil || t.shuttingDown {
 		return
 	}
+	t.updatePostMu.Lock()
+	t.updatePostClosed = true
+	t.updatePostMu.Unlock()
 	t.shuttingDown = true
 	t.cancelPairing()
 	if t.hwnd != 0 {
@@ -485,6 +550,9 @@ func (t *windowsTray) beginShutdown() {
 }
 
 func (t *windowsTray) cleanup() {
+	t.updatePostMu.Lock()
+	t.updatePostClosed = true
+	t.updatePostMu.Unlock()
 	if t.revisionLock != nil {
 		_ = t.revisionLock.Release()
 		t.revisionLock = nil
@@ -532,6 +600,15 @@ func windowProcedure(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 			return 0
 		case liveStatusUpdate:
 			tray.refreshLiveMonitor()
+			return 0
+		case updateCheckDone:
+			if !tray.shuttingDown {
+				select {
+				case result := <-tray.updateResults:
+					tray.showUpdateNotification(result)
+				default:
+				}
+			}
 			return 0
 		case pairingComplete:
 			tray.finishPairing()

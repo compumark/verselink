@@ -414,3 +414,24 @@ remain in `%LOCALAPPDATA%\VerseLink\Telemetry\settings.json`; paired
 credentials remain in the current user's Windows Credential Manager. Neither
 is included in or changed by the ZIP. B6 does not poll for releases, download
 in the background, or automatically replace files.
+
+## B7 release availability notice
+
+At startup, a stable release build asynchronously requests the public
+`https://api.github.com/repos/compumark/verselink/releases?per_page=100` list.
+It considers only non-draft, non-prerelease `telemetry-vMAJOR.MINOR.PATCH`
+releases and compares their numeric version against the installed `vX.Y.Z`
+build metadata. A newer release produces one Windows notification for that
+run and a tray tooltip identifying the available version. **View release**
+opens only the fixed VerseLink Releases page.
+
+The request contains no device identifier, credential, telemetry, or other
+user-specific data. It has a five-second timeout, a 1 MiB response cap, and
+does not follow redirects. Development/invalid-version builds skip the
+request. Offline, malformed, oversized, or unavailable API responses fail
+silently and do not interrupt Game.log processing. The check never downloads
+assets or updates the app. B7 adds only a best-effort availability notice,
+described below; updates remain manual. To update, use the documented procedure:
+download the release ZIP from the official Releases page, verify its SHA-256,
+exit the app, replace the executable while keeping a rollback copy, then
+restart it.

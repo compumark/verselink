@@ -14,7 +14,44 @@ import (
 	"github.com/compumark/verselink-telemetry/internal/gamelog"
 	"github.com/compumark/verselink-telemetry/internal/runtimehost"
 	"github.com/compumark/verselink-telemetry/internal/settings"
+	"github.com/compumark/verselink-telemetry/internal/updatecheck"
 )
+
+const releasePageURL = "https://github.com/compumark/verselink/releases"
+
+type updateIndicator struct {
+	installedVersion string
+	availableVersion string
+	notified         bool
+}
+
+func (s *updateIndicator) apply(result updatecheck.Result) bool {
+	if s == nil || s.notified || !result.HasUpdate() {
+		return false
+	}
+	s.installedVersion = result.InstalledVersion
+	s.availableVersion = result.AvailableVersion
+	s.notified = true
+	return true
+}
+
+func (s updateIndicator) available() bool {
+	return s.availableVersion != "" && updatecheck.IsNewer(s.installedVersion, s.availableVersion)
+}
+
+func (s updateIndicator) tooltip() string {
+	if !s.available() {
+		return ""
+	}
+	return "VerseLink Telemetry — Update available: " + s.availableVersion
+}
+
+func (s updateIndicator) notificationText() string {
+	if !s.available() {
+		return ""
+	}
+	return "Version " + s.availableVersion + " is available. Installed version: " + s.installedVersion + "."
+}
 
 type statusStore struct {
 	mu                sync.RWMutex

@@ -681,7 +681,32 @@ does not include or modify `%LOCALAPPDATA%\VerseLink\Telemetry\settings.json`
 or Windows Credential Manager entries, so settings and paired credentials
 survive replacement and rollback.
 
-Automatic release checks, background downloads, downloaded-package
+Automatic release checks were outside the B6 packaging scope and are added by
+B7 as a notification-only lookup. Background downloads, downloaded-package
 application, self-replacement, helper processes, and automatic update rollback
-are explicitly out of scope. No updater trust mechanism or signed update
-manifest is implemented.
+remain out of scope. No updater trust mechanism or signed update manifest is
+implemented.
+
+## B7 startup release-availability check
+
+Stable Telemetry builds start a best-effort worker that requests the public
+GitHub releases list at
+`https://api.github.com/repos/compumark/verselink/releases?per_page=100`.
+The worker has a five-second deadline and accepts at most 1 MiB of JSON. It
+does not follow redirects, authenticate, or include client-specific headers
+beyond fixed Accept and application User-Agent values. The check skips invalid
+or development build metadata. It selects the highest numeric, stable version only from
+non-draft, non-prerelease `telemetry-vMAJOR.MINOR.PATCH` tags; repository
+server/web releases and malformed tags are ignored.
+
+The result crosses to the native UI only as validated installed/available
+version values through the tray window message queue. A newer version causes
+one notification per process and changes the tray tooltip to identify the
+available version. The **View release** action opens a compile-time fixed
+`https://github.com/compumark/verselink/releases` URL, never an API-provided
+URL. The worker is canceled with app shutdown; queued completion is discarded
+once shutdown begins. API, network, timeout, cancellation, and JSON errors are
+silent. No identifiers, credentials, telemetry, response text, or release
+assets are sent or persisted. The app does not download, install, replace, or
+roll back binaries; users follow the B6 checksum-verified manual update and
+rollback procedure.

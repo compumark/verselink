@@ -4,7 +4,6 @@ package gamelog
 
 import (
 	"os"
-	"os/exec"
 	"sort"
 	"syscall"
 )
@@ -35,7 +34,10 @@ func queryRegistryRoots() ([]string, error) {
 	}
 	if len(roots) == 0 && lastErr != nil { return nil, lastErr }; return uniquePaths(roots), nil
 }
-func runWindowsCommand(name string, args ...string) (string, error) { output, err := exec.Command(name, args...).Output(); return string(output), err }
+func runWindowsCommand(name string, args ...string) (string, error) {
+	output, err := newHiddenWindowsCommand(name, args...).Output()
+	return string(output), err
+}
 func knownWindowsRoots() []string {
 	letters := []string{"C"}; mask, _, _ := syscall.NewLazyDLL("kernel32.dll").NewProc("GetLogicalDrives").Call()
 	for i := 0; i < 26; i++ { if mask&(1<<uint(i)) != 0 { letter := string(rune('A'+i)); if !containsFold(letters, letter) { letters = append(letters, letter) } } }

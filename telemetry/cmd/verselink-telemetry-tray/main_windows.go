@@ -11,7 +11,9 @@ import (
 	"sync"
 
 	"github.com/compumark/verselink-telemetry/internal/connection"
+	"github.com/compumark/verselink-telemetry/internal/diagnosticsexport"
 	"github.com/compumark/verselink-telemetry/internal/settings"
+	"github.com/compumark/verselink-telemetry/internal/updatecheck"
 )
 
 var errAlreadyRunning = errors.New("VerseLink Telemetry is already running")
@@ -89,7 +91,7 @@ func runWindowsTray(autostart bool) error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	workersDone := make(chan struct{})
-	tray.workerGroup.Add(3)
+	tray.workerGroup.Add(4)
 	shutdown := newShutdownController(cancel, workersDone, func() {
 		tray.beginShutdown()
 		go func() {
@@ -117,6 +119,14 @@ func runWindowsTray(autostart bool) error {
 	go func() {
 		defer tray.workerGroup.Done()
 		(connection.PresenceMonitor{Store: tray.credentialStore}).Run(ctx, tray.presenceConfig, tray.presenceUpdates, store.presenceSnapshots)
+	}()
+	go func() {
+		defer tray.workerGroup.Done()
+		installed, _ := diagnosticsexport.BuildInfo()
+		result, checkErr := updatecheck.CheckLatest(ctx, installed)
+		if checkErr == nil && result.HasUpdate() {
+			tray.postUpdateCheckResult(result)
+		}
 	}()
 
 	err = runTrayLifecycle(trayLifecycle{
