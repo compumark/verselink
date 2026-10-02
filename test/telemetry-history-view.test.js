@@ -91,8 +91,8 @@ test('loading an older page appends without reordering and merges a repeated-sta
 
 test('date boundaries create separate sections and do not collapse snapshots across days', () => {
   const entries = [
-    makeEntry('2', { received_at: '2026-10-01T22:01:00.000Z' }),
-    makeEntry('1', { received_at: '2026-10-01T21:59:00.000Z' })
+    makeEntry('2', { received_at: '2026-10-02T12:01:00.000Z' }),
+    makeEntry('1', { received_at: '2026-09-30T12:01:00.000Z' })
   ];
   assert.equal(groupTelemetryHistory(entries).length, 2);
   assert.equal((renderTelemetryHistory(entries).match(/class="profile-telemetry-history-day"/g) || []).length, 2);
