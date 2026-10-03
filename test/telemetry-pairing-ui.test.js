@@ -4,6 +4,7 @@ import test from "node:test";
 
 test("MobiGlass profile contains pairing plus private C8 device and history management", async () => {
   const profile = await readFile(new URL("../public/js/profile-mobiglass.js", import.meta.url), "utf8");
+  const historyView = await readFile(new URL("../public/js/telemetry-history-view.js", import.meta.url), "utf8");
   assert.match(profile, /VERSELINK TELEMETRY/);
   assert.match(profile, /WINDOWS CLIENT/);
   assert.match(profile, /\/api\/me\/telemetry\/pairing/);
@@ -20,12 +21,16 @@ test("MobiGlass profile contains pairing plus private C8 device and history mana
   assert.match(profile, /LOAD OLDER/);
   assert.match(profile, /DELETE MY HISTORY/);
   assert.match(profile, /window\.confirm/);
-  assert.match(profile, /entry\.locationDisplay \|\| entry\.location_raw \|\| 'Unknown'/);
-  assert.match(profile, /System: \$\{esc\(entry\.systemDisplay \|\| 'Unknown'\)\}/);
-  assert.match(profile, /Jurisdiction: \$\{esc\(entry\.jurisdictionDisplay \|\| 'Unknown'\)\}/);
-  assert.match(profile, /Affiliation: \$\{esc\(entry\.affiliationDisplay \|\| 'Unknown'\)\}/);
-  assert.match(profile, /Raw ID:/);
-  assert.match(profile, /entry\.resolutionStatus === 'conflict'/);
+  assert.match(historyView, /Location ID \(unresolved\)/);
+  assert.match(historyView, /entry\.locationDisplay/);
+  assert.match(historyView, /entry\.systemDisplay/);
+  assert.match(historyView, /entry\.jurisdictionDisplay/);
+  assert.match(historyView, /entry\.affiliationDisplay/);
+  assert.match(historyView, /Raw ID:/);
+  assert.match(historyView, /entry\.resolutionStatus === 'conflict'/);
+  assert.match(profile, /renderTelemetryHistory\(telemetryHistory\)/);
+  assert.match(profile, /appendTelemetryHistoryPage\(telemetryHistory, history\.entries \|\| \[\]\)/);
+  assert.match(profile, /aria-live="polite"/);
   assert.doesNotMatch(profile, /localStorage|sessionStorage|indexedDB/);
   assert.doesNotMatch(profile, /Credential Manager|execFile|powershell|device_credential/);
 });
