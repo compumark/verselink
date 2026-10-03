@@ -28,6 +28,13 @@ test("Mobiglass is served from the productive shell without a legacy alias", () 
   assert.doesNotMatch(serverSource, /url\.pathname === "\/classic(?:\/|\")/);
 });
 
+test("Mobiglass serves every module required by the profile and inventory shell", async () => {
+  for (const filename of ["telemetry-history-view.js", "inventory-icon-fix.js", "inventory-detail-clean.js"]) {
+    await readFile(new URL(`../public/js/${filename}`, import.meta.url), "utf8");
+    assert.ok(serverSource.includes(`"/js/${filename}"`), `server must serve /js/${filename}`);
+  }
+});
+
 test("Pyro keeps readable text and does not fall back to browser link colors", () => {
   assert.match(mobiglassSource, /html\[data-theme=pyro\]\{--accent:#ff8a78;--bright:#fff5f0;--muted:#f3beb5;--border:#a84e45;--text:#fffaf7/);
   assert.match(mobiglassSource, /a,a:visited\{color:var\(--accent\)\}/);
