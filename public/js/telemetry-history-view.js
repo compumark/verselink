@@ -1,25 +1,45 @@
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
 
 const displayValue = value => value == null ? '' : String(value);
+const normalizeEntry = entry => entry && typeof entry === 'object' && !Array.isArray(entry) ? entry : {};
 const sameSnapshotState = (left, right) => left.device_id === right.device_id
   && displayValue(left.device_name) === displayValue(right.device_name)
   && displayValue(left.location_raw) === displayValue(right.location_raw)
   && displayValue(left.jurisdiction) === displayValue(right.jurisdiction)
   && displayValue(left.ship_name) === displayValue(right.ship_name);
 
-export const appendTelemetryHistoryPage = (existing, page) => [...existing, ...page];
+let nextDayGroupId = 0;
+
+export const appendTelemetryHistoryPage = (existing, page) => {
+  const seen = new Set(existing.filter(entry => entry?.id != null).map(entry => String(entry.id)));
+  return [...existing, ...page.filter(entry => {
+    if (entry?.id == null) return true;
+    const id = String(entry.id);
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  })];
+};
+
+export const rememberTelemetryHistoryDayStates = (container, expandedDays) => {
+  container.querySelectorAll('.profile-telemetry-history-day[data-history-day-key]').forEach(day => {
+    expandedDays.set(day.dataset.historyDayKey, day.open);
+  });
+  return expandedDays;
+};
 
 export const groupTelemetryHistory = entries => {
+  const safeEntries = entries.map(normalizeEntry);
   const groups = [];
-  for (let index = 0; index < entries.length;) {
-    const first = entries[index];
+  for (let index = 0; index < safeEntries.length;) {
+    const first = safeEntries[index];
     const records = [first];
     let next = index + 1;
-    while (next < entries.length && sameSnapshotState(first, entries[next]) && dateSectionKey(first) === dateSectionKey(entries[next])) {
-      records.push(entries[next]);
+    while (next < safeEntries.length && sameSnapshotState(first, safeEntries[next]) && dateSectionKey(first) === dateSectionKey(safeEntries[next])) {
+      records.push(safeEntries[next]);
       next += 1;
     }
-    groups.push({ records, olderNeighbor: entries[next] || null });
+    groups.push({ records, olderNeighbor: safeEntries[next] || null });
     index = next;
   }
   return groups;
@@ -115,10 +135,11 @@ const groupMarkup = (group, deviceLabel) => {
   </details>`;
 };
 
-export const renderTelemetryHistory = entries => {
+export const renderTelemetryHistory = (entries, expandedDays = new Map()) => {
   if (!entries.length) return '<p class="profile-note profile-telemetry-history-empty">No presence history has been recorded yet.</p>';
-  const labels = deviceLabels(entries);
-  const groups = groupTelemetryHistory(entries);
+  const safeEntries = entries.map(normalizeEntry);
+  const labels = deviceLabels(safeEntries);
+  const groups = groupTelemetryHistory(safeEntries);
   const sections = [];
   for (const group of groups) {
     const entry = group.records[0];
@@ -130,9 +151,19 @@ export const renderTelemetryHistory = entries => {
     }
     section.groups.push(group);
   }
+  const newestSection = sections.reduce((newest, section) => {
+    const date = parsedDate(section.date);
+    return date && (!newest.date || date > newest.date) ? { key: section.key, date } : newest;
+  }, { key: null, date: null });
+  const newestDayKey = newestSection.key || sections[0]?.key;
   return `<div class="profile-telemetry-history-list" aria-label="Private presence history">${sections.map(section => {
     const date = parsedDate(section.date);
     const heading = date ? `<time datetime="${escapeHtml(date.toISOString())}">${escapeHtml(date.toLocaleDateString(undefined, { dateStyle: 'full' }))}</time>` : 'Unknown date';
-    return `<section class="profile-telemetry-history-day"><h3>${heading}</h3><ol>${section.groups.map(group => `<li>${groupMarkup(group, labels.get(group.records[0].id) || 'Unknown device')}</li>`).join('')}</ol></section>`;
+    const dayKey = section.key;
+    const groupId = `profile-telemetry-history-day-${++nextDayGroupId}`;
+    const entriesId = `${groupId}-entries`;
+    const entryCount = section.groups.reduce((total, group) => total + group.records.length, 0);
+    const isOpen = expandedDays.has(dayKey) ? expandedDays.get(dayKey) : dayKey === newestDayKey;
+    return `<details class="profile-telemetry-history-day" id="${groupId}" data-history-day-key="${escapeHtml(dayKey)}"${isOpen ? ' open' : ''}><summary aria-controls="${entriesId}"><h3>${heading}</h3><span class="profile-telemetry-history-day-count">${entryCount} ${entryCount === 1 ? 'entry' : 'entries'}</span><span class="profile-telemetry-history-day-indicator" aria-hidden="true"></span></summary><ol id="${entriesId}">${section.groups.map(group => `<li>${groupMarkup(group, labels.get(group.records[0].id) || 'Unknown device')}</li>`).join('')}</ol></details>`;
   }).join('')}</div>`;
 };

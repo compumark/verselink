@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { appendTelemetryHistoryPage, groupTelemetryHistory, renderTelemetryHistory } from '../public/js/telemetry-history-view.js';
+import { appendTelemetryHistoryPage, groupTelemetryHistory, rememberTelemetryHistoryDayStates, renderTelemetryHistory } from '../public/js/telemetry-history-view.js';
 
 const makeEntry = (id, overrides = {}) => ({
   id,
@@ -98,6 +98,62 @@ test('date boundaries create separate sections and do not collapse snapshots acr
   assert.equal((renderTelemetryHistory(entries).match(/class="profile-telemetry-history-day"/g) || []).length, 2);
 });
 
+test('newest day is open by default and older day keeps date and entry count visible while collapsed', () => {
+  const entries = [
+    makeEntry('3', { received_at: '2026-10-02T12:01:00.000Z', ship_name: 'Carrack' }),
+    makeEntry('2', { received_at: '2026-10-02T11:01:00.000Z', ship_name: 'Cutlass Black' }),
+    makeEntry('1', { received_at: '2026-10-01T12:01:00.000Z' })
+  ];
+  const markup = renderTelemetryHistory(entries);
+  const newestDayLabel = new Date('2026-10-02T12:01:00.000Z').toLocaleDateString(undefined, { dateStyle: 'full' });
+  const olderDayLabel = new Date('2026-10-01T12:01:00.000Z').toLocaleDateString(undefined, { dateStyle: 'full' });
+  const dayTags = [...markup.matchAll(/<details class="profile-telemetry-history-day"([^>]*)>/g)];
+  assert.equal(dayTags.length, 2);
+  assert.match(dayTags[0][1], /\bopen\b/);
+  assert.doesNotMatch(dayTags[1][1], /\bopen\b/);
+  assert.ok(markup.includes(`<h3><time`));
+  assert.ok(markup.includes(`${newestDayLabel}</time></h3><span class="profile-telemetry-history-day-count">2 entries</span>`));
+  assert.ok(markup.includes(`${olderDayLabel}</time></h3><span class="profile-telemetry-history-day-count">1 entry</span>`));
+  const controls = [...markup.matchAll(/<summary aria-controls="([^"]+)"/g)].map(match => match[1]);
+  const listIds = [...markup.matchAll(/<ol id="([^"]+)"/g)].map(match => match[1]);
+  assert.deepEqual(controls, listIds);
+  assert.equal(new Set([...markup.matchAll(/<details class="profile-telemetry-history-day" id="([^"]+)"/g)].map(match => match[1])).size, 2);
+});
+
+test('day groups toggle independently and retain their manual states when later pages are rendered', () => {
+  const newestDate = new Date('2026-10-02T12:01:00.000Z').toLocaleDateString();
+  const previousDate = new Date('2026-10-01T12:01:00.000Z').toLocaleDateString();
+  const newest = [
+    makeEntry('3', { received_at: '2026-10-02T12:01:00.000Z', ship_name: 'Carrack' }),
+    makeEntry('2', { received_at: '2026-10-02T11:01:00.000Z', ship_name: 'Cutlass Black' })
+  ];
+  const dayStates = new Map();
+  rememberTelemetryHistoryDayStates({
+    querySelectorAll: () => [
+      { dataset: { historyDayKey: newestDate }, open: false },
+      { dataset: { historyDayKey: previousDate }, open: true }
+    ]
+  }, dayStates);
+  const combined = appendTelemetryHistoryPage(newest, [
+    makeEntry('1', { received_at: '2026-10-01T12:01:00.000Z' }),
+    makeEntry('0', { received_at: '2026-09-30T12:01:00.000Z' }),
+    makeEntry('2', { received_at: '2026-10-02T11:01:00.000Z', ship_name: 'Cutlass Black' })
+  ]);
+  const markup = renderTelemetryHistory(combined, dayStates);
+  const dayAttributes = [...markup.matchAll(/<details class="profile-telemetry-history-day"([^>]*)>/g)]
+    .map(match => match[1]);
+  assert.equal(combined.length, 4);
+  assert.deepEqual(combined.map(entry => entry.id), ['3', '2', '1', '0']);
+  assert.equal((markup.match(/data-history-id=/g) || []).length, 4);
+  assert.match(markup, /data-history-day-key=".*?" open>/);
+  assert.equal(dayStates.get(newestDate), false);
+  assert.equal(dayStates.get(previousDate), true);
+  assert.equal(dayAttributes.length, 3);
+  assert.doesNotMatch(dayAttributes[0], /\bopen\b/);
+  assert.match(dayAttributes[1], /\bopen\b/);
+  assert.doesNotMatch(dayAttributes[2], /\bopen\b/);
+});
+
 test('unknown devices and untrusted field text render safely', () => {
   const markup = renderTelemetryHistory([makeEntry('<img>', {
     id: '<img>', device_id: 'abcdef12-1234-1234-1234-123456789012', device_name: '', location_raw: '<script>alert(1)</script>'
@@ -106,6 +162,19 @@ test('unknown devices and untrusted field text render safely', () => {
   assert.match(markup, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.doesNotMatch(markup, /<script>/);
   assert.match(markup, /data-history-id="&lt;img&gt;"/);
+});
+
+test('a malformed history entry does not prevent the remaining entries from rendering', () => {
+  const markup = renderTelemetryHistory([
+    makeEntry('2'),
+    null,
+    makeEntry('1', { received_at: 'not-a-date', location_raw: null })
+  ]);
+  assert.equal((markup.match(/class="profile-telemetry-history-snapshot"/g) || []).length, 3);
+  assert.match(markup, /data-history-id="2"/);
+  assert.match(markup, /data-history-id="1"/);
+  assert.match(markup, /Unknown date/);
+  assert.match(markup, /Unknown location/);
 });
 
 test('empty history is stated without fabricating entries', () => {

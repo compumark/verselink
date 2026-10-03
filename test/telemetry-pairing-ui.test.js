@@ -22,7 +22,8 @@ test("MobiGlass profile contains pairing plus private C8 device and history mana
   assert.match(profile, /DELETE MY HISTORY/);
   assert.match(profile, /window\.confirm/);
   assert.match(historyView, /Location ID \(unresolved\)/);
-  assert.match(profile, /renderTelemetryHistory\(telemetryHistory\)/);
+  assert.match(profile, /renderTelemetryHistory\(telemetryHistory, telemetryHistoryExpandedDays\)/);
+  assert.match(profile, /rememberTelemetryHistoryDayStates\(root, telemetryHistoryExpandedDays\)/);
   assert.match(profile, /appendTelemetryHistoryPage\(telemetryHistory, history\.entries \|\| \[\]\)/);
   assert.match(profile, /aria-live="polite"/);
   assert.doesNotMatch(profile, /localStorage|sessionStorage|indexedDB/);

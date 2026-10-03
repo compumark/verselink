@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/telemetry-c10-history-timeline
+      - codex/telemetry-128-collapse-history
 
 permissions:
   contents: read
@@ -15,7 +16,7 @@ concurrency:
 
 jobs:
   publish:
-    if: github.repository == 'compumark/verselink' && github.ref == 'refs/heads/feature/telemetry-c10-history-timeline'
+    if: github.repository == 'compumark/verselink' && (github.ref == 'refs/heads/feature/telemetry-c10-history-timeline' || github.ref == 'refs/heads/codex/telemetry-128-collapse-history')
     runs-on: ubuntu-latest
     steps:
       - name: Check out C10 commit
