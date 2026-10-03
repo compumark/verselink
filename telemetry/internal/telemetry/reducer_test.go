@@ -196,6 +196,18 @@ func TestReducePartyDisbandOnlyClearsParty(t *testing.T) {
 	}
 }
 
+func TestReduceLocationChangeClearsPreviousJurisdictionUntilObservedAgain(t *testing.T) {
+	state := TelemetryState{Location: &LocationState{Raw: "Stanton_Area18"}, Jurisdiction: "UEE"}
+	Reduce(&state, event("location_change", "game_log", at(11, 0), map[string]string{"location": "Pyro_RuinStation"}))
+	if state.Location == nil || state.Location.Raw != "Pyro_RuinStation" || state.Jurisdiction != "" {
+		t.Fatalf("location transition retained stale jurisdiction: %#v", state)
+	}
+	Reduce(&state, event("jurisdiction_entered", "game_log", at(11, 1), map[string]string{"jurisdiction": "Pyro Free Peoples"}))
+	if state.Jurisdiction != "Pyro Free Peoples" {
+		t.Fatalf("fresh jurisdiction observation = %q", state.Jurisdiction)
+	}
+}
+
 func TestReduceCombinedMultiDomainSequence(t *testing.T) {
 	var state TelemetryState
 	events := []TelemetryEvent{
@@ -286,12 +298,12 @@ func TestReduceMissingRequiredDataPreservesDomains(t *testing.T) {
 	state := TelemetryState{
 		PlayerHandle: "Pilot",
 		Shard:        "Shard",
-		Location:      &LocationState{Raw: "Location", ObservedAt: locationAt, Source: "game_log"},
-		Jurisdiction:  "Stanton",
-		Ship:          &ShipState{Name: "Ship", Owner: "Owner"},
-		Quantum:       &QuantumState{Destination: "ARC-L1", State: QuantumStateTargetSelected},
-		Party:         []string{"Alpha"},
-		LastEventAt:   locationAt,
+		Location:     &LocationState{Raw: "Location", ObservedAt: locationAt, Source: "game_log"},
+		Jurisdiction: "Stanton",
+		Ship:         &ShipState{Name: "Ship", Owner: "Owner"},
+		Quantum:      &QuantumState{Destination: "ARC-L1", State: QuantumStateTargetSelected},
+		Party:        []string{"Alpha"},
+		LastEventAt:  locationAt,
 	}
 	for index, eventType := range []string{
 		"player_login", "server_joined", "location_change", "jurisdiction_entered", "ship_boarded",

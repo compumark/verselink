@@ -593,6 +593,52 @@ reactivation exposes only unexpired rows. Hard account deletion cascades
 remaining history immediately. No parser-event stream or peer sharing is
 added.
 
+### Telemetry location catalog and exact resolution (Issue #126)
+
+The history's original `location_raw` and `jurisdiction` values remain
+immutable. `location_raw` is resolved only by an exact byte-for-byte key in
+`telemetry_location_catalog` with `status='verified'`; there is no fuzzy
+matching or fallback to a same-named location. The history endpoint joins this
+global reference table at read time, so admins can correct future display of
+already-retained history without rewriting telemetry snapshots. A disagreement
+between legacy telemetry jurisdiction and an approved mapping displays
+jurisdiction as `Unknown` until the catalog record or source is reviewed.
+
+Place, parent, game system, jurisdiction, and faction/affiliation are separate
+catalog fields. The live Windows monitor uses the same exact-key bundle and
+resolver as Web History. It shows the raw key secondarily, never treats
+`TelemetryState.Jurisdiction` as authoritative, and keeps operating with the
+raw key plus `Unknown` display dimensions when no fresh catalog entry exists.
+The reducer clears its previous jurisdiction observation on a location
+transition, preventing a value from one system/location from being carried into
+the next presence snapshot. This corrects the stale-value cause of false UEE
+display; existing historical values are not bulk-rewritten.
+
+The device endpoint `GET /api/telemetry/v1/location-catalog` reuses C4 device
+Bearer authentication, returns a bounded versioned bundle with ETag, and has a
+separate 24-request/day/device limit. It does not mutate heartbeat or presence
+timestamps or receive any gameplay fields. The Windows client uses a
+server-specific local JSON cache with an atomic write, restrictive permissions,
+and a maximum 24-hour validity; refresh is scheduled independently every 12
+hours, not per event.
+
+Admin catalog routes are protected by the existing admin session check, and
+writes also require the configured exact VerseLink Origin. The panel exposes no
+user IDs, device IDs, credentials, history rows, or user activity. Admins can
+search/edit exact keys, mark reviewed entries verified, and preview unknown
+keys. External imports are proposal-only and cannot create a raw-key mapping.
+The Star Citizen Wiki `/api/locations` response currently exposes UUID, slug,
+name, system/star, parent, type, jurisdiction, affiliation, `updated_at`, and
+game-data `version`, but no internal telemetry `location_raw` key; a name or
+hierarchy resemblance is therefore never an exact match. Its records can only
+populate review proposals. UEX terminal records are likewise treated as
+reference proposals, not key mappings. Import is server-side, bounded by
+timeout, per-page and page-count limits, idempotent, and writes only to the
+proposal table, preserving all manually reviewed catalog rows. See
+[`LOCATION_CATALOG.md`](LOCATION_CATALOG.md) for field mapping and source
+limitations. No external service is called by Windows or by per-entry history
+resolution.
+
 ### C9 end-to-end verification (in review)
 
 C9 adds a PostgreSQL-backed server integration scenario that composes real C3

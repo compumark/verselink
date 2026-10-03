@@ -16,6 +16,7 @@ import { createTelemetryHistoryCleanupRunner } from "./telemetry-history-cleanup
 import { createOriginChecker } from "./request-origin.js";
 import { generateDeviceCredential, generatePairingCode, hashDeviceCredential, hashPairingCode, normalizeDeviceName, normalizePairingCode } from "./telemetry-pairing.js";
 import { authenticateTelemetryDevice } from "./telemetry-device-auth.js";
+import { createLocationCatalogHandlers } from "./telemetry-location-catalog.js";
 import { normalizeScmdbSinkBaseUrl, scmdbSinkUrl } from "./scmdb-sink-config.js";
 import { createDiscordAdminNotifier } from "./discord-admin-dm.js";
 import { createLogger } from "./logger.js";
@@ -231,6 +232,39 @@ CREATE INDEX IF NOT EXISTS telemetry_presence_history_device_page_idx
   ON telemetry_presence_history(device_id,received_at DESC,id DESC);
 CREATE INDEX IF NOT EXISTS telemetry_presence_history_retention_idx
   ON telemetry_presence_history(received_at,id);
+CREATE TABLE IF NOT EXISTS telemetry_location_catalog_version (
+  id boolean PRIMARY KEY DEFAULT true CHECK (id=true),
+  version bigint NOT NULL DEFAULT 1 CHECK (version BETWEEN 1 AND 9007199254740991),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO telemetry_location_catalog_version(id) VALUES(true) ON CONFLICT(id) DO NOTHING;
+CREATE TABLE IF NOT EXISTS telemetry_location_catalog (
+  location_raw text PRIMARY KEY CHECK (octet_length(location_raw) BETWEEN 1 AND 256),
+  display_name text NOT NULL CHECK (octet_length(display_name) BETWEEN 1 AND 256),
+  system_name text CHECK (system_name IS NULL OR octet_length(system_name) <= 128),
+  parent_name text CHECK (parent_name IS NULL OR octet_length(parent_name) <= 256),
+  jurisdiction text CHECK (jurisdiction IS NULL OR octet_length(jurisdiction) <= 128),
+  affiliation text CHECK (affiliation IS NULL OR octet_length(affiliation) <= 128),
+  source text NOT NULL CHECK (octet_length(source) <= 128),
+  match_type text NOT NULL CHECK (match_type IN ('exact','manual','alias','suggestion')),
+  status text NOT NULL CHECK (status IN ('suggested','verified')),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  verified_at timestamptz,
+  CHECK (status <> 'verified' OR match_type IN ('exact','manual'))
+);
+CREATE INDEX IF NOT EXISTS telemetry_location_catalog_search_idx ON telemetry_location_catalog(status,location_raw);
+CREATE TABLE IF NOT EXISTS telemetry_location_suggestions (
+  source text NOT NULL CHECK (octet_length(source) BETWEEN 1 AND 128),
+  external_id text NOT NULL CHECK (octet_length(external_id) BETWEEN 1 AND 128),
+  display_name text NOT NULL CHECK (octet_length(display_name) BETWEEN 1 AND 256),
+  system_name text CHECK (system_name IS NULL OR octet_length(system_name) <= 128),
+  parent_name text CHECK (parent_name IS NULL OR octet_length(parent_name) <= 256),
+  jurisdiction text CHECK (jurisdiction IS NULL OR octet_length(jurisdiction) <= 128),
+  affiliation text CHECK (affiliation IS NULL OR octet_length(affiliation) <= 128),
+  match_type text NOT NULL DEFAULT 'suggestion' CHECK (match_type='suggestion'),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY(source,external_id)
+);
 CREATE TABLE IF NOT EXISTS telemetry_pairing_codes (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   app_user_id uuid NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
@@ -668,6 +702,7 @@ const telemetryPresenceRateLimit = createRequestRateLimiter({ limit: PRESENCE_RE
 const telemetryManagementListRateLimit = createRequestRateLimiter({ limit: 60, windowMs: 60_000 });
 const telemetryManagementMutationRateLimit = createRequestRateLimiter({ limit: 30, windowMs: 60_000 });
 const telemetryHistoryRateLimit = createRequestRateLimiter({ limit: 60, windowMs: 60_000 });
+const telemetryLocationCatalogRateLimit = createRequestRateLimiter({ limit: 24, windowMs: 24 * 60 * 60_000 });
 const tooManyRequests = (res, req, event = "auth.rate_limited") => { logger.warn(event, { reason: "rate_limited" }, { request_id: req?.requestId }); return json(res, 429, { error: "too many requests" }); };
 const sameVerseLinkOrigin = createOriginChecker(verseLinkAppUrl);
 const sameVerseLinkOriginRequired = createOriginChecker(verseLinkAppUrl, { requireOrigin: true, exactOrigin: true });
@@ -1700,6 +1735,15 @@ const telemetryManagement = createTelemetryManagementHandlers({
   sendJson: json,
   sendError: telemetryError,
   sendRateLimited: (res, route, rate) => telemetryError(res, 429, "rate_limited", rate.retryAfter)
+});
+
+const telemetryLocationCatalog = createLocationCatalogHandlers({
+  pool,
+  authenticateDevice: (req) => authenticateTelemetryDevice({ request: req, pool, pepper }),
+  consumeDeviceLimit: (deviceId) => telemetryLocationCatalogRateLimit.consume(deviceId),
+  wikiImportEnabled: process.env.TELEMETRY_LOCATION_WIKI_IMPORT_ENABLED === "1",
+  sendJson: json,
+  sendError: telemetryError
 });
 
 const server = createServer(async (req, res) => {
@@ -2918,6 +2962,21 @@ const server = createServer(async (req, res) => {
         pool.query("SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE c.app_user_id IS NOT NULL AND COALESCE(u.account_status, 'active') = 'active')::int AS active, COUNT(*) FILTER (WHERE c.app_user_id IS NULL AND c.scmdb_user_id IS NULL)::int AS unconfigured, COUNT(*) FILTER (WHERE c.last_seen_at < now() - interval '30 days')::int AS stale, (SELECT COUNT(*)::int FROM revoked_sink_tokens) AS revoked FROM scmdb_connections c LEFT JOIN app_users u ON u.id = c.app_user_id")
       ]); return json(res, 200, { groups: groups.rows, users: users.rows, token_stats: tokenStats.rows[0] });
     }
+    if (url.pathname.startsWith("/api/admin/telemetry/location-catalog")) {
+      const current = await getCurrentAppUser(req);
+      if (!current?.is_admin) return json(res, 403, { error: "admin required" });
+      if (req.method !== "GET" && !sameVerseLinkOriginRequired(req)) return telemetryError(res, 401, "login required");
+      if (req.method === "GET" && url.pathname === "/api/admin/telemetry/location-catalog") return telemetryLocationCatalog.adminList(current, res, url);
+      if (req.method === "GET" && url.pathname === "/api/admin/telemetry/location-catalog/suggestions") return telemetryLocationCatalog.listSuggestions(current, res, url.searchParams.get("q") || "");
+      if (req.method === "POST" && url.pathname === "/api/admin/telemetry/location-catalog") {
+        const parsed = await readTelemetryJson(req, 8192);
+        if (parsed.error) return telemetryError(res, parsed.status, parsed.error);
+        return telemetryLocationCatalog.saveEntry(current, res, parsed.body);
+      }
+      const importMatch = url.pathname.match(/^\/api\/admin\/telemetry\/location-catalog\/import\/(wiki|uex)$/);
+      if (req.method === "POST" && importMatch) return telemetryLocationCatalog.importCandidates(current, res, importMatch[1]);
+      return json(res, 404, { error: "not found" });
+    }
     if (req.method === "GET" && url.pathname === "/api/admin/uex-sync") { const current=await getCurrentAppUser(req);if(!current?.is_admin)return json(res,403,{error:"admin required"});const result=await pool.query("SELECT last_sync_at FROM uex_sync_state WHERE id=true");return json(res,200,{...uexSyncState,lastSyncAt:result.rows[0]?.last_sync_at||uexSyncState.lastSyncAt}); }
     if (req.method === "POST" && url.pathname === "/api/admin/uex-sync") { const current=await getCurrentAppUser(req);if(!current?.is_admin)return json(res,403,{error:"admin required"});try{return json(res,200,await syncUexData())}catch(error){logger.warn("uex.sync.failed",{error:error.message},requestLogContext(req,current));return json(res,502,{error:"UEX sync failed"});} }
 
@@ -3201,7 +3260,7 @@ const server = createServer(async (req, res) => {
       return res.end(content);
     }
 
-    if (req.method === "GET" && ["/js/about-mobiglass.js", "/js/admin-mobiglass.js", "/js/alias-mobiglass.js", "/js/profile-mobiglass.js", "/js/profile-accent.js", "/js/telemetry-history-view.js", "/js/inventory-icon-fix.js", "/js/inventory-detail-clean.js", "/js/mobiglass-auth-entry.js", "/js/missions-mobiglass.js", "/js/notifications-mobiglass.js", "/js/version-watch.js", "/js/auth-core.js", "/js/trading-core.js", "/js/trading-classic.js", "/js/trading-mobiglass.js"].includes(url.pathname)) {
+    if (req.method === "GET" && ["/js/about-mobiglass.js", "/js/admin-mobiglass.js", "/js/telemetry-location-catalog-admin.js", "/js/alias-mobiglass.js", "/js/profile-mobiglass.js", "/js/profile-accent.js", "/js/telemetry-history-view.js", "/js/inventory-icon-fix.js", "/js/inventory-detail-clean.js", "/js/mobiglass-auth-entry.js", "/js/missions-mobiglass.js", "/js/notifications-mobiglass.js", "/js/version-watch.js", "/js/auth-core.js", "/js/trading-core.js", "/js/trading-classic.js", "/js/trading-mobiglass.js"].includes(url.pathname)) {
       const content = await readFile(join(publicDir, "js", url.pathname.slice("/js/".length)));
       res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" });
       return res.end(content);
@@ -3230,6 +3289,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/api/telemetry/pair") return handleTelemetryPairClaim(req, res);
     if (req.method === "POST" && url.pathname === "/api/telemetry/heartbeat") return handleTelemetryHeartbeat(req, res);
     if (req.method === "PUT" && url.pathname === "/api/telemetry/presence") return handleTelemetryPresence(req, res);
+    if (req.method === "GET" && url.pathname === "/api/telemetry/v1/location-catalog") return telemetryLocationCatalog.deviceBundle(req, res);
     if (req.method === "GET" && url.pathname === "/api/me/telemetry/devices") return telemetryManagement.listDevices(req, res);
     const telemetryDeviceManagementMatch = url.pathname.match(/^\/api\/me\/telemetry\/devices\/([^/]+)$/);
     if ((req.method === "PATCH" || req.method === "DELETE") && telemetryDeviceManagementMatch) {

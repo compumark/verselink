@@ -9,6 +9,7 @@ import (
 	"github.com/compumark/verselink-telemetry/internal/connection"
 	"github.com/compumark/verselink-telemetry/internal/diagnostics"
 	"github.com/compumark/verselink-telemetry/internal/gamelog"
+	"github.com/compumark/verselink-telemetry/internal/locationcatalog"
 	"github.com/compumark/verselink-telemetry/internal/runtimehost"
 	"github.com/compumark/verselink-telemetry/internal/settings"
 	"github.com/compumark/verselink-telemetry/internal/telemetry"
@@ -363,7 +364,7 @@ func TestLiveTelemetryPresentationIncludesCurrentStructuredState(t *testing.T) {
 			Quantum: &telemetry.QuantumState{Destination: "Baijini Point", State: "traveling"}, Party: []string{"PrivatePartyMember"},
 		}},
 	}
-	p := presentLiveTelemetry(status)
+	p := presentLiveTelemetryWithCatalog(status, locationcatalog.Catalog{Schema: 1, Version: 1, TTLSeconds: 86400, Entries: []locationcatalog.Entry{{LocationRaw: "Area 18", DisplayName: "Area 18", SystemName: "Stanton", Jurisdiction: "ArcCorp", Affiliation: "United Empire of Earth", MatchType: "manual", Status: "verified"}}})
 	want := strings.Join([]string{
 		"VerseLink Telemetry — Live Monitor",
 		"Status: Session active",
@@ -380,6 +381,9 @@ func TestLiveTelemetryPresentationIncludesCurrentStructuredState(t *testing.T) {
 		"Location: Area 18",
 		"Location observed: 2026-09-24T10:10:00Z",
 		"Jurisdiction: ArcCorp",
+		"System: Stanton",
+		"Affiliation: United Empire of Earth",
+		"Location raw ID: Area 18",
 		"Ship: Anvil_Carrack",
 		"Ship owner: PilotOne",
 		"Quantum destination: Baijini Point",
@@ -395,6 +399,21 @@ func TestLiveTelemetryPresentationIncludesCurrentStructuredState(t *testing.T) {
 		if strings.Contains(formatted, forbidden) {
 			t.Errorf("live text contains forbidden %q", forbidden)
 		}
+	}
+}
+
+func TestLiveMonitorDoesNotGuessUEEForUnknownPyroLocation(t *testing.T) {
+	status := runtimehost.Status{Phase: runtimehost.PhaseSessionActive, HasDiagnostics: true, Diagnostics: gamelog.SessionDiagnostics{State: telemetry.TelemetryState{
+		Location: &telemetry.LocationState{Raw: "Pyro4_Outpost_col_m_scrp_indy_001"}, Jurisdiction: "UEE",
+	}}}
+	p := presentLiveTelemetry(status)
+	if p.location != "Pyro4_Outpost_col_m_scrp_indy_001" || p.locationRaw != "Pyro4_Outpost_col_m_scrp_indy_001" || p.system != "Unknown" || p.zone != "Unknown" || p.affiliation != "Unknown" {
+		t.Fatalf("unknown Pyro location was guessed: %#v", p)
+	}
+	catalog := locationcatalog.Catalog{Schema: 1, Version: 2, TTLSeconds: 86400, Entries: []locationcatalog.Entry{{LocationRaw: "Pyro4_Outpost_col_m_scrp_indy_001", DisplayName: "Confirmed Pyro Outpost", SystemName: "Pyro", MatchType: "manual", Status: "verified"}}}
+	p = presentLiveTelemetryWithCatalog(status, catalog)
+	if p.location != "Confirmed Pyro Outpost" || p.system != "Pyro" || p.zone != "Unknown" || p.affiliation != "Unknown" || p.locationRaw != "Pyro4_Outpost_col_m_scrp_indy_001" {
+		t.Fatalf("Pyro display mixed dimensions or used a jurisdiction fallback: %#v", p)
 	}
 }
 
