@@ -1,5 +1,5 @@
 export const statusRank={claimed:0,reported:1,open:2,completed:3,cancelled:4,in_progress:1};
-export const materials=['Agricium','Aluminum','Aslarite','Beryl','Bexalite','Boron','Copper','Corundum','Dolivine','Gold','Hadanite','Hephaestanite','Iron','Laranite','Ouratite','Quantainium','Savrilium','Stileron','Taranite','Titanium','Tungsten'];
+export const materials=['Agricium','Aluminum','Aslarite','Beryl','Bexalite','Boron','Borase','Copper','Corundum','Dolivine','Gold','Hadanite','Hephaestanite','Iron','Laranite','Ouratite','Quantainium','Quartz','Riccite','Savrilium','Silicon','Stileron','Taranite','Tin','Titanium','Torite','Tungsten'];
 export const normalizeStatus=order=>{const s=String(order?.status||'').toLowerCase();return s==='in_progress'?'reported':s};
 export const progressFor=order=>{const required=Math.max(Number(order?.required_quantity)||0,0),delivered=Math.max(Number(order?.delivered_quantity)||0,0),remaining=Math.max(required-delivered,0),percentage=required>0?Math.min(100,Math.round(delivered/required*100)):0;return {required,delivered,remaining,percentage}};
 export const sortOrders=orders=>[...orders].sort((a,b)=>(statusRank[normalizeStatus(a)]??9)-(statusRank[normalizeStatus(b)]??9)||String(b.created_at||'').localeCompare(String(a.created_at||'')));

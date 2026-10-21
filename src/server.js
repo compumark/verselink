@@ -63,7 +63,7 @@ const tradingShips = Object.fromEntries([
 const tradingShipOptions = Object.entries(tradingShips).sort(([, a], [, b]) => b.cargo - a.cargo);
 const tradingSystems = { stanton: "Stanton", pyro: "Pyro", nyx: "Nyx" };
 const materialOrderCodes = new Map([
-  ["agricium", "AGRI"], ["aluminum", "ALUM"], ["aphorite", "APHO"], ["aslarite", "ASLA"], ["beryl", "BERY"], ["bexalite", "BEXA"], ["boron", "BORO"], ["borase", "BORA"], ["copper", "COPP"], ["corundum", "CORU"], ["diamond", "DIAM"], ["dolivine", "DOLI"], ["gold", "GOLD"], ["hadanite", "HADA"], ["hephaestanite", "HEPH"], ["iron", "IRON"], ["janalite", "JANA"], ["laranite", "LARA"], ["ouratite", "OURA"], ["quantainium", "QUAN"], ["savrilium", "SAVR"], ["stileron", "STIL"], ["taranite", "TARA"], ["titanium", "TITA"], ["tungsten", "TUNG"]
+  ["agricium", "AGRI"], ["aluminum", "ALUM"], ["aphorite", "APHO"], ["aslarite", "ASLA"], ["beryl", "BERY"], ["bexalite", "BEXA"], ["boron", "BORO"], ["borase", "BORA"], ["copper", "COPP"], ["corundum", "CORU"], ["diamond", "DIAM"], ["dolivine", "DOLI"], ["gold", "GOLD"], ["hadanite", "HADA"], ["hephaestanite", "HEPH"], ["iron", "IRON"], ["janalite", "JANA"], ["laranite", "LARA"], ["ouratite", "OURA"], ["quantainium", "QUAN"], ["quartz", "QUAR"], ["riccite", "RICC"], ["savrilium", "SAVR"], ["silicon", "SILI"], ["stileron", "STIL"], ["taranite", "TARA"], ["tin", "TIN"], ["titanium", "TITA"], ["torite", "TORI"], ["tungsten", "TUNG"]
 ]);
 const materialOrderCode = (material) => materialOrderCodes.get(String(material || "").trim().toLowerCase()) || "ITEM";
 let uexPriceCache = { expiresAt: 0, rows: null, updatedAt: null };
