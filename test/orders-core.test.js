@@ -1,7 +1,32 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { filterOrders, normalizeStatus, orderSharePath, progressFor, scmdbUrl } from '../public/js/orders-core.js';
+import { createOrder, filterOrders, materials, normalizeStatus, orderSharePath, progressFor, scmdbUrl } from '../public/js/orders-core.js';
+
+test('mining materials include only the verified hotfix additions and retain the existing catalog',()=>{
+  for(const material of ['Agricium','Boron','Borase','Quartz','Riccite','Silicon','Tin','Torite','Tungsten'])assert.ok(materials.includes(material),`${material} should be selectable`);
+  assert.equal(new Set(materials).size,materials.length);
+});
+
+test('Riccite order creation sends the selected material and the server persists it',async()=>{
+  const originalFetch=globalThis.fetch;
+  let request;
+  globalThis.fetch=async(url,options)=>{
+    request={url,options};
+    return {ok:true,status:201,json:async()=>({ok:true,id:'order-id',order_number:'RICC-2026-0001'})};
+  };
+  try{
+    const result=await createOrder({group_id:'group-id',material_name:'Riccite',required_quantity:'2'});
+    assert.equal(result.order_number,'RICC-2026-0001');
+    assert.equal(request.url,'/api/orders');
+    assert.equal(new URLSearchParams(request.options.body).get('material_name'),'Riccite');
+    assert.equal(request.options.method,'POST');
+  }finally{globalThis.fetch=originalFetch;}
+  const server=await readFile(new URL('../src/server.js',import.meta.url),'utf8');
+  for(const [name,code] of [['borase','BORA'],['quartz','QUAR'],['riccite','RICC'],['silicon','SILI'],['tin','TIN'],['torite','TORI']])assert.match(server,new RegExp(`\\["${name}",\\s*"${code}"\\]`));
+  assert.match(server,/INSERT INTO material_orders \(order_number,group_id,created_by,blueprint_tag,material_name,/);
+  assert.match(server,/\[materialOrderCode\(material\),groupId,context\.appUserId,p\.get\("blueprint_tag"\)\|\|null,material,qty/);
+});
 
 test('normalizes legacy in_progress status for the shared Orders UI',()=>assert.equal(normalizeStatus({status:'in_progress'}),'reported'));
 test('calculates delivered and remaining quantities safely',()=>assert.deepEqual(progressFor({required_quantity:10,delivered_quantity:4}),{required:10,delivered:4,remaining:6,percentage:40}));
