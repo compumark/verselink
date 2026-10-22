@@ -13,7 +13,9 @@ This document describes the isolated DEV image build for issue #133. It does not
 
 ## Isolated image build and publish
 
-The repository's `.github/workflows/docker-publish.yml` only publishes the moving `dev` and SHA tags on pushes to `main`, or stable release tags through manual dispatch. It cannot publish a uniquely tagged image from this security branch. After the PR has been reviewed and publication is approved, check out the reviewed PR head, confirm it is the intended source, authenticate to GHCR interactively, and run from the repository root in PowerShell:
+The source snapshot also contains `.github/workflows/c10-smoke-image.yml`, the isolated DEV workflow that built C10 smoke images. It runs on pushes to `feature/telemetry-c10-history-timeline` or `codex/telemetry-128-collapse-history` and publishes `c10-smoke-${github.sha}`. The default `.github/workflows/docker-publish.yml` is separate: it publishes `dev` and SHA tags from `main` and stable tags by manual dispatch. Neither workflow directly publishes the requested fixed tag from this security branch. Also, the C10 workflow currently sets `APP_COMMIT` to the build commit, which would misstate this image's application-source commit.
+
+For this isolated update, the reviewed PR therefore documents an explicit build that keeps `APP_COMMIT` pointed to the C10 source snapshot and records the security build commit separately. After the PR has been reviewed and publication is approved, check out the reviewed PR head, confirm it is the intended source, authenticate to GHCR interactively, and run from the repository root in PowerShell:
 
 ```powershell
 $SecurityBuildCommit = (git rev-parse HEAD).Trim()
