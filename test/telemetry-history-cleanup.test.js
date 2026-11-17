@@ -76,9 +76,10 @@ test("overlapping cleanup requests are coalesced and a later request is allowed"
   assert.equal(calls, 2);
 });
 
-test("server startup listens before launching cleanup and does not await it", async () => {
+test("server startup validates the optional adapter before listening and does not await cleanup", async () => {
   const source = await readFile(new URL("../src/server.js", import.meta.url), "utf8");
-  assert.match(source, /ensureSchema\(\)\.then\(\(\) => isTestRuntime \? undefined : syncReferenceData\(\)\)\.then\(\(\) => \{\s*server\.listen/);
+  assert.match(source, /ensureSchema\(\)\.then\(\(\) => isTestRuntime \? undefined : syncReferenceData\(\)\)\.then\(async \(\) => \{/);
+  assert.ok(source.indexOf("versekitRouter = await createVersekitAdapter") < source.indexOf("server.listen(port"));
   assert.match(source, /void telemetryHistoryCleanup\(\);\s*scheduleInviteCleanup\(\);/);
   assert.doesNotMatch(source, /ensureSchema\(\)\.then\(async\s*\(\)\s*=>\s*\{[^}]*telemetryHistoryCleanup/s);
 });
