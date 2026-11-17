@@ -43,9 +43,16 @@ const dateSectionKey = entry => {
 
 const locationText = entry => {
   const rawLocation = displayValue(entry.location_raw);
-  const location = rawLocation ? `Location ID (unresolved): ${rawLocation}` : 'Unknown location';
-  const jurisdiction = displayValue(entry.jurisdiction);
-  return jurisdiction ? `${location} · ${jurisdiction}` : location;
+  const resolvedLocation = displayValue(entry.locationDisplay);
+  const location = resolvedLocation || (rawLocation ? `Location ID (unresolved): ${rawLocation}` : 'Unknown location');
+  const details = [
+    `System: ${displayValue(entry.systemDisplay) || 'Unknown'}`,
+    `Jurisdiction: ${displayValue(entry.jurisdictionDisplay) || 'Unknown'}`,
+    `Affiliation: ${displayValue(entry.affiliationDisplay) || 'Unknown'}`
+  ];
+  if (resolvedLocation && rawLocation) details.push(`Raw ID: ${rawLocation}`);
+  if (entry.resolutionStatus === 'conflict') details.push('Catalog verification required — stored jurisdiction conflicts.');
+  return `${location} · ${details.join(' · ')}`;
 };
 
 const shipText = entry => displayValue(entry.ship_name) || 'Unknown ship';

@@ -1,4 +1,5 @@
 import { normalizeDeviceName } from "./telemetry-pairing.js";
+import { resolveLocation } from "./telemetry-location-catalog.js";
 
 export const TELEMETRY_HISTORY_RETENTION_DAYS = 90;
 export const TELEMETRY_HISTORY_PAGE_SIZE = 50;
@@ -57,7 +58,15 @@ const historyRow = (row) => ({
   time_source: row.location_observed_at ? "observed" : "received",
   location_raw: row.location_raw,
   jurisdiction: row.jurisdiction,
-  ship_name: row.ship_name
+  ship_name: row.ship_name,
+  ...resolveLocation(row.location_raw, row.jurisdiction, row.catalog_location_raw ? {
+    location_raw: row.catalog_location_raw,
+    display_name: row.catalog_display_name,
+    system_name: row.catalog_system_name,
+    jurisdiction: row.catalog_jurisdiction,
+    affiliation: row.catalog_affiliation,
+    status: "verified"
+  } : null)
 });
 
 export const createTelemetryManagementHandlers = ({
@@ -169,10 +178,12 @@ export const createTelemetryManagementHandlers = ({
     try {
       const result = await pool.query(
         `SELECT h.id,h.device_id,d.name AS device_name,h.location_raw,h.location_observed_at,
-                h.jurisdiction,h.ship_name,
+                h.jurisdiction,h.ship_name,c.location_raw AS catalog_location_raw,c.display_name AS catalog_display_name,
+                c.system_name AS catalog_system_name,c.jurisdiction AS catalog_jurisdiction,c.affiliation AS catalog_affiliation,
                 to_char(h.received_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS received_at
          FROM telemetry_presence_history h
          JOIN telemetry_devices d ON d.id=h.device_id
+         LEFT JOIN telemetry_location_catalog c ON c.location_raw=h.location_raw AND c.status='verified'
          WHERE d.app_user_id=$1
            AND h.received_at >= clock_timestamp() - interval '90 days'
            AND ($2::timestamptz IS NULL OR (h.received_at,h.id)<($2::timestamptz,$3::uuid))

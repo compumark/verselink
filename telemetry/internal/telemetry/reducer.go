@@ -33,6 +33,9 @@ func Reduce(state *TelemetryState, event TelemetryEvent) {
 				ObservedAt: event.Timestamp,
 				Source:     event.Source,
 			}
+			// A jurisdiction event describes the previous observed location until
+			// it is observed again; never carry it across a location transition.
+			state.Jurisdiction = ""
 		}
 	case "jurisdiction_entered":
 		if jurisdiction := event.Data["jurisdiction"]; jurisdiction != "" {

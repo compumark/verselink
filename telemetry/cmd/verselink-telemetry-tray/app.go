@@ -12,6 +12,7 @@ import (
 	"github.com/compumark/verselink-telemetry/internal/diagnostics"
 	"github.com/compumark/verselink-telemetry/internal/diagnosticsexport"
 	"github.com/compumark/verselink-telemetry/internal/gamelog"
+	"github.com/compumark/verselink-telemetry/internal/locationcatalog"
 	"github.com/compumark/verselink-telemetry/internal/runtimehost"
 	"github.com/compumark/verselink-telemetry/internal/settings"
 	"github.com/compumark/verselink-telemetry/internal/updatecheck"
@@ -64,6 +65,7 @@ type statusStore struct {
 	hasLiveLast       bool
 	health            connection.HealthStatus
 	presenceSnapshots chan connection.PresenceSnapshot
+	locationCatalog   locationcatalog.Catalog
 	lifecycle         []string
 	applicationLogs   diagnostics.LogBuffer
 }
@@ -145,13 +147,32 @@ func (s *statusStore) OnLiveSnapshot(status runtimehost.Status) {
 			}
 		}
 	}
-	presentation := presentLiveTelemetry(status)
 	s.mu.Lock()
+	presentation := presentLiveTelemetryWithCatalog(status, s.locationCatalog)
 	s.liveStatus = status
 	changed := !s.hasLiveLast || s.liveLast != presentation
 	s.liveLast, s.hasLiveLast = presentation, true
 	wake := s.liveWake
 	visible := s.liveVisible
+	s.mu.Unlock()
+	if changed && visible && wake != nil {
+		wake()
+	}
+}
+
+func (s *statusStore) OnLocationCatalog(catalog locationcatalog.Catalog, _ string) {
+	if validated, err := locationcatalog.Validate(catalog); err == nil {
+		catalog = validated
+	} else {
+		catalog = locationcatalog.Catalog{}
+	}
+	s.mu.Lock()
+	s.locationCatalog = catalog
+	status := s.liveStatus
+	presentation := presentLiveTelemetryWithCatalog(status, s.locationCatalog)
+	changed := !s.hasLiveLast || s.liveLast != presentation
+	s.liveLast, s.hasLiveLast = presentation, true
+	wake, visible := s.liveWake, s.liveVisible
 	s.mu.Unlock()
 	if changed && visible && wake != nil {
 		wake()
@@ -213,8 +234,9 @@ func (s *statusStore) CurrentLivePresentation() liveTelemetryPresentation {
 	s.mu.RLock()
 	status := s.liveStatus
 	health := s.health
+	catalog := s.locationCatalog
 	s.mu.RUnlock()
-	presentation := presentLiveTelemetry(status)
+	presentation := presentLiveTelemetryWithCatalog(status, catalog)
 	if health.State != "" {
 		presentation.connection = string(health.State)
 		if !health.LastSuccess.IsZero() {
@@ -449,22 +471,26 @@ func runTelemetryWithSettings(ctx context.Context, observer runtimehost.Observer
 }
 
 type liveTelemetryPresentation struct {
-	status, channel, strategy, path  string
-	lines, events, resets            string
-	session, player, shard           string
-	lastEvent, connection            string
-	location, locationAt, zone       string
-	ship, owner                      string
-	quantumDestination, quantumState string
-	partyCount                       string
+	status, channel, strategy, path                              string
+	lines, events, resets                                        string
+	session, player, shard                                       string
+	lastEvent, connection                                        string
+	location, locationRaw, system, locationAt, zone, affiliation string
+	ship, owner                                                  string
+	quantumDestination, quantumState                             string
+	partyCount                                                   string
 }
 
 func presentLiveTelemetry(status runtimehost.Status) liveTelemetryPresentation {
+	return presentLiveTelemetryWithCatalog(status, locationcatalog.Catalog{})
+}
+
+func presentLiveTelemetryWithCatalog(status runtimehost.Status, catalog locationcatalog.Catalog) liveTelemetryPresentation {
 	p := liveTelemetryPresentation{
 		status: liveRuntimeStatus(status), channel: "Unknown", strategy: "Unknown", path: "Unknown",
 		lines: "Unknown", events: "Unknown", resets: "Unknown", session: "Inactive",
 		player: "Unknown", shard: "Unknown", lastEvent: "Unknown", location: "Unknown",
-		locationAt: "Unknown", zone: "Unknown", ship: "Unknown", owner: "Unknown",
+		locationRaw: "Unknown", system: "Unknown", locationAt: "Unknown", zone: "Unknown", affiliation: "Unknown", ship: "Unknown", owner: "Unknown",
 		quantumDestination: "Unknown", quantumState: "Unknown", partyCount: "Unknown", connection: "Not connected",
 	}
 	configuration := status.Configuration
@@ -499,10 +525,14 @@ func presentLiveTelemetry(status runtimehost.Status) liveTelemetryPresentation {
 	p.shard = valueOrUnknown(state.Shard)
 	p.lastEvent = formatTime(state.LastEventAt)
 	if state.Location != nil {
-		p.location = valueOrUnknown(state.Location.Raw)
+		resolved := locationcatalog.Resolve(catalog, state.Location.Raw, state.Jurisdiction)
+		p.location = valueOrUnknown(resolved.Place)
+		p.locationRaw = valueOrUnknown(resolved.Raw)
+		p.system = valueOrUnknown(resolved.System)
+		p.zone = valueOrUnknown(resolved.Jurisdiction)
+		p.affiliation = valueOrUnknown(resolved.Affiliation)
 		p.locationAt = formatTime(state.Location.ObservedAt)
 	}
-	p.zone = valueOrUnknown(state.Jurisdiction)
 	if state.Ship != nil {
 		p.ship = valueOrUnknown(state.Ship.Name)
 		p.owner = valueOrUnknown(state.Ship.Owner)
@@ -595,6 +625,9 @@ func formatLiveTelemetry(p liveTelemetryPresentation) string {
 		"Location: " + p.location,
 		"Location observed: " + p.locationAt,
 		"Jurisdiction: " + p.zone,
+		"System: " + p.system,
+		"Affiliation: " + p.affiliation,
+		"Location raw ID: " + p.locationRaw,
 		"Ship: " + p.ship,
 		"Ship owner: " + p.owner,
 		"Quantum destination: " + p.quantumDestination,

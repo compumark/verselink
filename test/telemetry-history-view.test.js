@@ -67,6 +67,21 @@ test('location, jurisdiction, and ship changes remain distinct and unknown value
   assert.doesNotMatch(markup, /logout|session ended|session end/i);
 });
 
+test('resolved catalog fields stay separate and conflicting telemetry jurisdiction remains Unknown', () => {
+  const markup = renderTelemetryHistory([makeEntry('8', {
+    location_raw: 'Pyro4_Outpost_col_m_scrp_indy_001',
+    locationDisplay: 'Ruin Station',
+    systemDisplay: 'Pyro',
+    jurisdictionDisplay: 'Unknown',
+    affiliationDisplay: 'Headhunters',
+    resolutionStatus: 'conflict',
+    jurisdiction: 'UEE'
+  })]);
+  assert.match(markup, /Ruin Station · System: Pyro · Jurisdiction: Unknown · Affiliation: Headhunters · Raw ID: Pyro4_Outpost_col_m_scrp_indy_001/);
+  assert.match(markup, /Catalog verification required — stored jurisdiction conflicts\./);
+  assert.doesNotMatch(markup, /Jurisdiction: UEE/);
+});
+
 test('device names are primary and short IDs disambiguate duplicate names', () => {
   const entries = [
     makeEntry('2', { device_id: '11111111-aaaa-bbbb-cccc-dddddddddddd', device_name: 'Shared name' }),

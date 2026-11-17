@@ -72,7 +72,7 @@ func createLiveMonitorWindow() (*liveMonitorWindow, error) {
 		dpi = uint32(got)
 	}
 	scale := func(v int32) int32 { return int32((int64(v)*int64(dpi) + 48) / 96) }
-	client := settingsWindowRect{Right: scale(760), Bottom: scale(690)}
+	client := settingsWindowRect{Right: scale(760), Bottom: scale(770)}
 	if result, _, adjustErr := procAdjustWindowRect.Call(uintptr(unsafe.Pointer(&client)), style, 0, exStyle); result == 0 {
 		return nil, windowsCallError("adjust live monitor window bounds", adjustErr)
 	}
@@ -109,10 +109,10 @@ func createLiveMonitorWindow() (*liveMonitorWindow, error) {
 	}
 	add("BUTTON", "Source", bsGroupBox, 12, 10, 736, 194, 0)
 	add("BUTTON", "Session", bsGroupBox, 12, 210, 736, 130, 0)
-	add("BUTTON", "Location", bsGroupBox, 12, 346, 736, 94, 0)
-	add("BUTTON", "Ship", bsGroupBox, 12, 446, 360, 96, 0)
-	add("BUTTON", "Quantum Travel", bsGroupBox, 380, 446, 368, 96, 0)
-	add("BUTTON", "Party / Connection", bsGroupBox, 12, 548, 736, 76, 0)
+	add("BUTTON", "Location resolution", bsGroupBox, 12, 346, 736, 154, 0)
+	add("BUTTON", "Ship", bsGroupBox, 12, 506, 360, 96, 0)
+	add("BUTTON", "Quantum Travel", bsGroupBox, 380, 506, 368, 96, 0)
+	add("BUTTON", "Party / Connection", bsGroupBox, 12, 608, 736, 76, 0)
 	labels := []struct {
 		text    string
 		x, y, w int32
@@ -120,15 +120,15 @@ func createLiveMonitorWindow() (*liveMonitorWindow, error) {
 		{"Status:", 20, 34, 126}, {"Channel:", 20, 56, 126}, {"Discovery:", 20, 78, 126}, {"Game.log:", 20, 100, 126},
 		{"Lines processed:", 20, 146, 126}, {"Parser events:", 20, 164, 126}, {"Source resets:", 20, 182, 126},
 		{"Session:", 20, 234, 126}, {"Player:", 20, 258, 126}, {"Shard:", 20, 282, 126}, {"Last event:", 20, 306, 126},
-		{"Location:", 20, 368, 126}, {"Observed:", 20, 392, 126}, {"Jurisdiction:", 20, 416, 126},
-		{"Ship:", 20, 470, 80}, {"Owner:", 20, 500, 80}, {"Destination:", 388, 470, 112}, {"QT state:", 388, 500, 112},
-		{"Members:", 20, 574, 126}, {"Connection:", 20, 598, 126},
+		{"Place:", 20, 368, 126}, {"Observed:", 20, 392, 126}, {"Jurisdiction:", 20, 416, 126}, {"System:", 20, 440, 126}, {"Affiliation:", 20, 464, 126}, {"Raw location ID:", 20, 488, 126},
+		{"Ship:", 20, 530, 80}, {"Owner:", 20, 560, 80}, {"Destination:", 388, 530, 112}, {"QT state:", 388, 560, 112},
+		{"Members:", 20, 634, 126}, {"Connection:", 20, 658, 126},
 	}
 	for _, item := range labels {
 		add("STATIC", item.text, ssLeft, item.x, item.y, item.w, 20, 0)
 	}
-	window.values = make([]uintptr, 20)
-	positions := [][4]int32{{150, 34, 580, 20}, {150, 56, 580, 20}, {150, 78, 580, 20}, {150, 100, 580, 42}, {150, 146, 580, 20}, {150, 164, 580, 20}, {150, 182, 580, 20}, {150, 234, 580, 20}, {150, 258, 580, 20}, {150, 282, 580, 20}, {150, 306, 580, 20}, {150, 368, 580, 20}, {150, 392, 580, 20}, {150, 416, 580, 20}, {104, 470, 250, 20}, {104, 500, 250, 20}, {504, 470, 232, 20}, {504, 500, 232, 20}, {150, 574, 580, 20}, {150, 598, 580, 20}}
+	window.values = make([]uintptr, 23)
+	positions := [][4]int32{{150, 34, 580, 20}, {150, 56, 580, 20}, {150, 78, 580, 20}, {150, 100, 580, 42}, {150, 146, 580, 20}, {150, 164, 580, 20}, {150, 182, 580, 20}, {150, 234, 580, 20}, {150, 258, 580, 20}, {150, 282, 580, 20}, {150, 306, 580, 20}, {150, 368, 580, 20}, {150, 392, 580, 20}, {150, 416, 580, 20}, {150, 440, 580, 20}, {150, 464, 580, 20}, {150, 488, 580, 20}, {104, 530, 250, 20}, {104, 560, 250, 20}, {504, 530, 232, 20}, {504, 560, 232, 20}, {150, 634, 580, 20}, {150, 658, 580, 20}}
 	for i, position := range positions {
 		style := uintptr(ssLeft | ssNoPrefix)
 		if i == 3 {
@@ -140,9 +140,9 @@ func createLiveMonitorWindow() (*liveMonitorWindow, error) {
 			return nil, fmt.Errorf("create live monitor control %d", i)
 		}
 	}
-	window.copyStatus = add("STATIC", "", ssLeftNoWrap, 20, 630, 500, 20, 0)
-	window.focusTarget = add("BUTTON", "Copy current status", wsTabStop, 524, 652, 128, 28, liveCopyID)
-	add("BUTTON", "Close", wsTabStop|bsDefaultButton, 660, 652, 76, 28, dialogCancelID)
+	window.copyStatus = add("STATIC", "", ssLeftNoWrap, 20, 694, 500, 20, 0)
+	window.focusTarget = add("BUTTON", "Copy current status", wsTabStop, 524, 716, 128, 28, liveCopyID)
+	add("BUTTON", "Close", wsTabStop|bsDefaultButton, 660, 716, 76, 28, dialogCancelID)
 	if controlCreationErr != nil {
 		procDestroyWindow.Call(hwnd)
 		return nil, controlCreationErr
@@ -159,7 +159,7 @@ func (t *windowsTray) refreshLiveMonitor() {
 		return
 	}
 	p := t.store.CurrentLivePresentation()
-	values := []string{p.status, p.channel, p.strategy, p.path, p.lines, p.events, p.resets, p.session, p.player, p.shard, p.lastEvent, p.location, p.locationAt, p.zone, p.ship, p.owner, p.quantumDestination, p.quantumState, p.partyCount, p.connection}
+	values := []string{p.status, p.channel, p.strategy, p.path, p.lines, p.events, p.resets, p.session, p.player, p.shard, p.lastEvent, p.location, p.locationAt, p.zone, p.system, p.affiliation, p.locationRaw, p.ship, p.owner, p.quantumDestination, p.quantumState, p.partyCount, p.connection}
 	for i, value := range values {
 		setNativeText(t.liveWindow.values[i], value)
 	}
