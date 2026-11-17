@@ -1702,6 +1702,7 @@ const telemetryManagement = createTelemetryManagementHandlers({
   sendRateLimited: (res, route, rate) => telemetryError(res, 429, "rate_limited", rate.retryAfter)
 });
 
+let versekitRouter = null;
 const server = createServer(async (req, res) => {
   req.requestId = randomUUID();
   res.setHeader("x-request-id", req.requestId);
@@ -1718,6 +1719,8 @@ const server = createServer(async (req, res) => {
       await pool.query("SELECT 1");
       return json(res, 200, { ok: true, service: "blueprint-inventory", database: "ok" });
     }
+
+    if (versekitRouter && await versekitRouter(req, res, url)) return;
 
     if (req.method === "GET" && url.pathname === "/api/trading/routes") {
       const context = await getSessionContext(req);
@@ -3516,7 +3519,16 @@ const server = createServer(async (req, res) => {
     return json(res, status, { error: status === 413 ? "payload too large" : "service unavailable" });
   }
 });
-ensureSchema().then(() => isTestRuntime ? undefined : syncReferenceData()).then(() => {
+ensureSchema().then(() => isTestRuntime ? undefined : syncReferenceData()).then(async () => {
+  if (process.env.VERSEKIT_ENABLED === "true") {
+    try {
+      const { createVersekitAdapter } = await import("./integrations/versekit/index.js");
+      versekitRouter = await createVersekitAdapter({ env: process.env, db: pool });
+    } catch (error) {
+      logger.warn("versekit.initialization.failed", { reason: error.message });
+      throw error;
+    }
+  }
   server.listen(port, "0.0.0.0", () => {
     logger.system("server.started", { app_environment: appEnvironment, app_version: appVersion, app_commit: appCommit, effective_log_level: logger.getState().effective_level, log_directory: logDirectory, retention_days: logger.getState().retention_days, port });
     logger.cleanupRetention();
@@ -3527,7 +3539,8 @@ ensureSchema().then(() => isTestRuntime ? undefined : syncReferenceData()).then(
       syncWikiMaterials();
     }
   });
-}).catch((error) => {
+}).catch(async (error) => {
   logger.error("database.initialization.failed", error);
+  await logger.flush();
   process.exit(1);
 });
