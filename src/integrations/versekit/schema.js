@@ -14,6 +14,11 @@ export const initializeVersekitSchema = async (db, quotaPolicy = {}) => {
       tokens numeric NOT NULL CHECK (tokens >= 0 AND tokens <= capacity),
       updated_at timestamptz NOT NULL DEFAULT now()
     );
+    CREATE TABLE IF NOT EXISTS versekit_authorization_config (
+      id boolean PRIMARY KEY DEFAULT true CHECK (id),
+      group_id uuid NOT NULL,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
     ALTER TABLE versekit_grant_quota ADD COLUMN IF NOT EXISTS capacity integer NOT NULL DEFAULT 24;
     ALTER TABLE versekit_grant_quota ADD COLUMN IF NOT EXISTS refill_interval_seconds integer NOT NULL DEFAULT 3600;
     INSERT INTO versekit_grant_quota(id,capacity,refill_interval_seconds,tokens,updated_at) VALUES(true,${capacity},${refillIntervalSeconds},${capacity},now()) ON CONFLICT (id) DO NOTHING;
@@ -86,5 +91,33 @@ export const initializeVersekitSchema = async (db, quotaPolicy = {}) => {
   const policy = await db.query("SELECT capacity,refill_interval_seconds,tokens,updated_at FROM versekit_grant_quota WHERE id=true");
   if (policy.rowCount !== 1 || Number(policy.rows[0].capacity) !== capacity || Number(policy.rows[0].refill_interval_seconds) !== refillIntervalSeconds) {
     throw new Error("VerseKit grant quota policy conflicts with the persisted policy");
+  }
+};
+
+// Persist the current group binding so switching A → B → A cannot revive A's
+// previously issued credentials. The row is an authorization epoch marker, not
+// a second configuration source: VERSEKIT_GROUP_ID remains authoritative.
+export const activateVersekitAuthorizationGroup = async (db, groupId) => {
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("INSERT INTO versekit_authorization_config(id,group_id) VALUES(true,$1) ON CONFLICT (id) DO NOTHING", [groupId]);
+    const current = await client.query("SELECT group_id FROM versekit_authorization_config WHERE id=true FOR UPDATE");
+    if (current.rowCount !== 1) throw new Error("VerseKit authorization configuration is unavailable");
+    if (current.rows[0].group_id !== groupId) {
+      // Keep the VK-03 token → family → grant lock order used by refresh and revoke.
+      await client.query("SELECT id FROM versekit_tokens ORDER BY id FOR UPDATE");
+      await client.query("SELECT id FROM versekit_token_families ORDER BY id FOR UPDATE");
+      await client.query("UPDATE versekit_token_families SET revoked_at=COALESCE(revoked_at,now())");
+      await client.query("UPDATE versekit_tokens SET revoked_at=COALESCE(revoked_at,now())");
+      await client.query("UPDATE versekit_device_grants SET status='denied',app_user_id=NULL,approved_scopes='{}',consented_at=COALESCE(consented_at,now()) WHERE status IN ('pending','approved')");
+      await client.query("UPDATE versekit_authorization_config SET group_id=$1,updated_at=now() WHERE id=true", [groupId]);
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
   }
 };
