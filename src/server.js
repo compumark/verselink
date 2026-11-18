@@ -3523,7 +3523,13 @@ ensureSchema().then(() => isTestRuntime ? undefined : syncReferenceData()).then(
   if (process.env.VERSEKIT_ENABLED === "true") {
     try {
       const { createVersekitAdapter } = await import("./integrations/versekit/index.js");
-      versekitRouter = await createVersekitAdapter({ env: process.env, db: pool });
+      versekitRouter = await createVersekitAdapter({
+        env: process.env, db: pool, pepper,
+        getSessionContext,
+        getCurrentAppUser,
+        getSessionToken: (req) => { try { return parseCookies(req.headers.cookie).bp_session || null; } catch { return null; } },
+        sameOrigin: sameVerseLinkOriginRequired
+      });
     } catch (error) {
       logger.warn("versekit.initialization.failed", { reason: error.message });
       throw error;

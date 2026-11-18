@@ -1,4 +1,6 @@
-const CODES = new Set(["NOT_FOUND", "METHOD_NOT_ALLOWED", "MAINTENANCE", "INVALID_REQUEST"]);
+import { rejectUnreadVersekitRequest } from "./request-form.js";
+
+const CODES = new Set(["NOT_FOUND", "METHOD_NOT_ALLOWED", "MAINTENANCE", "INVALID_REQUEST", "UNAUTHORIZED", "RATE_LIMITED"]);
 
 export const sendProblem = (res, status, code, extraHeaders = {}) => {
   if (!CODES.has(code)) throw new Error("Unsupported VerseKit problem code");
@@ -15,9 +17,9 @@ export const createVersekitRouter = ({ discovery = null, context = null } = {}) 
   const reserved = isDiscovery || path === "/device" || path === "/versekit/v1" || path.startsWith("/versekit/v1/");
   if (!reserved) return false;
   try {
-    if (!isDiscovery || !state.discovery) sendProblem(res, 404, "NOT_FOUND");
-    else if (req.method !== "GET") sendProblem(res, 405, "METHOD_NOT_ALLOWED", { allow: "GET" });
-    else if (url.search) sendProblem(res, 400, "INVALID_REQUEST");
+    if (!isDiscovery || !state.discovery) rejectUnreadVersekitRequest(req, res, () => sendProblem(res, 404, "NOT_FOUND"));
+    else if (req.method !== "GET") rejectUnreadVersekitRequest(req, res, () => sendProblem(res, 405, "METHOD_NOT_ALLOWED", { allow: "GET" }));
+    else if (url.search) rejectUnreadVersekitRequest(req, res, () => sendProblem(res, 400, "INVALID_REQUEST"));
     else {
       const payload = JSON.stringify(state.discovery);
       res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
@@ -25,7 +27,7 @@ export const createVersekitRouter = ({ discovery = null, context = null } = {}) 
     }
   } catch {
     if (res.headersSent) res.destroy?.();
-    else sendProblem(res, 503, "MAINTENANCE", { "retry-after": "30" });
+    else rejectUnreadVersekitRequest(req, res, () => sendProblem(res, 503, "MAINTENANCE", { "retry-after": "30" }));
   }
   return true;
   };
