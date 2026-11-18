@@ -202,10 +202,11 @@ export class VersekitTokenStore {
         return { error: "invalid_grant" };
       }
       const access = this.codec.issue("vka"), refresh = this.codec.issue("vkr");
-      await c.query("INSERT INTO versekit_tokens(family_id,token_hash,token_type,expires_at) SELECT $1,$2,'access',LEAST(now()+($3 * interval '1 second'),absolute_expires_at) FROM versekit_token_families WHERE id=$1", [r.family_id, this.codec.hash("access", access), ACCESS_TTL]);
+      const accessRow = await c.query("INSERT INTO versekit_tokens(family_id,token_hash,token_type,expires_at) SELECT $1,$2,'access',LEAST(now()+($3 * interval '1 second'),absolute_expires_at) FROM versekit_token_families WHERE id=$1 RETURNING GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (expires_at-clock_timestamp()))))::int AS expires_in", [r.family_id, this.codec.hash("access", access), ACCESS_TTL]);
+      if (accessRow.rowCount !== 1 || accessRow.rows[0].expires_in < 1) throw new Error("Refreshed VerseKit access token would already be expired");
       const next = await c.query("INSERT INTO versekit_tokens(family_id,token_hash,token_type,expires_at) SELECT $1,$2,'refresh',LEAST(now()+($3 * interval '1 second'),absolute_expires_at) FROM versekit_token_families WHERE id=$1 RETURNING id", [r.family_id, this.codec.hash("refresh", refresh), REFRESH_TTL]);
       await c.query("UPDATE versekit_tokens SET revoked_at=now(),replaced_by=$2 WHERE id=$1", [r.id, next.rows[0].id]);
-      return { tokens: { access_token: access, token_type: "Bearer", refresh_token: refresh, expires_in: ACCESS_TTL, scope: r.scopes.join(" ") } };
+      return { tokens: { access_token: access, token_type: "Bearer", refresh_token: refresh, expires_in: accessRow.rows[0].expires_in, scope: r.scopes.join(" ") } };
     });
   }
   async revoke(token) {

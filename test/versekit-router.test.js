@@ -644,6 +644,38 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
       return found.rows[0].family_id;
     };
 
+    await t.test("refresh expires_in reflects the remaining absolute token-family lifetime", async () => {
+      const normal = await issueApprovedPair();
+      const normalFamily = await familyFor(normal.tokens.refresh_token);
+      await pool.query("UPDATE versekit_token_families SET absolute_expires_at=now()+interval '2 days' WHERE id=$1", [normalFamily]);
+      const normalRefresh = await store.refresh({ refreshToken: normal.tokens.refresh_token, clientId: "versekit" });
+      assert.ok(normalRefresh.tokens);
+      const normalAccess = await pool.query("SELECT t.expires_at,f.absolute_expires_at,FLOOR(EXTRACT(EPOCH FROM (t.expires_at-clock_timestamp())))::int AS actual_seconds FROM versekit_tokens t JOIN versekit_token_families f ON f.id=t.family_id WHERE t.token_hash=$1", [codec.hash("access", normalRefresh.tokens.access_token)]);
+      assert.equal(normalAccess.rowCount, 1);
+      assert.ok(normalRefresh.tokens.expires_in <= normalAccess.rows[0].actual_seconds, "normal response never overstates database remaining validity");
+      assert.ok(normalRefresh.tokens.expires_in >= 3590 && normalRefresh.tokens.expires_in <= 3600, "normal access lifetime is capped near 3600 seconds");
+      assert.ok(normalAccess.rows[0].expires_at < normalAccess.rows[0].absolute_expires_at);
+
+      const nearExpiry = await issueApprovedPair();
+      const nearFamily = await familyFor(nearExpiry.tokens.refresh_token);
+      await pool.query("UPDATE versekit_token_families SET absolute_expires_at=clock_timestamp()+interval '5 minutes' WHERE id=$1", [nearFamily]);
+      const rotated = await store.refresh({ refreshToken: nearExpiry.tokens.refresh_token, clientId: "versekit" });
+      assert.ok(rotated.tokens, "refresh succeeds before family expiry");
+      assert.notEqual(rotated.tokens.refresh_token, nearExpiry.tokens.refresh_token, "refresh credential rotates");
+      const nearAccess = await pool.query("SELECT t.expires_at,f.absolute_expires_at,FLOOR(EXTRACT(EPOCH FROM (t.expires_at-clock_timestamp())))::int AS actual_seconds FROM versekit_tokens t JOIN versekit_token_families f ON f.id=t.family_id WHERE t.token_hash=$1", [codec.hash("access", rotated.tokens.access_token)]);
+      assert.equal(nearAccess.rowCount, 1);
+      assert.equal(nearAccess.rows[0].expires_at.getTime(), nearAccess.rows[0].absolute_expires_at.getTime(), "access expiry is capped at the family boundary");
+      assert.ok(rotated.tokens.expires_in <= nearAccess.rows[0].actual_seconds, "five-minute response does not overstate actual validity");
+      assert.ok(rotated.tokens.expires_in >= 290 && rotated.tokens.expires_in <= 300, "reported lifetime reflects about five minutes, not 3600 seconds");
+      assert.equal((await pool.query("SELECT replaced_by FROM versekit_tokens WHERE token_hash=$1", [codec.hash("refresh", nearExpiry.tokens.refresh_token)])).rowCount, 1, "old refresh credential remains recorded for replay detection");
+
+      const beforeExpiryRows = Number((await pool.query("SELECT count(*)::int AS count FROM versekit_tokens WHERE family_id=$1", [nearFamily])).rows[0].count);
+      await pool.query("UPDATE versekit_token_families SET absolute_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1", [nearFamily]);
+      assert.deepEqual(await store.refresh({ refreshToken: rotated.tokens.refresh_token, clientId: "versekit" }), { error: "invalid_grant" }, "expired family cannot be refreshed");
+      assert.equal(Number((await pool.query("SELECT count(*)::int AS count FROM versekit_tokens WHERE family_id=$1", [nearFamily])).rows[0].count), beforeExpiryRows, "expired boundary issues no credentials");
+      assert.ok((await pool.query("SELECT absolute_expires_at < clock_timestamp() AS expired FROM versekit_token_families WHERE id=$1", [nearFamily])).rows[0].expired, "refresh does not extend family expiry");
+    });
+
     await t.test("absolute token-family lifetime bounds rotated credentials and rejects refresh at expiry", async () => {
       const { tokens } = await issueApprovedPair();
       const familyId = await familyFor(tokens.refresh_token);
