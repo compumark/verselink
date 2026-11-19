@@ -10,8 +10,9 @@ import { apiRequest, createSession, startMissionTestServer, stopMissionTestServe
 
 const pepper = "vk04-lock-order-test-pepper-with-more-than-thirty-two-bytes";
 const quotaPolicy = Object.freeze({ capacity: 4096, refillIntervalSeconds: 3600 });
-const boundedPool = async (url, pg) => new pg.Pool({
+const boundedPool = async (url, pg, applicationName) => new pg.Pool({
   connectionString: url,
+  application_name: applicationName,
   max: 6,
   connectionTimeoutMillis: 3_000,
   statement_timeout: 10_000,
@@ -42,7 +43,12 @@ test("VerseKit authorization and refresh-token revocation follow family-before-t
   const databaseName = `vk04_lock_${randomUUID().replaceAll("-", "")}`;
   const adminUrl = new URL(safeUrl);
   adminUrl.pathname = "/postgres";
-  const databaseAdmin = await boundedPool(adminUrl.toString(), pg);
+  const poolErrors = [];
+  const trackedPool = (name, value) => {
+    value.on("error", (error) => poolErrors.push({ name, error }));
+    return value;
+  };
+  const databaseAdmin = trackedPool("databaseAdmin", await boundedPool(adminUrl.toString(), pg, "vk04-lock-order-admin"));
   let pool;
   let monitor;
   let runtime;
@@ -51,6 +57,7 @@ test("VerseKit authorization and refresh-token revocation follow family-before-t
   let revocation;
   let authorization;
   let databaseCreated = false;
+  let primaryError;
   try {
     assert.match(databaseName, /^vk04_lock_[a-f0-9]{32}$/);
     await databaseAdmin.query(`CREATE DATABASE "${databaseName}"`);
@@ -63,8 +70,8 @@ test("VerseKit authorization and refresh-token revocation follow family-before-t
     await stopMissionTestServer(runtime);
     runtime = null;
 
-    pool = await boundedPool(databaseUrl, pg);
-    monitor = await boundedPool(databaseUrl, pg);
+    pool = trackedPool("application pool", await boundedPool(databaseUrl, pg, "vk04-lock-order-main"));
+    monitor = trackedPool("monitor pool", await boundedPool(databaseUrl, pg, "vk04-lock-order-monitor"));
     const enabled = {
       VERSEKIT_ENABLED: "true",
       VERSEKIT_GROUP_ID: randomUUID(),
@@ -184,7 +191,6 @@ test("VerseKit authorization and refresh-token revocation follow family-before-t
     await pool.query("UPDATE group_members SET role='owner' WHERE group_id=$1 AND app_user_id=$2", [enabled.VERSEKIT_GROUP_ID, userId]);
     const session = await createSession(pool, pepper, userId);
     runtime = await startMissionTestServer({ databaseUrl, pepper, extraEnv: { VERSEKIT_ENABLED: "false" } });
-    const deleteClient = await pool.connect();
     const deleteAuth = await pool.connect();
     const deleteAuthPid = Number((await deleteAuth.query("SELECT pg_backend_pid() AS pid")).rows[0].pid);
     let authOpen = false;
@@ -206,7 +212,6 @@ test("VerseKit authorization and refresh-token revocation follow family-before-t
     } finally {
       if (authOpen) await deleteAuth.query("ROLLBACK").catch(() => {});
       deleteAuth.release();
-      deleteClient.release();
       await stopMissionTestServer(runtime);
       runtime = null;
     }
@@ -788,6 +793,175 @@ test("VerseKit authorization and refresh-token revocation follow family-before-t
       await authorizationSecond?.catch(() => {});
     }
 
+    const createActivationDeleteFixture = async (label) => {
+      const oldGroupId = randomUUID();
+      const targetGroupId = randomUUID();
+      await pool.query("INSERT INTO blueprint_groups(id,name) VALUES($1,$2),($3,$4)",
+        [oldGroupId, `${label} old group`, targetGroupId, `${label} target group`]);
+      await pool.query("INSERT INTO group_members(group_id,app_user_id,role) VALUES($1,$2,'owner'),($3,$2,'owner')",
+        [oldGroupId, userId, targetGroupId]);
+      await activateVersekitAuthorizationGroup(pool, oldGroupId);
+      const oldStore = new VersekitTokenStore({ db: pool, codec, groupId: oldGroupId, operationalScopes: ["orders:read"] });
+      const pendingGrant = await oldStore.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] });
+      const consumedGrant = await oldStore.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] });
+      assert.equal(await oldStore.consent({ grantId: consumedGrant.id, userId, scopes: ["orders:read"], approve: true }), true);
+      const pair = (await oldStore.exchangeDeviceCode({ deviceCode: consumedGrant.deviceCode, clientId: "versekit" })).tokens;
+      assert.ok(pair);
+      const familyId = (await pool.query("SELECT id FROM versekit_token_families WHERE grant_id=$1", [consumedGrant.id])).rows[0].id;
+      return { oldGroupId, targetGroupId, oldStore, pendingGrant, consumedGrant, pair, familyId, sessionCookie: await createSession(pool, pepper, userId) };
+    };
+
+    // Counterfactual for the former family-before-grant activation order.
+    // The test-only deleter takes group -> pending grant, while the simulated
+    // old activation takes family -> pending grant; the deleter then requests
+    // that family, creating the exact grant/family cycle.
+    const activationFixture = await createActivationDeleteFixture("Activation deletion ordering");
+    const counterDeleteClient = await pool.connect();
+    const counterActivationClient = await pool.connect();
+    let counterDeleteOpen = false;
+    let counterActivationOpen = false;
+    let counterDeleteFamily;
+    let counterActivationGrant;
+    try {
+      const deletePid = Number((await counterDeleteClient.query("SELECT pg_backend_pid() AS pid")).rows[0].pid);
+      const activationPid = Number((await counterActivationClient.query("SELECT pg_backend_pid() AS pid")).rows[0].pid);
+      await counterDeleteClient.query("SET deadlock_timeout='8s'");
+      await counterActivationClient.query("SET deadlock_timeout='8s'");
+      await counterDeleteClient.query("SET lock_timeout='12s'");
+      await counterActivationClient.query("SET lock_timeout='12s'");
+      await counterDeleteClient.query("BEGIN");
+      counterDeleteOpen = true;
+      await counterDeleteClient.query("SELECT id FROM blueprint_groups WHERE id=$1 FOR UPDATE", [activationFixture.oldGroupId]);
+      await counterDeleteClient.query("SELECT id FROM versekit_device_grants WHERE id=$1 FOR UPDATE", [activationFixture.pendingGrant.id]);
+      await counterActivationClient.query("BEGIN");
+      counterActivationOpen = true;
+      await counterActivationClient.query("SELECT id FROM versekit_token_families WHERE id=$1 FOR UPDATE", [activationFixture.familyId]);
+      counterDeleteFamily = counterDeleteClient.query("SELECT id FROM versekit_token_families WHERE id=$1 FOR UPDATE", [activationFixture.familyId]);
+      counterDeleteFamily.catch(() => {});
+      const deleteFamilyWait = await waitFor(monitor, "counterfactual group cascade waits on activation-held family",
+        (row) => Number(row.pid) === deletePid && row.query.includes("versekit_token_families") && row.query.includes("FOR UPDATE"));
+      assert.ok(deleteFamilyWait.blockers.map(Number).includes(activationPid));
+      counterActivationGrant = counterActivationClient.query("SELECT id FROM versekit_device_grants WHERE id=$1 FOR UPDATE", [activationFixture.pendingGrant.id]);
+      counterActivationGrant.catch(() => {});
+      const activationGrantWait = await waitFor(monitor, "counterfactual activation waits on cascade-held grant",
+        (row) => Number(row.pid) === activationPid && row.query.includes("versekit_device_grants") && row.query.includes("FOR UPDATE"));
+      assert.ok(activationGrantWait.blockers.map(Number).includes(deletePid));
+      const counterfactual = await Promise.allSettled([counterDeleteFamily, counterActivationGrant]);
+      assert.ok(counterfactual.some((result) => result.status === "rejected" && result.reason?.code === "40P01"),
+        "PostgreSQL detects the original family/grant lock inversion with 40P01");
+    } finally {
+      if (counterDeleteOpen) await counterDeleteClient.query("ROLLBACK").catch(() => {});
+      if (counterActivationOpen) await counterActivationClient.query("ROLLBACK").catch(() => {});
+      await counterDeleteFamily?.catch(() => {});
+      await counterActivationGrant?.catch(() => {});
+      counterDeleteClient.release();
+      counterActivationClient.release();
+    }
+
+    // Activation-first: hold the real production activation after its parent
+    // group lock, then prove the production delete route blocks on that PID.
+    let releaseActivationParent;
+    const activationParentEntered = (() => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; })();
+    const activationParentGate = new Promise((resolve) => { releaseActivationParent = resolve; });
+    const activationParentDb = {
+      query: (...args) => pool.query(...args),
+      async connect() {
+        const client = await pool.connect();
+        const pid = Number((await client.query("SELECT pg_backend_pid() AS pid")).rows[0].pid);
+        return {
+          async query(sql, params) {
+            const result = await client.query(sql, params);
+            if (typeof sql === "string" && sql.includes("FROM blueprint_groups WHERE id=$1 FOR KEY SHARE")
+                && params?.[0] === activationFixture.oldGroupId) {
+              activationParentEntered.resolve(pid);
+              await activationParentGate;
+            }
+            return result;
+          },
+          release: () => client.release()
+        };
+      }
+    };
+    let activationFirstDelete;
+    let activationFirstConfig;
+    try {
+      activationFirstConfig = activateVersekitAuthorizationGroup(activationParentDb, activationFixture.targetGroupId);
+      activationFirstConfig.catch(() => {});
+      const activationPid = await Promise.race([
+        activationParentEntered.promise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("activation-first did not acquire the old group parent lock")), 5_000))
+      ]);
+      activationFirstDelete = apiRequest(runtime.baseUrl, "/api/groups/delete", {
+        method: "POST", session: activationFixture.sessionCookie, form: { group_id: activationFixture.oldGroupId }
+      });
+      activationFirstDelete.catch(() => {});
+      const deleteWait = await waitFor(monitor, "group deletion waits for activation's parent lock",
+        (row) => row.query.includes("DELETE FROM blueprint_groups"));
+      const deletePid = Number(deleteWait.pid);
+      assert.ok(deleteWait.blockers.map(Number).includes(activationPid), "production group deletion waits on the activation transaction's parent lock");
+      releaseActivationParent();
+      const [activated, deleted] = await Promise.all([activationFirstConfig, activationFirstDelete]);
+      assert.equal(activated, undefined);
+      assert.equal(deleted.status, 200);
+      assert.equal((await pool.query("SELECT group_id FROM versekit_authorization_config WHERE id=true")).rows[0].group_id, activationFixture.targetGroupId);
+      assert.equal((await pool.query("SELECT 1 FROM blueprint_groups WHERE id=$1", [activationFixture.oldGroupId])).rowCount, 0);
+      assert.equal((await pool.query("SELECT 1 FROM versekit_token_families WHERE id=$1", [activationFixture.familyId])).rowCount, 0);
+      assert.equal(await activationFixture.oldStore.authenticateAccess(activationFixture.pair.access_token), null);
+      assert.deepEqual(await activationFixture.oldStore.refresh({ refreshToken: activationFixture.pair.refresh_token, clientId: "versekit" }), { error: "invalid_grant" });
+      assert.equal((await pool.query("SELECT 1 FROM versekit_device_grants WHERE id=$1", [activationFixture.pendingGrant.id])).rowCount, 0);
+    } finally {
+      releaseActivationParent();
+      await activationFirstConfig?.catch(() => {});
+      await activationFirstDelete?.catch(() => {});
+    }
+
+    // Deletion-first: a trigger pauses the real DELETE after the group tuple is
+    // locked. Activation must wait on that parent, then switch safely after
+    // the cascade removes the old group's grants and families.
+    const deletionFirstFixture = await createActivationDeleteFixture("Deletion-first activation ordering");
+    const activationDeleteAdvisory = await pool.connect();
+    let activationDeleteAdvisoryHeld = false;
+    let deletionFirstDelete;
+    let deletionFirstConfig;
+    try {
+      await pool.query(`CREATE FUNCTION vk04_pause_activation_group_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(27182,434); RETURN OLD; END $$`);
+      await pool.query("CREATE TRIGGER vk04_pause_activation_group_delete BEFORE DELETE ON blueprint_groups FOR EACH ROW EXECUTE FUNCTION vk04_pause_activation_group_delete()");
+      const advisoryPid = Number((await activationDeleteAdvisory.query("SELECT pg_backend_pid() AS pid")).rows[0].pid);
+      await activationDeleteAdvisory.query("SELECT pg_advisory_lock(27182,434)");
+      activationDeleteAdvisoryHeld = true;
+      deletionFirstDelete = apiRequest(runtime.baseUrl, "/api/groups/delete", {
+        method: "POST", session: deletionFirstFixture.sessionCookie, form: { group_id: deletionFirstFixture.oldGroupId }
+      });
+      deletionFirstDelete.catch(() => {});
+      const deleteWait = await waitFor(monitor, "deletion-first group delete pauses after acquiring its parent lock",
+        (row) => row.query.includes("DELETE FROM blueprint_groups"));
+      const deletePid = Number(deleteWait.pid);
+      assert.ok(deleteWait.blockers.map(Number).includes(advisoryPid), "test trigger holds the production deletion transaction after parent lock acquisition");
+      deletionFirstConfig = activateVersekitAuthorizationGroup(pool, deletionFirstFixture.targetGroupId);
+      deletionFirstConfig.catch(() => {});
+      const activationWait = await waitFor(monitor, "configuration activation waits on deleting old group parent",
+        (row) => row.query.includes("FOR KEY SHARE") && row.blockers.map(Number).includes(deletePid));
+      assert.ok(activationWait.blockers.map(Number).includes(deletePid), "pg_blocking_pids identifies the production deletion as activation blocker");
+      await activationDeleteAdvisory.query("SELECT pg_advisory_unlock(27182,434)");
+      activationDeleteAdvisoryHeld = false;
+      const [deleted, activated] = await Promise.all([deletionFirstDelete, deletionFirstConfig]);
+      assert.equal(deleted.status, 200);
+      assert.equal(activated, undefined);
+      assert.equal((await pool.query("SELECT group_id FROM versekit_authorization_config WHERE id=true")).rows[0].group_id, deletionFirstFixture.targetGroupId);
+      assert.equal((await pool.query("SELECT 1 FROM blueprint_groups WHERE id=$1", [deletionFirstFixture.oldGroupId])).rowCount, 0);
+      assert.equal((await pool.query("SELECT 1 FROM versekit_device_grants WHERE group_id=$1", [deletionFirstFixture.oldGroupId])).rowCount, 0);
+      assert.equal((await pool.query("SELECT 1 FROM versekit_token_families WHERE group_id=$1", [deletionFirstFixture.oldGroupId])).rowCount, 0);
+      assert.equal(await deletionFirstFixture.oldStore.authenticateAccess(deletionFirstFixture.pair.access_token), null);
+      assert.deepEqual(await deletionFirstFixture.oldStore.refresh({ refreshToken: deletionFirstFixture.pair.refresh_token, clientId: "versekit" }), { error: "invalid_grant" });
+    } finally {
+      if (activationDeleteAdvisoryHeld) await activationDeleteAdvisory.query("SELECT pg_advisory_unlock(27182,434)").catch(() => {});
+      await deletionFirstDelete?.catch(() => {});
+      await deletionFirstConfig?.catch(() => {});
+      activationDeleteAdvisory.release();
+      await pool.query("DROP TRIGGER IF EXISTS vk04_pause_activation_group_delete ON blueprint_groups").catch(() => {});
+      await pool.query("DROP FUNCTION IF EXISTS vk04_pause_activation_group_delete()").catch(() => {});
+    }
+
     // Account deletion removes memberships before deleting the app_user row,
     // whose FK cascades into VerseKit credentials. Pause the real membership
     // DELETE after it has locked its row, then run real authorization through
@@ -912,19 +1086,60 @@ test("VerseKit authorization and refresh-token revocation follow family-before-t
     await stopMissionTestServer(runtime);
     runtime = null;
   } catch (error) {
+    primaryError = error;
     throw error;
   } finally {
-    if (blockerInTransaction) await blocker.query("ROLLBACK").catch(() => {});
-    blocker?.release();
-    if (revocation) await revocation.catch(() => {});
-    if (authorization) await authorization.catch(() => {});
-    await stopMissionTestServer(runtime);
-    await monitor?.end();
-    await pool?.end();
+    const cleanupErrors = [];
+    const captureCleanup = async (description, action) => {
+      try { await action(); }
+      catch (error) { cleanupErrors.push(`${description}: ${error?.stack || error}`); }
+    };
+    if (blockerInTransaction) await captureCleanup("rollback blocker transaction", () => blocker.query("ROLLBACK"));
+    await captureCleanup("release blocker client", async () => blocker?.release());
+    await captureCleanup("settle revocation", async () => { if (revocation) await revocation; });
+    await captureCleanup("settle authorization", async () => { if (authorization) await authorization; });
+    await captureCleanup("stop HTTP test server", () => stopMissionTestServer(runtime));
+    await captureCleanup("close monitor pool", async () => { if (monitor) await monitor.end(); });
+    await captureCleanup("close application pool", async () => { if (pool) await pool.end(); });
     if (databaseCreated) {
-      await databaseAdmin.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1 AND pid<>pg_backend_pid()", [databaseName]);
-      await databaseAdmin.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
+      let residualSessions = [];
+      await captureCleanup("inspect remaining PostgreSQL sessions", async () => {
+        const snapshot = await databaseAdmin.query(
+          "SELECT pid,application_name,backend_type,state,wait_event_type,wait_event,backend_xid,query_start,left(query,500) AS query FROM pg_stat_activity WHERE datname=$1 AND pid<>pg_backend_pid() ORDER BY pid",
+          [databaseName]
+        );
+        residualSessions = snapshot.rows;
+      });
+      if (residualSessions.length) {
+        const diagnostic = JSON.stringify(residualSessions);
+        console.error(`[vk04 lock-order cleanup] residual sessions after owned server and pools closed: ${diagnostic}`);
+        await captureCleanup("terminate orphan sessions after recording diagnostics", async () => {
+          await databaseAdmin.query(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1 AND pid=ANY($2::int[]) AND pid<>pg_backend_pid()",
+            [databaseName, residualSessions.map((row) => Number(row.pid))]
+          );
+          const deadline = Date.now() + 5_000;
+          while (Date.now() < deadline) {
+            const remaining = await databaseAdmin.query(
+              "SELECT pid,application_name,state,wait_event_type,wait_event FROM pg_stat_activity WHERE datname=$1 AND pid<>pg_backend_pid() ORDER BY pid",
+              [databaseName]
+            );
+            if (!remaining.rowCount) return;
+            await new Promise((resolve) => setImmediate(resolve));
+          }
+          throw new Error(`orphan PostgreSQL sessions did not exit: ${diagnostic}`);
+        });
+      }
+      await captureCleanup("drop disposable regression database", () => databaseAdmin.query(`DROP DATABASE IF EXISTS "${databaseName}"`));
     }
-    await databaseAdmin.end();
+    await captureCleanup("close databaseAdmin pool", async () => { await databaseAdmin.end(); });
+    if (poolErrors.length) {
+      cleanupErrors.push(`PostgreSQL pool error events: ${poolErrors.map(({ name, error }) => `${name}: ${error?.stack || error}`).join("\n")}`);
+    }
+    if (cleanupErrors.length) {
+      const cleanupDiagnostic = cleanupErrors.join("\n");
+      if (primaryError) primaryError.message += `\nCleanup diagnostics (original test failure preserved):\n${cleanupDiagnostic}`;
+      else throw new Error(`PostgreSQL test cleanup failed:\n${cleanupDiagnostic}`);
+    }
   }
 });
