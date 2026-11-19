@@ -9,8 +9,9 @@ import test from "node:test";
 import { parseVersekitConfig } from "../src/integrations/versekit/config.js";
 import { buildDiscovery } from "../src/integrations/versekit/discovery.js";
 import { createVersekitAdapter } from "../src/integrations/versekit/index.js";
+import { sendAuthorizationFailure } from "../src/integrations/versekit/device-http.js";
 import { createVersekitRouter } from "../src/integrations/versekit/router.js";
-import { initializeVersekitSchema } from "../src/integrations/versekit/schema.js";
+import { activateVersekitAuthorizationGroup, initializeVersekitSchema } from "../src/integrations/versekit/schema.js";
 import { createTokenCodec, newUserCode, normalizeUserCode } from "../src/integrations/versekit/tokens.js";
 import { VersekitTokenStore } from "../src/integrations/versekit/store.js";
 import { VERSEKIT_FORM_BODY_LIMIT } from "../src/integrations/versekit/request-form.js";
@@ -73,7 +74,10 @@ test("enabled adapter resolves exactly the configured existing group", async () 
   const queries = [];
   const db = { async query(sql, params) { queries.push({ sql, params }); return /SELECT capacity,refill_interval_seconds,tokens,updated_at FROM versekit_grant_quota/.test(sql)
     ? { rowCount: 1, rows: [{ capacity: 4096, refill_interval_seconds: 3600, tokens: 4096, updated_at: new Date() }] }
-    : { rowCount: 1, rows: [{ id: groupId, name: "Example Org" }] }; }, async connect() { throw new Error("mock store was not used"); } };
+    : { rowCount: 1, rows: [{ id: groupId, name: "Example Org" }] }; }, async connect() { return { async query(sql, params) {
+      queries.push({ sql, params });
+      return /SELECT group_id FROM versekit_authorization_config/.test(sql) ? { rowCount: 1, rows: [{ group_id: groupId }] } : { rowCount: 1, rows: [] };
+    }, release() {} }; } };
   const router = await createVersekitAdapter({ env: enabled, db, pepper: testPepper, quotaPolicy: testQuotaPolicy });
   assert.equal(typeof router, "function");
   assert.deepEqual(queries[0].params, [groupId]);
@@ -168,6 +172,7 @@ test("VerseKit schema initialization is an explicit call and disabled adapters d
   assert.match(statements[0], /CREATE TABLE IF NOT EXISTS versekit_device_grants/);
   assert.match(statements[0], /CREATE TABLE IF NOT EXISTS versekit_token_families/);
   assert.match(statements[0], /CREATE TABLE IF NOT EXISTS versekit_tokens/);
+  assert.match(statements[0], /CREATE TABLE IF NOT EXISTS versekit_authorization_config/);
   const adapter = await createVersekitAdapter({ env: { VERSEKIT_ENABLED: "false" }, db: { query: async () => { throw new Error("disabled adapter touched database"); } } });
   assert.equal(adapter, null);
 });
@@ -596,6 +601,8 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
     assert.equal((await request("/.well-known/versekit-org.json")).status, 404);
     const absentVersekitTable = await admin.query("SELECT to_regclass($1) AS table_name", [schema + ".versekit_device_grants"]);
     assert.equal(absentVersekitTable.rows[0].table_name, null);
+    const absentAuthorizationConfig = await admin.query("SELECT to_regclass($1) AS table_name", [schema + ".versekit_authorization_config"]);
+    assert.equal(absentAuthorizationConfig.rows[0].table_name, null, "disabled mode does not initialize authorization configuration state");
     await stopMissionTestServer(runtime);
     runtime = null;
     pool = await createTestPool(databaseUrl);
@@ -625,11 +632,80 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
     const startupPool = await createTestPool(startupDatabaseUrl);
     try { await startupPool.query("INSERT INTO blueprint_groups(id,name) VALUES($1,'VK02 Test Org')", [realGroup]); }
     finally { await startupPool.end(); }
+
+    await t.test("authorization marker and credential state persist across real server restarts", { timeout: 60_000 }, async () => {
+      let restartPool;
+      try {
+        restartPool = await createTestPool(startupDatabaseUrl);
+        await restartPool.query("INSERT INTO blueprint_groups(id,name) VALUES($1,'Restart Test Org')", [anotherGroup]);
+        await restartPool.query("INSERT INTO app_users(id,email,display_name,account_status) VALUES($1,$2,'Restart Test Member','active')",
+          [userId, `vk04-restart-${userId}@example.test`]);
+        await restartPool.query("INSERT INTO group_members(group_id,app_user_id,role) VALUES($1,$2,'member'),($3,$2,'member')",
+          [realGroup, userId, anotherGroup]);
+
+        runtime = await startMissionTestServer({ databaseUrl: startupDatabaseUrl, pepper, extraEnv: actual });
+        assert.equal((await fetch(`${runtime.baseUrl}/healthz`)).status, 200, "Group A server initializes successfully");
+        await stopMissionTestServer(runtime);
+        runtime = null;
+
+        const store = new VersekitTokenStore({ db: restartPool, codec: createTokenCodec(pepper), groupId: realGroup, operationalScopes: ["orders:read"] });
+        const issuePair = async () => {
+          const grant = await store.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] });
+          assert.equal(await store.consent({ grantId: grant.id, userId, scopes: ["orders:read"], approve: true }), true);
+          const result = await store.exchangeDeviceCode({ deviceCode: grant.deviceCode, clientId: "versekit" });
+          assert.ok(result.tokens);
+          return result.tokens;
+        };
+        const validPair = await issuePair();
+        const revokedPair = await issuePair();
+        await store.revoke(revokedPair.refresh_token);
+        const markerA = (await restartPool.query("SELECT group_id,updated_at FROM versekit_authorization_config WHERE id=true")).rows[0];
+        assert.equal(markerA.group_id, realGroup);
+
+        runtime = await startMissionTestServer({ databaseUrl: startupDatabaseUrl, pepper, extraEnv: actual });
+        await stopMissionTestServer(runtime);
+        runtime = null;
+        assert.deepEqual((await restartPool.query("SELECT group_id,updated_at FROM versekit_authorization_config WHERE id=true")).rows[0], markerA,
+          "same-group process restart preserves the marker generation");
+        assert.equal((await store.authorizeAccess(validPair.access_token, { operation: "orders:read" })).allowed, true,
+          "same-group process restart preserves valid credential state");
+        assert.equal(await store.authenticateAccess(revokedPair.access_token), null,
+          "same-group process restart does not revive revoked credentials");
+
+        const groupBEnv = { ...actual, VERSEKIT_GROUP_ID: anotherGroup };
+        runtime = await startMissionTestServer({ databaseUrl: startupDatabaseUrl, pepper, extraEnv: groupBEnv });
+        await stopMissionTestServer(runtime);
+        runtime = null;
+        const markerB = (await restartPool.query("SELECT group_id,updated_at FROM versekit_authorization_config WHERE id=true")).rows[0];
+        assert.equal(markerB.group_id, anotherGroup, "enabled Group B initialization durably changes the marker");
+        assert.equal(await store.authenticateAccess(validPair.access_token), null, "Group B initialization invalidates the old Group A credential");
+
+        runtime = await startMissionTestServer({ databaseUrl: startupDatabaseUrl, pepper, extraEnv: actual });
+        await stopMissionTestServer(runtime);
+        runtime = null;
+        assert.equal((await restartPool.query("SELECT group_id FROM versekit_authorization_config WHERE id=true")).rows[0].group_id, realGroup,
+          "Group A can initialize after the observed Group B transition");
+        assert.equal(await store.authenticateAccess(validPair.access_token), null,
+          "the old Group A credential remains revoked after the further restart back to A");
+        assert.equal(await store.authenticateAccess(revokedPair.access_token), null,
+          "previously revoked credential state remains revoked across every process restart");
+      } finally {
+        await stopMissionTestServer(runtime);
+        runtime = null;
+        await restartPool?.end();
+      }
+    });
+
     assert.equal(typeof await createVersekitAdapter({ env: actual, db: pool, pepper: testPepper, quotaPolicy: testQuotaPolicy }), "function");
     await assert.rejects(createVersekitAdapter({ env: { ...actual, VERSEKIT_GROUP_ID: randomUUID() }, db: pool }), /existing group/);
     assert.throws(() => parseVersekitConfig({ ...actual, VERSEKIT_GROUP_ID: "malformed" }), /VERSEKIT_GROUP_ID/);
 
     const store = new VersekitTokenStore({ db: pool, codec: createTokenCodec(testPepper), groupId: realGroup, operationalScopes: ["orders:read"] });
+    assert.equal(await store.eligible(pool, otherOnlyId, realGroup), false, "membership in another group alone is denied");
+    const adminOnlyId = randomUUID();
+    await pool.query("INSERT INTO app_users(id,email,display_name,is_admin,account_status) VALUES($1,$2,'VK03 Admin Without Membership',true,'active')",
+      [adminOnlyId, `vk03-admin-${adminOnlyId}@example.test`]);
+    assert.equal(await store.eligible(pool, adminOnlyId, realGroup), false, "administrator status without current membership grants no VerseKit access");
     const issueApprovedPair = async () => {
       const grant = await store.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] });
       assert.equal(await store.consent({ grantId: grant.id, userId, scopes: ["orders:read"], approve: true }), true);
@@ -1505,6 +1581,21 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
     const storedHashes = await pool.query("SELECT token_hash FROM versekit_tokens");
     assert.equal(storedHashes.rows.some((row) => row.token_hash === exchanged.tokens.access_token || row.token_hash === exchanged.tokens.refresh_token), false);
     assert.equal((await store.authenticateAccess(exchanged.tokens.access_token)).app_user_id, userId);
+    assert.equal((await store.authorizeAccess(exchanged.tokens.access_token, { operation: "orders:read" })).allowed, true,
+      "central guard permits an explicitly granted, enabled test capability");
+    const scopedStore = new VersekitTokenStore({ db: pool, codec: createTokenCodec(testPepper), groupId: realGroup,
+      operationalScopes: ["orders:read", "orders:write"] });
+    assert.deepEqual(await scopedStore.authorizeAccess(exchanged.tokens.access_token, { operation: "orders:write" }),
+      { allowed: false, reason: "scope_missing" }, "valid token without the operation scope is denied");
+    assert.deepEqual(await scopedStore.authorizeAccess(exchanged.tokens.access_token, { operation: "stock:read" }),
+      { allowed: false, reason: "unsupported_operation" }, "unimplemented capabilities are not accepted");
+    assert.equal((await scopedStore.authorizeAccess("invalid", { operation: "me" })).reason, "invalid_token");
+    const scopeFailure = response();
+    sendAuthorizationFailure(scopeFailure, { reason: "scope_missing" });
+    assert.equal(scopeFailure.status, 403);
+    assert.equal(scopeFailure.headers["content-type"], "application/problem+json; charset=utf-8");
+    assert.equal(scopeFailure.headers["www-authenticate"], 'Bearer error="insufficient_scope"');
+    assert.deepEqual(JSON.parse(scopeFailure.body), { type: "about:blank", status: 403, code: "SCOPE_MISSING" });
     const rotated = await store.refresh({ refreshToken: exchanged.tokens.refresh_token, clientId: "versekit" });
     assert.ok(rotated.tokens);
     assert.equal((await store.refresh({ refreshToken: exchanged.tokens.refresh_token, clientId: "versekit" })).error, "invalid_grant");
@@ -1704,14 +1795,20 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
       const blockedGrant = await httpStore.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] });
       await httpStore.consent({ grantId: blockedGrant.id, userId, scopes: ["orders:read"], approve: true });
       const blockedPair = (await httpStore.exchangeDeviceCode({ deviceCode: blockedGrant.deviceCode, clientId: "versekit" })).tokens;
+      await pool.query("UPDATE group_members SET role='owner' WHERE group_id=$1 AND app_user_id=$2", [realGroup, userId]);
+      assert.equal((await httpStore.authorizeAccess(blockedPair.access_token, { operation: "orders:read" })).allowed, true,
+        "changing a current member's owner role does not expand or remove its granted authorization");
       await pool.query("UPDATE app_users SET account_status='blocked' WHERE id=$1", [userId]);
-      assert.equal((await meRequest(`Bearer ${blockedPair.access_token}`)).status, 401, "blocked members cannot use existing access tokens");
+      assert.equal((await meRequest(`Bearer ${blockedPair.access_token}`)).status, 401, "blocked owners cannot use existing access tokens or bypass active-account checks");
       assert.deepEqual((await postForm(tokenPath, refreshForm(blockedPair.refresh_token))).body, { error: "invalid_grant" });
       await pool.query("UPDATE app_users SET account_status='active' WHERE id=$1", [userId]);
       assert.equal((await meRequest(`Bearer ${blockedPair.access_token}`)).status, 401, "refresh attempted while blocked revokes the family");
+      await pool.query("UPDATE group_members SET role='member' WHERE group_id=$1 AND app_user_id=$2", [realGroup, userId]);
       const temporaryGroup = randomUUID();
       await pool.query("INSERT INTO blueprint_groups (id,name) VALUES ($1,'Temporary VerseKit Org')", [temporaryGroup]);
       await pool.query("INSERT INTO group_members (group_id,app_user_id,role) VALUES ($1,$2,'member')", [temporaryGroup, userId]);
+      await createVersekitAdapter({ env: { ...actual, VERSEKIT_GROUP_ID: temporaryGroup }, db: pool, pepper: testPepper,
+        quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
       const temporaryStore = new VersekitTokenStore({ db: pool, codec, groupId: temporaryGroup, operationalScopes: ["orders:read"] });
       const temporaryGrant = await temporaryStore.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] });
       await temporaryStore.consent({ grantId: temporaryGrant.id, userId, scopes: ["orders:read"], approve: true });
@@ -1720,6 +1817,7 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
       assert.equal(await temporaryStore.authenticateAccess(temporaryPair.access_token), null, "deleted group immediately invalidates access");
       assert.deepEqual(await temporaryStore.refresh({ refreshToken: temporaryPair.refresh_token, clientId: "versekit" }), { error: "invalid_grant" });
       assert.deepEqual((await postForm(tokenPath, tokenForm(created.body.device_code))).body, { error: "invalid_grant" });
+      await createVersekitAdapter({ env: actual, db: pool, pepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
 
       const deniedCode = (await postForm("/versekit/v1/device/code", "client_id=versekit&scope=orders%3Aread")).body;
       const deniedRecord = await httpStore.findGrantByUserCode(deniedCode.user_code);
@@ -1757,6 +1855,229 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
       assert.equal(meLimited.headers.get("content-type"), "application/problem+json; charset=utf-8");
       assert.deepEqual(await meLimited.json(), { type: "about:blank", status: 429, code: "RATE_LIMITED" });
       assert.ok(Number(meLimited.headers.get("retry-after")) >= 1);
+
+      await t.test("disabled configuration changes are unobserved until an enabled group activation", async () => {
+        const pair = await issueApprovedPair();
+        const pending = await store.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] });
+        const markerBefore = (await pool.query("SELECT group_id,updated_at FROM versekit_authorization_config WHERE id=true")).rows[0];
+        const credentialBefore = (await pool.query(
+          "SELECT t.revoked_at,f.revoked_at AS family_revoked,d.status FROM versekit_tokens t JOIN versekit_token_families f ON f.id=t.family_id JOIN versekit_device_grants d ON d.id=f.grant_id WHERE t.token_hash=$1 AND t.token_type='access'",
+          [codec.hash("access", pair.tokens.access_token)]
+        )).rows[0];
+        const disabledDb = { query() { throw new Error("disabled adapter queried PostgreSQL"); }, connect() { throw new Error("disabled adapter connected to PostgreSQL"); } };
+        assert.equal(await createVersekitAdapter({ env: { ...actual, VERSEKIT_ENABLED: "false", VERSEKIT_GROUP_ID: anotherGroup }, db: disabledDb }), null,
+          "disabled adapter with another configured group does not initialize VerseKit");
+        assert.equal(await createVersekitAdapter({ env: { ...actual, VERSEKIT_ENABLED: "false", VERSEKIT_GROUP_ID: realGroup }, db: disabledDb }), null,
+          "disabled adapter returning to Group A still performs no initialization");
+        const markerAfterDisabled = (await pool.query("SELECT group_id,updated_at FROM versekit_authorization_config WHERE id=true")).rows[0];
+        const credentialAfterDisabled = (await pool.query(
+          "SELECT t.revoked_at,f.revoked_at AS family_revoked,d.status FROM versekit_tokens t JOIN versekit_token_families f ON f.id=t.family_id JOIN versekit_device_grants d ON d.id=f.grant_id WHERE t.token_hash=$1 AND t.token_type='access'",
+          [codec.hash("access", pair.tokens.access_token)]
+        )).rows[0];
+        assert.deepEqual(markerAfterDisabled, markerBefore, "unobserved disabled settings do not change the persistent marker");
+        assert.deepEqual(credentialAfterDisabled, credentialBefore, "unobserved disabled settings do not mutate credentials");
+
+        await createVersekitAdapter({ env: actual, db: pool, pepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
+        assert.deepEqual((await pool.query("SELECT group_id,updated_at FROM versekit_authorization_config WHERE id=true")).rows[0], markerBefore,
+          "same-group reactivation preserves the marker generation");
+        assert.equal((await store.authorizeAccess(pair.tokens.access_token, { operation: "orders:read" })).allowed, true,
+          "valid Group A credentials survive a disabled pause and same-group reactivation");
+
+        await createVersekitAdapter({ env: { ...actual, VERSEKIT_GROUP_ID: anotherGroup }, db: pool, pepper: testPepper,
+          quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
+        assert.equal((await pool.query("SELECT status FROM versekit_device_grants WHERE id=$1", [pending.id])).rows[0].status, "denied",
+          "an enabled A-to-B transition denies outstanding grants");
+        assert.equal((await pool.query("SELECT revoked_at FROM versekit_token_families WHERE grant_id=$1", [pair.grant.id])).rows[0].revoked_at !== null, true,
+          "an enabled A-to-B transition revokes the existing family");
+        await createVersekitAdapter({ env: actual, db: pool, pepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
+        assert.equal(await store.authenticateAccess(pair.tokens.access_token), null,
+          "returning to A cannot reactivate credentials invalidated by an observed B activation");
+      });
+
+      await t.test("authorization locks and caller-owned transactions remain open through a protected operation", async () => {
+        const txUserId = randomUUID();
+        await pool.query("INSERT INTO app_users(id,email,display_name,account_status) VALUES($1,$2,'Caller Transaction Member','active')",
+          [txUserId, `vk04-transaction-${txUserId}@example.test`]);
+        await pool.query("INSERT INTO group_members(group_id,app_user_id,role) VALUES($1,$2,'member')", [realGroup, txUserId]);
+        const txGrant = await store.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] });
+        assert.equal(await store.consent({ grantId: txGrant.id, userId: txUserId, scopes: ["orders:read"], approve: true }), true);
+        const pair = (await store.exchangeDeviceCode({ deviceCode: txGrant.deviceCode, clientId: "versekit" })).tokens;
+        const authClient = await pool.connect();
+        const competingClient = await pool.connect();
+        let authInTransaction = false;
+        let competingInTransaction = false;
+        let releaseCalls = 0;
+        try {
+          await authClient.query("BEGIN");
+          authInTransaction = true;
+          const guardStatements = [];
+          const callerClient = {
+            query(sql, params) { guardStatements.push(String(sql)); return authClient.query(sql, params); },
+            release() { releaseCalls++; return authClient.release(); }
+          };
+          const authorized = await store.authorizeAccess(pair.access_token, { operation: "orders:read", client: callerClient });
+          assert.equal(authorized.allowed, true);
+          assert.equal(releaseCalls, 0, "guard leaves caller-owned connection unreleased");
+          assert.equal(guardStatements.some((sql) => /^\s*(COMMIT|ROLLBACK|BEGIN)\b/i.test(sql)), false,
+            "guard does not take ownership of transaction control");
+          const protectedProbe = await authClient.query("SELECT count(*)::int AS members FROM group_members WHERE group_id=$1 AND app_user_id=$2",
+            [realGroup, txUserId]);
+          assert.equal(protectedProbe.rows[0].members, 1, "protected database work executes in the caller transaction after authorization");
+
+          await competingClient.query("BEGIN");
+          competingInTransaction = true;
+          const backend = await competingClient.query("SELECT pg_backend_pid() AS pid");
+          const competingPid = backend.rows[0].pid;
+          const removal = competingClient.query("DELETE FROM group_members WHERE group_id=$1 AND app_user_id=$2", [realGroup, txUserId]);
+          const deadline = Date.now() + 5_000;
+          let waitingOnLock = false;
+          while (Date.now() < deadline) {
+            const state = await pool.query("SELECT state,wait_event_type FROM pg_stat_activity WHERE pid=$1", [competingPid]);
+            if (state.rows[0]?.wait_event_type === "Lock") { waitingOnLock = true; break; }
+            await new Promise((resolve) => setImmediate(resolve));
+          }
+          assert.equal(waitingOnLock, true, "the competing membership removal is observably blocked on a PostgreSQL lock");
+          assert.equal(releaseCalls, 0, "the guard did not release the caller connection while the competing transaction waits");
+
+          await authClient.query("COMMIT");
+          authInTransaction = false;
+          await removal;
+          await competingClient.query("COMMIT");
+          competingInTransaction = false;
+          assert.equal(await store.authenticateAccess(pair.access_token), null,
+            "subsequent authorization denies credentials after the competing removal commits");
+        } finally {
+          if (authInTransaction) await authClient.query("ROLLBACK").catch(() => {});
+          if (competingInTransaction) await competingClient.query("ROLLBACK").catch(() => {});
+          authClient.release();
+          competingClient.release();
+          await pool.query("DELETE FROM app_users WHERE id=$1", [txUserId]);
+        }
+      });
+
+      const historicalA = await issueApprovedPair();
+      const pendingA = await store.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] });
+      await createVersekitAdapter({ env: { ...actual, VERSEKIT_GROUP_ID: anotherGroup }, db: pool, pepper: testPepper,
+        quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
+      assert.equal((await pool.query("SELECT status FROM versekit_device_grants WHERE id=$1", [pendingA.id])).rows[0].status, "denied",
+        "group reconfiguration invalidates outstanding grants");
+      assert.deepEqual(await store.exchangeDeviceCode({ deviceCode: pendingA.deviceCode, clientId: "versekit" }), { error: "invalid_grant" });
+      const groupBStore = new VersekitTokenStore({ db: pool, codec, groupId: anotherGroup, operationalScopes: ["orders:read"] });
+      const groupBGrant = await groupBStore.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] });
+      assert.equal(await groupBStore.consent({ grantId: groupBGrant.id, userId, scopes: ["orders:read"], approve: true }), true);
+      const historicalB = (await groupBStore.exchangeDeviceCode({ deviceCode: groupBGrant.deviceCode, clientId: "versekit" })).tokens;
+      assert.ok(historicalB);
+      assert.equal(await store.authenticateAccess(historicalA.tokens.access_token), null, "switching A → B revokes A credentials");
+      assert.deepEqual(await store.refresh({ refreshToken: historicalA.tokens.refresh_token, clientId: "versekit" }), { error: "invalid_grant" });
+      assert.equal((await groupBStore.authorizeAccess(historicalB.access_token, { operation: "orders:read" })).allowed, true);
+      await createVersekitAdapter({ env: actual, db: pool, pepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
+      assert.equal(await store.authenticateAccess(historicalA.tokens.access_token), null, "switching back to A cannot reactivate its old token");
+      assert.equal(await groupBStore.authenticateAccess(historicalB.access_token), null, "switching back to A revokes B credentials too");
+      await assert.rejects(groupBStore.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] }), /configuration is no longer active/,
+        "a stale adapter instance cannot issue grants after reconfiguration");
+
+      await t.test("authorization locks serialize concurrent membership removal, revocation, and group deletion", async () => {
+        const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
+        const pauseAuthorization = async (accessToken, targetStore) => {
+          const entered = deferred(), release = deferred();
+          const authPool = await createTestPool(databaseUrl);
+          let paused = false;
+          const coordinatedDb = {
+            query: (...args) => authPool.query(...args),
+            async connect() {
+              const client = await authPool.connect();
+              return {
+                async query(sql, params) {
+                  const result = await client.query(sql, params);
+                  if (!paused && typeof sql === "string" && sql.includes("FOR SHARE OF t,f,d,u,g,gm")) {
+                    paused = true; entered.resolve(); await release.promise;
+                  }
+                  return result;
+                },
+                release: () => client.release()
+              };
+            }
+          };
+          const guardedStore = new VersekitTokenStore({ db: coordinatedDb, codec, groupId: targetStore.groupId,
+            operationalScopes: targetStore.operationalScopes });
+          const result = guardedStore.authorizeAccess(accessToken, { operation: "me" });
+          let closed = false;
+          const close = async () => {
+            if (closed) return;
+            closed = true;
+            release.resolve();
+            await result.catch(() => {});
+            await authPool.end();
+          };
+          try {
+            let timeout;
+            await Promise.race([entered.promise, new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error("authorization did not reach its protected query")), 5000); })]);
+            clearTimeout(timeout);
+          } catch (error) { await close(); throw error; }
+          return { result, release: release.resolve, close };
+        };
+
+        const memberRace = await issueApprovedPair();
+        let paused = await pauseAuthorization(memberRace.tokens.access_token, store);
+        try { await assert.rejects(pool.query("SELECT app_user_id FROM group_members WHERE group_id=$1 AND app_user_id=$2 FOR UPDATE NOWAIT", [realGroup, userId]),
+          (error) => error.code === "55P03", "authorization holds the membership row while its decision is in flight"); }
+        finally { await paused.close(); }
+        assert.equal((await paused.result).allowed, true);
+        await pool.query("DELETE FROM group_members WHERE group_id=$1 AND app_user_id=$2", [realGroup, userId]);
+        assert.equal(await store.authenticateAccess(memberRace.tokens.access_token), null, "removal committed before the next request is denied");
+        await pool.query("INSERT INTO group_members(group_id,app_user_id,role) VALUES($1,$2,'member')", [realGroup, userId]);
+
+        const accountRace = await issueApprovedPair();
+        paused = await pauseAuthorization(accountRace.tokens.access_token, store);
+        try { await assert.rejects(pool.query("SELECT id FROM app_users WHERE id=$1 FOR UPDATE NOWAIT", [userId]),
+          (error) => error.code === "55P03", "authorization holds the account row while its decision is in flight"); }
+        finally { await paused.close(); }
+        assert.equal((await paused.result).allowed, true);
+        await pool.query("UPDATE app_users SET account_status='blocked' WHERE id=$1", [userId]);
+        assert.equal(await store.authenticateAccess(accountRace.tokens.access_token), null, "account deactivation denies the next request");
+        assert.deepEqual(await store.refresh({ refreshToken: accountRace.tokens.refresh_token, clientId: "versekit" }), { error: "invalid_grant" });
+        await pool.query("UPDATE app_users SET account_status='active' WHERE id=$1", [userId]);
+
+        const revokeRace = await issueApprovedPair();
+        paused = await pauseAuthorization(revokeRace.tokens.access_token, store);
+        try { await assert.rejects(pool.query("SELECT id FROM versekit_tokens WHERE token_hash=$1 FOR UPDATE NOWAIT", [codec.hash("access", revokeRace.tokens.access_token)]),
+          (error) => error.code === "55P03", "authorization locks the token while its decision is in flight"); }
+        finally { await paused.close(); }
+        assert.equal((await paused.result).allowed, true);
+        await store.revoke(revokeRace.tokens.refresh_token);
+        assert.equal(await store.authenticateAccess(revokeRace.tokens.access_token), null, "family revocation denies all later requests");
+
+        const refreshAndRevoke = await issueApprovedPair();
+        const independent = await issueApprovedPair();
+        const [rotation] = await Promise.all([
+          store.refresh({ refreshToken: refreshAndRevoke.tokens.refresh_token, clientId: "versekit" }),
+          store.revoke(refreshAndRevoke.tokens.refresh_token)
+        ]);
+        assert.ok(rotation.tokens || rotation.error === "invalid_grant", "refresh and revocation serialize without duplicate or partially authorized credentials");
+        assert.equal(await store.authenticateAccess(refreshAndRevoke.tokens.access_token), null);
+        if (rotation.tokens) assert.equal(await store.authenticateAccess(rotation.tokens.access_token), null, "revocation covers a concurrent rotation");
+        assert.equal((await store.authorizeAccess(independent.tokens.access_token, { operation: "me" })).allowed, true,
+          "revoking a concurrent family leaves an independent family usable");
+
+        const deletingGroup = randomUUID();
+        await pool.query("INSERT INTO blueprint_groups(id,name) VALUES($1,'Concurrent Delete Org')", [deletingGroup]);
+        await pool.query("INSERT INTO group_members(group_id,app_user_id,role) VALUES($1,$2,'member')", [deletingGroup, userId]);
+        await createVersekitAdapter({ env: { ...actual, VERSEKIT_GROUP_ID: deletingGroup }, db: pool, pepper: testPepper,
+          quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
+        const deletingStore = new VersekitTokenStore({ db: pool, codec, groupId: deletingGroup, operationalScopes: ["orders:read"] });
+        const deletingGrant = await deletingStore.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] });
+        assert.equal(await deletingStore.consent({ grantId: deletingGrant.id, userId, scopes: ["orders:read"], approve: true }), true);
+        const deletingPair = (await deletingStore.exchangeDeviceCode({ deviceCode: deletingGrant.deviceCode, clientId: "versekit" })).tokens;
+        paused = await pauseAuthorization(deletingPair.access_token, deletingStore);
+        try { await assert.rejects(pool.query("SELECT id FROM blueprint_groups WHERE id=$1 FOR UPDATE NOWAIT", [deletingGroup]),
+          (error) => error.code === "55P03", "authorization holds the group row while its decision is in flight"); }
+        finally { await paused.close(); }
+        assert.equal((await paused.result).allowed, true);
+        await pool.query("DELETE FROM blueprint_groups WHERE id=$1", [deletingGroup]);
+        assert.equal(await deletingStore.authenticateAccess(deletingPair.access_token), null);
+        assert.deepEqual(await deletingStore.refresh({ refreshToken: deletingPair.refresh_token, clientId: "versekit" }), { error: "invalid_grant" });
+        await createVersekitAdapter({ env: actual, db: pool, pepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
+      });
     } finally {
       await new Promise((resolve) => adapterServer.close(resolve));
     }

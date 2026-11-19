@@ -90,7 +90,8 @@ export const startMissionTestServer = async ({ databaseUrl, pepper, extraEnv = {
     while (Date.now() < deadline) {
       if (child.exitCode !== null) throw new Error(`test server exited early (${child.exitCode})\n${output.join('')}`);
       try {
-        const response = await fetch(`${baseUrl}/healthz`);
+        const remaining = Math.max(1, deadline - Date.now());
+        const response = await fetch(`${baseUrl}/healthz`, { signal: AbortSignal.timeout(remaining) });
         if (response.ok) return { baseUrl, child, output, logDirectory };
       } catch {}
       await delay(100);

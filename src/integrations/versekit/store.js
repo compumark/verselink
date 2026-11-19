@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { newUserCode, normalizeUserCode } from "./tokens.js";
+import { STANDARD_SCOPES } from "./discovery.js";
 
 const ACCESS_TTL = 3600;
 const REFRESH_TTL = 90 * 86400;
@@ -21,6 +22,15 @@ export class VersekitTokenStore {
   scopesReady(scopes) {
     return validScopes(scopes) && scopes.every((scope) => this.operationalScopes.includes(scope));
   }
+  async configuredGroup(c) {
+    const q = await c.query("SELECT group_id FROM versekit_authorization_config WHERE id=true FOR SHARE");
+    return q.rowCount === 1 && q.rows[0].group_id === this.groupId;
+  }
+  async lockGroup(c, groupId = this.groupId) {
+    if (groupId !== this.groupId) return false;
+    const q = await c.query("SELECT id FROM blueprint_groups WHERE id=$1 FOR KEY SHARE", [groupId]);
+    return q.rowCount === 1;
+  }
   async transaction(fn) {
     const c = await this.db.connect();
     try { await c.query("BEGIN"); const value = await fn(c); await c.query("COMMIT"); return value; }
@@ -37,6 +47,11 @@ export class VersekitTokenStore {
       const userCode = newUserCode();
       try {
         const q = await this.transaction(async (c) => {
+          const configured = await c.query("SELECT ac.group_id=$1 AS active,EXISTS(SELECT 1 FROM blueprint_groups WHERE id=$1) AS group_exists FROM versekit_authorization_config ac WHERE ac.id=true FOR SHARE OF ac", [this.groupId]);
+          if (!configured.rowCount) throw new Error("VerseKit authorization configuration is unavailable");
+          if (!configured.rows[0].active && configured.rows[0].group_exists) {
+            throw new Error("VerseKit adapter configuration is no longer active");
+          }
           await c.query("SELECT pg_advisory_xact_lock($1)", [GRANT_ADMISSION_LOCK]);
           const quota = await c.query(`UPDATE versekit_grant_quota SET tokens=LEAST(capacity, tokens + EXTRACT(EPOCH FROM (clock_timestamp()-updated_at))/refill_interval_seconds), updated_at=clock_timestamp() WHERE id=true RETURNING tokens,refill_interval_seconds`);
           if (!quota.rowCount) throw new Error("VerseKit grant quota is unavailable");
@@ -73,6 +88,9 @@ export class VersekitTokenStore {
     const code = normalizeUserCode(userCode);
     if (!code || !/^[0-9a-f]{64}$/.test(sessionHash || "")) return null;
     return this.transaction(async (c) => {
+      if (!(await this.configuredGroup(c))) return null;
+      const lookup = await c.query("SELECT id,group_id FROM versekit_device_grants WHERE user_code_hash=$1", [this.codec.hash("user_code", code)]);
+      if (!lookup.rowCount || !(await this.lockGroup(c, lookup.rows[0].group_id))) return null;
       const q = await c.query(
         "SELECT id,client_id,group_id,requested_scopes,status,expires_at FROM versekit_device_grants WHERE user_code_hash=$1 FOR UPDATE",
         [this.codec.hash("user_code", code)]
@@ -95,6 +113,11 @@ export class VersekitTokenStore {
       || !/^[0-9a-f]{64}$/.test(sessionHash || "") || !Array.isArray(scopes)
       || new Set(scopes).size !== scopes.length || typeof approve !== "boolean") return false;
     return this.transaction(async (c) => {
+      if (!(await this.configuredGroup(c))) return false;
+      const candidate = await c.query("SELECT d.group_id FROM versekit_consent_challenges ch JOIN versekit_device_grants d ON d.id=ch.grant_id WHERE ch.challenge_hash=$1", [this.codec.hash("consent_challenge", challenge)]);
+      if (!candidate.rowCount || !(await this.lockGroup(c, candidate.rows[0].group_id))) return false;
+      const grantLock = await c.query("SELECT id FROM versekit_device_grants WHERE id=(SELECT grant_id FROM versekit_consent_challenges WHERE challenge_hash=$1) FOR UPDATE", [this.codec.hash("consent_challenge", challenge)]);
+      if (!grantLock.rowCount) return false;
       const cq = await c.query(
         "SELECT challenge_hash,grant_id,app_user_id,session_hash,expires_at,consumed_at FROM versekit_consent_challenges WHERE challenge_hash=$1 FOR UPDATE",
         [this.codec.hash("consent_challenge", challenge)]
@@ -121,7 +144,7 @@ export class VersekitTokenStore {
   async eligible(c, userId, groupId) {
     if (groupId !== this.groupId) return false;
     const q = await c.query(
-      "SELECT 1 FROM app_users u JOIN group_members gm ON gm.app_user_id=u.id JOIN blueprint_groups g ON g.id=gm.group_id WHERE u.id=$1 AND gm.group_id=$2 AND u.account_status='active'",
+      "SELECT 1 FROM app_users u JOIN group_members gm ON gm.app_user_id=u.id JOIN blueprint_groups g ON g.id=gm.group_id JOIN versekit_authorization_config ac ON ac.id=true AND ac.group_id=$2 WHERE u.id=$1 AND gm.group_id=$2 AND u.account_status='active'",
       [userId, this.groupId]
     );
     return q.rowCount === 1;
@@ -129,7 +152,7 @@ export class VersekitTokenStore {
   async eligibleForConsent(c, userId, groupId) {
     if (groupId !== this.groupId) return false;
     const q = await c.query(
-      "SELECT 1 FROM app_users u JOIN group_members gm ON gm.app_user_id=u.id JOIN blueprint_groups g ON g.id=gm.group_id WHERE u.id=$1 AND gm.group_id=$2 AND u.account_status='active' FOR SHARE OF u,gm,g",
+      "SELECT 1 FROM app_users u JOIN group_members gm ON gm.app_user_id=u.id JOIN blueprint_groups g ON g.id=gm.group_id JOIN versekit_authorization_config ac ON ac.id=true AND ac.group_id=$2 WHERE u.id=$1 AND gm.group_id=$2 AND u.account_status='active' FOR SHARE OF u,gm,g",
       [userId, this.groupId]
     );
     return q.rowCount === 1;
@@ -137,10 +160,13 @@ export class VersekitTokenStore {
   async consent({ grantId, userId, scopes, approve }) {
     if (!Array.isArray(scopes) || new Set(scopes).size !== scopes.length) return false;
     return this.transaction(async (c) => {
+      if (!(await this.configuredGroup(c))) return false;
+      const candidate = await c.query("SELECT group_id FROM versekit_device_grants WHERE id=$1", [grantId]);
+      if (!candidate.rowCount || !(await this.lockGroup(c, candidate.rows[0].group_id))) return false;
       const q = await c.query("SELECT id,group_id,requested_scopes,status FROM versekit_device_grants WHERE id=$1 AND expires_at>now() FOR UPDATE", [grantId]);
       const g = q.rows[0];
       if (!g || g.status !== "pending" || !scopes.every((s) => g.requested_scopes.includes(s))) return false;
-      if (approve && (!this.scopesReady(scopes) || g.group_id !== this.groupId || !(await this.eligible(c, userId, g.group_id)))) return false;
+      if (approve && (!this.scopesReady(scopes) || g.group_id !== this.groupId || !(await this.eligibleForConsent(c, userId, g.group_id)))) return false;
       const u = await c.query(
         "UPDATE versekit_device_grants SET status=$2,app_user_id=$3,approved_scopes=$4,consented_at=now() WHERE id=$1 AND status='pending' RETURNING id",
         [grantId, approve ? "approved" : "denied", approve ? userId : null, approve ? scopes : []]
@@ -159,6 +185,9 @@ export class VersekitTokenStore {
   }
   async exchangeDeviceCode({ deviceCode, clientId }) {
     return this.transaction(async (c) => {
+      if (!(await this.configuredGroup(c))) return { error: "invalid_grant" };
+      const candidate = await c.query("SELECT id,group_id FROM versekit_device_grants WHERE device_code_hash=$1", [this.codec.hash("device_code", deviceCode || "")]);
+      if (!candidate.rowCount || !(await this.lockGroup(c, candidate.rows[0].group_id))) return { error: "invalid_grant" };
       const q = await c.query("SELECT * FROM versekit_device_grants WHERE device_code_hash=$1 FOR UPDATE", [this.codec.hash("device_code", deviceCode || "")]);
       const g = q.rows[0];
       if (!g || g.client_id !== clientId) return { error: "invalid_grant" };
@@ -172,7 +201,7 @@ export class VersekitTokenStore {
       }
       await c.query("UPDATE versekit_device_grants SET last_poll_at=now() WHERE id=$1", [g.id]);
       if (g.status === "pending") return { error: "authorization_pending", interval: g.interval_seconds };
-      if (g.status !== "approved" || !g.app_user_id || !(await this.eligible(c, g.app_user_id, g.group_id))) return { error: "invalid_grant" };
+      if (g.status !== "approved" || !g.app_user_id || !(await this.eligibleForConsent(c, g.app_user_id, g.group_id))) return { error: "invalid_grant" };
       const tokens = await this.issuePair(c, { grantId: g.id, clientId, userId: g.app_user_id, groupId: g.group_id, scopes: g.approved_scopes });
       if (!tokens) return { error: "invalid_grant" };
       await c.query("UPDATE versekit_device_grants SET status='consumed' WHERE id=$1", [g.id]);
@@ -181,8 +210,17 @@ export class VersekitTokenStore {
   }
   async refresh({ refreshToken, clientId }) {
     return this.transaction(async (c) => {
+      if (!(await this.configuredGroup(c))) return { error: "invalid_grant" };
+      const lookup = await c.query("SELECT f.id AS family_id,f.group_id FROM versekit_tokens t JOIN versekit_token_families f ON f.id=t.family_id WHERE t.token_hash=$1 AND t.token_type='refresh'", [this.codec.hash("refresh", refreshToken || "")]);
+      if (!lookup.rowCount) return { error: "invalid_grant" };
+      const candidate = lookup.rows[0];
+      if (candidate.group_id !== this.groupId) return { error: "invalid_grant" };
+      // Serialize against parent group deletion before taking family/token locks.
+      const group = await c.query("SELECT id FROM blueprint_groups WHERE id=$1 FOR KEY SHARE", [candidate.group_id]);
+      if (!group.rowCount) return { error: "invalid_grant" };
+      await c.query("SELECT id FROM versekit_token_families WHERE id=$1 FOR UPDATE", [candidate.family_id]);
       const q = await c.query(
-        "SELECT t.id,t.family_id,t.expires_at,t.revoked_at,t.replaced_by,f.grant_id,f.absolute_expires_at,f.client_id,f.app_user_id,f.group_id,f.scopes,f.revoked_at AS family_revoked,d.status AS grant_status,d.app_user_id AS grant_user_id,d.group_id AS grant_group_id,d.approved_scopes AS grant_scopes FROM versekit_tokens t JOIN versekit_token_families f ON f.id=t.family_id JOIN versekit_device_grants d ON d.id=f.grant_id WHERE t.token_hash=$1 AND t.token_type='refresh' FOR UPDATE OF t,f,d",
+        "SELECT t.id,t.family_id,t.expires_at,t.revoked_at,t.replaced_by,f.grant_id,f.absolute_expires_at,f.client_id,f.app_user_id,f.group_id,f.scopes,f.revoked_at AS family_revoked,d.status AS grant_status,d.app_user_id AS grant_user_id,d.group_id AS grant_group_id,d.approved_scopes AS grant_scopes FROM versekit_tokens t JOIN versekit_token_families f ON f.id=t.family_id JOIN versekit_device_grants d ON d.id=f.grant_id WHERE t.token_hash=$1 AND t.token_type='refresh' FOR UPDATE OF t,d",
         [this.codec.hash("refresh", refreshToken || "")]
       );
       const r = q.rows[0];
@@ -195,7 +233,7 @@ export class VersekitTokenStore {
       if (r.family_revoked || new Date(r.expires_at) <= this.clock() || new Date(r.absolute_expires_at) <= this.clock()) return { error: "invalid_grant" };
       const grantValid = r.grant_status === "consumed" && r.grant_user_id === r.app_user_id && r.grant_group_id === r.group_id
         && Array.isArray(r.grant_scopes) && r.grant_scopes.length === r.scopes.length && r.grant_scopes.every((scope) => r.scopes.includes(scope));
-      const memberValid = grantValid && await this.eligible(c, r.app_user_id, r.group_id);
+      const memberValid = grantValid && await this.eligibleForConsent(c, r.app_user_id, r.group_id);
       if (!memberValid) {
         await c.query("UPDATE versekit_token_families SET revoked_at=COALESCE(revoked_at,now()) WHERE id=$1", [r.family_id]);
         await c.query("UPDATE versekit_tokens SET revoked_at=COALESCE(revoked_at,now()) WHERE family_id=$1", [r.family_id]);
@@ -213,9 +251,11 @@ export class VersekitTokenStore {
     if (typeof token !== "string" || token.length > 512) return;
     const a = this.codec.hash("access", token), r = this.codec.hash("refresh", token);
     await this.transaction(async (c) => {
-      const rows = await c.query("SELECT family_id FROM versekit_tokens WHERE token_hash=$1 OR token_hash=$2 FOR UPDATE", [a, r]);
+      const rows = await c.query("SELECT DISTINCT family_id FROM versekit_tokens WHERE token_hash=$1 OR token_hash=$2", [a, r]);
       if (!rows.rowCount) return;
       const ids = [...new Set(rows.rows.map((row) => row.family_id))];
+      await c.query("SELECT id FROM versekit_token_families WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE", [ids]);
+      await c.query("SELECT id FROM versekit_tokens WHERE family_id=ANY($1::uuid[]) ORDER BY id FOR UPDATE", [ids]);
       await c.query("UPDATE versekit_token_families SET revoked_at=COALESCE(revoked_at,now()) WHERE id=ANY($1::uuid[])", [ids]);
       await c.query("UPDATE versekit_tokens SET revoked_at=COALESCE(revoked_at,now()) WHERE family_id=ANY($1::uuid[])", [ids]);
     });
@@ -231,11 +271,40 @@ export class VersekitTokenStore {
     });
   }
   async authenticateAccess(token) {
-    if (typeof token !== "string" || token.length > 512) return null;
-    const q = await this.db.query(
-      "SELECT f.app_user_id,f.group_id,f.scopes,u.display_name,u.verselink_name,g.name AS group_name FROM versekit_tokens t JOIN versekit_token_families f ON f.id=t.family_id JOIN versekit_device_grants d ON d.id=f.grant_id AND d.status='consumed' AND d.app_user_id=f.app_user_id AND d.group_id=f.group_id AND d.approved_scopes=f.scopes JOIN app_users u ON u.id=f.app_user_id AND u.account_status='active' JOIN blueprint_groups g ON g.id=f.group_id JOIN group_members gm ON gm.group_id=f.group_id AND gm.app_user_id=f.app_user_id WHERE t.token_hash=$1 AND t.token_type='access' AND t.revoked_at IS NULL AND t.expires_at>now() AND f.revoked_at IS NULL AND f.client_id='versekit' AND f.group_id=$2",
-      [this.codec.hash("access", token), this.groupId]
+    const result = await this.authorizeAccess(token, { operation: "me" });
+    return result.allowed ? result.member : null;
+  }
+  // Call without `client` for a short, self-contained authorization transaction.
+  // Write handlers must pass their already-BEGIN'ed client so the authorization
+  // row locks remain held through their protected database operation.
+  async authorizeAccess(token, { operation, client = null } = {}) {
+    const scope = operation === "me" ? null : (STANDARD_SCOPES.includes(operation) ? operation : undefined);
+    if (scope === undefined || (scope !== null && !this.operationalScopes.includes(scope))) {
+      return { allowed: false, reason: "unsupported_operation" };
+    }
+    if (!client) return this.transaction((c) => this.authorizeAccess(token, { operation, client: c }));
+    if (typeof token !== "string" || token.length > 512) return { allowed: false, reason: "invalid_token" };
+    if (!(await this.configuredGroup(client))) return { allowed: false, reason: "invalid_token" };
+    const tokenHash = this.codec.hash("access", token);
+    const familyLookup = await client.query(
+      "SELECT f.id AS family_id,f.group_id FROM versekit_tokens t JOIN versekit_token_families f ON f.id=t.family_id WHERE t.token_hash=$1 AND t.token_type='access'",
+      [tokenHash]
     );
-    return q.rows[0] || null;
+    if (!familyLookup.rowCount) return { allowed: false, reason: "invalid_token" };
+    const candidate = familyLookup.rows[0];
+    if (candidate.group_id !== this.groupId) return { allowed: false, reason: "invalid_token" };
+    // A parent key-share lock conflicts with group DELETE but permits unrelated
+    // updates. Acquire it before dependent family/token locks; revalidate below.
+    const group = await client.query("SELECT id FROM blueprint_groups WHERE id=$1 FOR KEY SHARE", [candidate.group_id]);
+    if (!group.rowCount) return { allowed: false, reason: "invalid_token" };
+    await client.query("SELECT id FROM versekit_token_families WHERE id=$1 FOR SHARE", [candidate.family_id]);
+    const q = await client.query(
+      "SELECT f.app_user_id,f.group_id,f.scopes,u.display_name,u.verselink_name,g.name AS group_name FROM versekit_tokens t JOIN versekit_token_families f ON f.id=t.family_id JOIN versekit_device_grants d ON d.id=f.grant_id AND d.status='consumed' AND d.app_user_id=f.app_user_id AND d.group_id=f.group_id AND d.approved_scopes=f.scopes JOIN app_users u ON u.id=f.app_user_id AND u.account_status='active' JOIN blueprint_groups g ON g.id=f.group_id JOIN group_members gm ON gm.group_id=f.group_id AND gm.app_user_id=f.app_user_id JOIN versekit_authorization_config ac ON ac.id=true AND ac.group_id=$2 WHERE t.token_hash=$1 AND t.token_type='access' AND t.revoked_at IS NULL AND t.expires_at>now() AND f.revoked_at IS NULL AND f.absolute_expires_at>now() AND f.client_id='versekit' AND f.group_id=$2 AND f.scopes <@ $3::text[] FOR SHARE OF t,f,d,u,g,gm",
+      [tokenHash, this.groupId, this.operationalScopes]
+    );
+    const member = q.rows[0];
+    if (!member || !this.scopesReady(member.scopes)) return { allowed: false, reason: "invalid_token" };
+    if (scope && !member.scopes.includes(scope)) return { allowed: false, reason: "scope_missing" };
+    return { allowed: true, member };
   }
 }

@@ -1,6 +1,6 @@
 import { parseVersekitConfig } from "./config.js";
 import { createVersekitRouter } from "./router.js";
-import { initializeVersekitSchema } from "./schema.js";
+import { activateVersekitAuthorizationGroup, initializeVersekitSchema } from "./schema.js";
 import { createTokenCodec } from "./tokens.js";
 import { VersekitTokenStore } from "./store.js";
 import { createRequestRateLimiter } from "../../rate-limit.js";
@@ -38,6 +38,7 @@ export const createVersekitAdapter = async ({ env, db, pepper, capabilities = []
     throw new Error("SINK_TOKEN_PEPPER must provide at least 32 bytes when VerseKit is enabled");
   }
   await initializeVersekitSchema(db, quotaPolicy);
+  await activateVersekitAuthorizationGroup(db, context.groupId);
   const activeScopes = Object.freeze([...capabilities]);
   const tokenStore = new VersekitTokenStore({ db, codec: createTokenCodec(pepper), groupId: context.groupId, operationalScopes: activeScopes, maxRetainedGrants });
   let cleanupRunning = false;

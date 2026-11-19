@@ -14,6 +14,11 @@ export const initializeVersekitSchema = async (db, quotaPolicy = {}) => {
       tokens numeric NOT NULL CHECK (tokens >= 0 AND tokens <= capacity),
       updated_at timestamptz NOT NULL DEFAULT now()
     );
+    CREATE TABLE IF NOT EXISTS versekit_authorization_config (
+      id boolean PRIMARY KEY DEFAULT true CHECK (id),
+      group_id uuid NOT NULL,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
     ALTER TABLE versekit_grant_quota ADD COLUMN IF NOT EXISTS capacity integer NOT NULL DEFAULT 24;
     ALTER TABLE versekit_grant_quota ADD COLUMN IF NOT EXISTS refill_interval_seconds integer NOT NULL DEFAULT 3600;
     INSERT INTO versekit_grant_quota(id,capacity,refill_interval_seconds,tokens,updated_at) VALUES(true,${capacity},${refillIntervalSeconds},${capacity},now()) ON CONFLICT (id) DO NOTHING;
@@ -86,5 +91,48 @@ export const initializeVersekitSchema = async (db, quotaPolicy = {}) => {
   const policy = await db.query("SELECT capacity,refill_interval_seconds,tokens,updated_at FROM versekit_grant_quota WHERE id=true");
   if (policy.rowCount !== 1 || Number(policy.rows[0].capacity) !== capacity || Number(policy.rows[0].refill_interval_seconds) !== refillIntervalSeconds) {
     throw new Error("VerseKit grant quota policy conflicts with the persisted policy");
+  }
+};
+
+// Persist the current group binding so switching A → B → A cannot revive A's
+// previously issued credentials. The row is an authorization epoch marker, not
+// a second configuration source: VERSEKIT_GROUP_ID remains authoritative.
+export const activateVersekitAuthorizationGroup = async (db, groupId) => {
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("INSERT INTO versekit_authorization_config(id,group_id) VALUES(true,$1) ON CONFLICT (id) DO NOTHING", [groupId]);
+    const current = await client.query("SELECT group_id FROM versekit_authorization_config WHERE id=true FOR UPDATE");
+    if (current.rowCount !== 1) throw new Error("VerseKit authorization configuration is unavailable");
+    if (current.rows[0].group_id !== groupId) {
+      const previousGroupId = current.rows[0].group_id;
+      // Match group deletion's parent-first order. Lock one parent at a time
+      // in deterministic order; a missing previous group means its ON DELETE
+      // CASCADE already removed its credentials. The target must still exist.
+      let previousGroupExists = false;
+      for (const parentId of [...new Set([previousGroupId, groupId])].sort()) {
+        const parent = await client.query("SELECT id FROM blueprint_groups WHERE id=$1 FOR KEY SHARE", [parentId]);
+        if (parentId === groupId && !parent.rowCount) throw new Error("VerseKit authorization target group was deleted during activation");
+        if (parentId === previousGroupId) previousGroupExists = parent.rowCount === 1;
+      }
+      if (previousGroupExists) {
+        // Lock grants before families (their parent FK), then families before
+        // tokens. Only the previously configured group can contain live
+        // credentials; earlier groups were revoked by their own transition.
+        await client.query("SELECT id FROM versekit_device_grants WHERE group_id=$1 ORDER BY id FOR UPDATE", [previousGroupId]);
+        await client.query("SELECT id FROM versekit_token_families WHERE group_id=$1 ORDER BY id FOR UPDATE", [previousGroupId]);
+        await client.query("SELECT t.id FROM versekit_tokens t JOIN versekit_token_families f ON f.id=t.family_id WHERE f.group_id=$1 ORDER BY t.id FOR UPDATE OF t", [previousGroupId]);
+        await client.query("UPDATE versekit_token_families SET revoked_at=COALESCE(revoked_at,now()) WHERE group_id=$1", [previousGroupId]);
+        await client.query("UPDATE versekit_tokens t SET revoked_at=COALESCE(t.revoked_at,now()) FROM versekit_token_families f WHERE f.id=t.family_id AND f.group_id=$1", [previousGroupId]);
+        await client.query("UPDATE versekit_device_grants SET status='denied',app_user_id=NULL,approved_scopes='{}',consented_at=COALESCE(consented_at,now()) WHERE group_id=$1 AND status IN ('pending','approved')", [previousGroupId]);
+      }
+      await client.query("UPDATE versekit_authorization_config SET group_id=$1,updated_at=now() WHERE id=true", [groupId]);
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
   }
 };

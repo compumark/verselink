@@ -1,6 +1,6 @@
 import { rejectUnreadVersekitRequest } from "./request-form.js";
 
-const CODES = new Set(["NOT_FOUND", "METHOD_NOT_ALLOWED", "MAINTENANCE", "INVALID_REQUEST", "UNAUTHORIZED", "RATE_LIMITED"]);
+const CODES = new Set(["NOT_FOUND", "METHOD_NOT_ALLOWED", "MAINTENANCE", "INVALID_REQUEST", "UNAUTHORIZED", "SCOPE_MISSING", "RATE_LIMITED"]);
 
 export const sendProblem = (res, status, code, extraHeaders = {}) => {
   if (!CODES.has(code)) throw new Error("Unsupported VerseKit problem code");

@@ -5,6 +5,11 @@ import { parseVersekitForm, readVersekitForm, rejectUnreadVersekitRequest } from
 
 const CLIENT_ID = "versekit";
 const oauthError = (res, status, error, retryAfter) => oauthJson(res, status, { error }, retryAfter ? { "retry-after": String(retryAfter) } : {});
+export const sendAuthorizationFailure = (res, result) => {
+  if (result?.reason === "scope_missing") return sendProblem(res, 403, "SCOPE_MISSING", { "www-authenticate": 'Bearer error="insufficient_scope"' });
+  if (result?.reason === "unsupported_operation") return sendProblem(res, 404, "NOT_FOUND");
+  return sendProblem(res, 401, "UNAUTHORIZED", { "www-authenticate": 'Bearer error="invalid_token"' });
+};
 const parseForm = async (req, res, deadlineMs) => {
   const result = await readVersekitForm(req, res, { deadlineMs, mode: "oauth" });
   if (result.responded || result.error) return result;
@@ -102,8 +107,9 @@ export const createDeviceAuthorizationHandlers = ({
     const match = /^Bearer (vka_[A-Za-z0-9_-]{43})$/i.exec(authorization);
     if (!match) return rejectUnreadVersekitRequest(req, res, () => sendProblem(res, 401, "UNAUTHORIZED", { "www-authenticate": 'Bearer error="invalid_token"' }));
     try {
-      const member = await tokenStore.authenticateAccess(match[1]);
-      if (!member) return rejectUnreadVersekitRequest(req, res, () => sendProblem(res, 401, "UNAUTHORIZED", { "www-authenticate": 'Bearer error="invalid_token"' }));
+      const authorization = await tokenStore.authorizeAccess(match[1], { operation: "me" });
+      if (!authorization.allowed) return rejectUnreadVersekitRequest(req, res, () => sendAuthorizationFailure(res, authorization));
+      const member = authorization.member;
       return oauthJson(res, 200, {
         member: { id: member.app_user_id, name: member.verselink_name || member.display_name },
         org: { name: context.groupName },
