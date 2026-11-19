@@ -169,7 +169,7 @@ test("VerseKit orders read is fixed-group, hidden-safe, precise, and keyset pagi
       const id = randomUUID();
       await pool.query(`INSERT INTO material_orders(id,order_number,group_id,created_by,material_name,required_quantity,quantity_unit,delivered_quantity,status,note,assigned_to,created_at,hidden_at)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'private note',$4,now()-($10::int * interval '1 second'),CASE WHEN $11 THEN now() ELSE NULL END)`,
-      [id, `VK05-${seconds}`, orderGroup, user, name, required, unit, legacy, status, seconds, hidden]);
+      [id, `VK05-${id}`, orderGroup, user, name, required, unit, legacy, status, seconds, hidden]);
       return id;
     };
     const orderIds = [];
