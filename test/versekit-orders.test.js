@@ -94,19 +94,44 @@ test("VerseKit quantity conversion preserves zero and rejects invalid or underfl
   const mappedZero = mapVersekitOrder(base);
   assert.equal(mappedZero.items[0].delivered, 0, "exact zero remains valid for an undelivered order");
   assert.equal(mapVersekitOrder({ ...base, required_quantity: "1" }).items[0].quantity, 1);
+  assert.equal(mapVersekitOrder({ ...base, required_quantity: "0.1" }).items[0].quantity, 0.1);
   assert.equal(mapVersekitOrder({ ...base, required_quantity: "0.25" }).items[0].quantity, 0.25);
+  assert.equal(mapVersekitOrder({ ...base, required_quantity: "12.5" }).items[0].quantity, 12.5);
   const tinyRepresentable = `0.${"0".repeat(322)}1`;
   assert.ok(Number(tinyRepresentable) > 0);
-  assert.equal(mapVersekitOrder({ ...base, required_quantity: tinyRepresentable }).items[0].quantity, Number(tinyRepresentable));
+  assert.throws(() => mapVersekitOrder({ ...base, required_quantity: tinyRepresentable }), { reason: "REQUIRED_QUANTITY_PRECISION_UNSUPPORTED" });
   const underflow = `0.${"0".repeat(323)}1`;
   assert.equal(Number(underflow), 0);
   assert.throws(() => mapVersekitOrder({ ...base, required_quantity: underflow }), { reason: "REQUIRED_QUANTITY_PRECISION_UNDERFLOW" });
   assert.throws(() => mapVersekitOrder({ ...base, delivered_quantity: underflow }), { reason: "DELIVERED_QUANTITY_PRECISION_UNDERFLOW" });
   assert.throws(() => mapVersekitOrder({ ...base, delivered_quantity: "-1" }), { reason: "DELIVERED_QUANTITY_INVALID" });
   assert.throws(() => mapVersekitOrder({ ...base, required_quantity: "0.12345678901234567" }), { reason: "REQUIRED_QUANTITY_PRECISION_UNSUPPORTED" });
+  assert.throws(() => mapVersekitOrder({ ...base, delivered_quantity: "0.10000000000000001" }),
+    { reason: "DELIVERED_QUANTITY_PRECISION_UNSUPPORTED" }, "decimal round-trip loss is rejected even when Number would display 0.1");
   for (const value of ["NaN", "Infinity", "not-a-number"]) {
     assert.throws(() => mapVersekitOrder({ ...base, delivered_quantity: value }), { reason: "DELIVERED_QUANTITY_INVALID" });
   }
+});
+
+test("P2 regression: distinct PostgreSQL subnormal quantities are rejected before export", () => {
+  const required = `0.${"0".repeat(322)}1`;
+  const delivered = `0.${"0".repeat(323)}9`;
+  assert.notEqual(required, delivered);
+  assert.equal(Number(required), Number(delivered), "both PostgreSQL fixed-point decimals collapse to the same JavaScript number");
+  const base = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", order_number: "P2-1", material_name: "Ore",
+    quantity_unit: "SCU", status: "open", cursor_created_at: "2026-11-19T10:00:00.123456Z" };
+  assert.throws(() => mapVersekitOrder({ ...base, required_quantity: required, delivered_quantity: delivered }),
+    { reason: "REQUIRED_QUANTITY_PRECISION_UNSUPPORTED" });
+  assert.throws(() => mapVersekitOrder({ ...base, required_quantity: "1", delivered_quantity: delivered }),
+    { reason: "DELIVERED_QUANTITY_PRECISION_UNSUPPORTED" }, "a valid required quantity cannot hide unsupported delivered precision");
+  assert.equal(normalizeVersekitOrderStatus("open", required, delivered), "open",
+    "status normalization uses original decimal magnitudes instead of collapsed Number values");
+  assert.equal(Number(required), Number(delivered));
+  assert.throws(() => normalizeVersekitOrderStatus("open", Number(required), Number(delivered)),
+    { name: "OrdersCompatibilityError", reason: "REQUIRED_QUANTITY_INVALID" },
+    "already-rounded Number arguments are rejected instead of producing a false done status");
+  assert.throws(() => normalizeVersekitOrderStatus("open", required, Number(delivered)),
+    { name: "OrdersCompatibilityError", reason: "DELIVERED_QUANTITY_INVALID" });
 });
 
 test("VerseKit orders readiness mapper applies runtime unit and numeric constraints", () => {
@@ -120,12 +145,48 @@ test("VerseKit orders readiness mapper applies runtime unit and numeric constrai
 });
 
 test("VerseKit order status mapping preserves cancellation and only marks full delivery done", () => {
+  const sourceRow = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", order_number: "STATUS-1", material_name: "Ore",
+    required_quantity: "12.5", delivered_quantity: "0", quantity_unit: "SCU", cursor_created_at: "2026-11-19T10:00:00.123456Z" };
   const cases = [
-    ["open", 10, 0, "open"], ["claimed", 10, 0, "open"], ["reported", 10, 2, "open"],
-    ["completed", 10, 1, "open"], ["completed", 10, 10, "done"], ["reported", 10, 10, "done"], ["cancelled", 10, 10, "cancelled"]
+    ["open", "10", "0", "open"], ["claimed", "10", "0", "open"], ["reported", "10", "2", "open"],
+    ["completed", "10", "1", "open"], ["completed", "10", "10", "done"], ["reported", "10", "10", "done"], ["cancelled", "10", "10", "cancelled"]
   ];
   for (const [status, required, delivered, expected] of cases) {
     assert.equal(normalizeVersekitOrderStatus(status, required, delivered), expected, `${status} ${delivered}/${required}`);
+    assert.doesNotThrow(() => mapVersekitOrder({ ...sourceRow, status }), `${status} is an accepted source status`);
+  }
+  assert.equal(normalizeVersekitOrderStatus("open", "0.30000000000000004", "0.3"), "open",
+    "status comparison preserves the exact decimal difference");
+  assert.equal(normalizeVersekitOrderStatus("open", "10.000", "10"), "done",
+    "scale differences do not change exact decimal equality");
+  assert.equal(normalizeVersekitOrderStatus("reported", "10", "10.01"), "done",
+    "over-delivery preserves the existing full-delivery classification");
+  assert.equal(normalizeVersekitOrderStatus("completed", "12.5", "12.50"), "done");
+  assert.equal(normalizeVersekitOrderStatus("claimed", "12.5", "12.49"), "open");
+  assert.equal(normalizeVersekitOrderStatus("open", "12.5", "13"), "done");
+  assert.equal(normalizeVersekitOrderStatus("cancelled", "12.5", "12.50"), "cancelled",
+    "cancellation retains precedence for valid source decimals");
+  const invalidStatuses = ["bogus", "", null, undefined, "OPEN", "Open", "CANCELLED", "canceled", 1, false];
+  for (const status of invalidStatuses) {
+    assert.throws(() => normalizeVersekitOrderStatus(status, "10", "10"),
+      { name: "OrdersCompatibilityError", reason: "ORDER_SOURCE_INVALID" });
+    assert.throws(() => mapVersekitOrder({ ...sourceRow, status }),
+      { name: "OrdersCompatibilityError", reason: "ORDER_SOURCE_INVALID" });
+  }
+  assert.throws(() => normalizeVersekitOrderStatus("bogus", 10, 10),
+    { name: "OrdersCompatibilityError", reason: "ORDER_SOURCE_INVALID" },
+    "source status validation runs before quantity validation or result derivation");
+  for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number(12.5)]) {
+    assert.throws(() => normalizeVersekitOrderStatus("open", value, "0"),
+      { name: "OrdersCompatibilityError", reason: "REQUIRED_QUANTITY_INVALID" });
+    assert.throws(() => normalizeVersekitOrderStatus("open", "12.5", value),
+      { name: "OrdersCompatibilityError", reason: "DELIVERED_QUANTITY_INVALID" });
+  }
+  for (const value of ["NaN", "Infinity", "12..5", "-0.1", " 12.5", "1e-323"]) {
+    assert.throws(() => normalizeVersekitOrderStatus("open", value, "0"),
+      { name: "OrdersCompatibilityError", reason: "REQUIRED_QUANTITY_INVALID" });
+    assert.throws(() => normalizeVersekitOrderStatus("open", "12.5", value),
+      { name: "OrdersCompatibilityError", reason: "DELIVERED_QUANTITY_INVALID" });
   }
 });
 
@@ -150,8 +211,17 @@ test("VerseKit orders read is fixed-group, hidden-safe, precise, and keyset pagi
     await pool.query("INSERT INTO app_users(id,email,display_name,account_status) VALUES($1,$2,'VK05 test member','active')", [user, `vk05-${user}@example.test`]);
     await pool.query("INSERT INTO group_members(group_id,app_user_id,role) VALUES($1,$4,'member'),($2,$4,'member'),($3,$4,'member')", [group, otherGroup, underflowGroup, user]);
     const tinyUnderflow = `0.${"0".repeat(323)}1`;
+    const subnormalRequired = `0.${"0".repeat(322)}1`;
+    const subnormalDelivered = `0.${"0".repeat(323)}9`;
+    assert.equal(Number(subnormalRequired), Number(subnormalDelivered), "the regression pair collapses to the same JavaScript Number");
+    const postgresDecimals = await pool.query("SELECT $1::numeric::text AS required, $2::numeric::text AS delivered", [subnormalRequired, subnormalDelivered]);
+    assert.deepEqual(postgresDecimals.rows[0], { required: subnormalRequired, delivered: subnormalDelivered },
+      "PostgreSQL numeric::text retains the expanded fixed-point source values");
     await pool.query(`INSERT INTO material_orders(id,order_number,group_id,created_by,material_name,required_quantity,quantity_unit)
-      VALUES($1,'VK05-UNDERFLOW',$2,$3,'Underflow fixture',$4,'SCU')`, [randomUUID(), underflowGroup, user, tinyUnderflow]);
+      VALUES($1,'VK05-UNDERFLOW',$2,$3,'Underflow fixture',$4,'SCU'),
+        ($5,'VK05-SUBNORMAL',$2,$3,'Subnormal fixture',$6,'SCU')`,
+    [randomUUID(), underflowGroup, user, tinyUnderflow, randomUUID(), subnormalRequired]);
+    await pool.query("UPDATE material_orders SET delivered_quantity=$1 WHERE order_number='VK05-SUBNORMAL'", [subnormalDelivered]);
     runtime = await startMissionTestServer({ databaseUrl: databaseUrl.toString(), pepper: PEPPER,
       extraEnv: { VERSEKIT_ENABLED: "true", VERSEKIT_GROUP_ID: group, VERSEKIT_PUBLIC_URL: "https://verse.example.org/" } });
     const codec = createTokenCodec(PEPPER);
@@ -180,15 +250,18 @@ test("VerseKit orders read is fixed-group, hidden-safe, precise, and keyset pagi
     orderIds.push(await insertOrder({ name: "Cancelled", status: "cancelled", seconds: 20 }));
     orderIds.push(await insertOrder({ name: "Crystalline", unit: "CSCU", seconds: 15 }));
     orderIds.push(await insertOrder({ name: "Components", unit: "Pieces", seconds: 15 }));
+    orderIds.push(await insertOrder({ name: "Decimal ledger sum", required: "0.3", seconds: 14 }));
     const hidden = await insertOrder({ name: "Hidden", hidden: true, seconds: 10 });
     await insertOrder({ name: "Unrelated", orderGroup: otherGroup, seconds: 5 });
-    await pool.query("INSERT INTO material_order_deliveries(order_id,delivered_by,delivered_quantity) VALUES($1,$3,2),($1,$3,3),($2,$3,10)",
-      [orderIds[2], orderIds[3], user]);
+    await pool.query("INSERT INTO material_order_deliveries(order_id,delivered_by,delivered_quantity) VALUES($1,$3,2),($1,$3,3),($2,$3,10),($4,$3,0.1),($4,$3,0.2)",
+      [orderIds[2], orderIds[3], user, orderIds[7]]);
 
     // Readiness and runtime share mapVersekitOrder. Hidden and other-group
     // rows must not become blockers for the configured organization.
     await insertOrder({ name: "Hidden unsupported", unit: "fathom", hidden: true, seconds: 4 });
     await insertOrder({ name: "Other group unsupported", unit: "fathom", orderGroup: otherGroup, seconds: 3 });
+    await insertOrder({ name: "Hidden subnormal", required: subnormalRequired, hidden: true, seconds: 2 });
+    await insertOrder({ name: "Other group subnormal", required: subnormalRequired, orderGroup: otherGroup, seconds: 2 });
     await assertOrdersReadiness({ db: pool, groupId: group });
     const unsupported = await insertOrder({ name: "Visible unsupported", unit: "fathom", seconds: 2 });
     await assert.rejects(assertOrdersReadiness({ db: pool, groupId: group }), { code: "VERSEKIT_ORDERS_NOT_READY", reason: "UNIT_UNSUPPORTED" });
@@ -209,6 +282,23 @@ test("VerseKit orders read is fixed-group, hidden-safe, precise, and keyset pagi
     await pool.query("INSERT INTO material_order_deliveries(order_id,delivered_by,delivered_quantity) VALUES($1,$2,$3)", [tinyLedger, user, tinyUnderflow]);
     await assert.rejects(assertOrdersReadiness({ db: pool, groupId: group }), { code: "VERSEKIT_ORDERS_NOT_READY", reason: "DELIVERED_QUANTITY_PRECISION_UNDERFLOW" });
     await pool.query("DELETE FROM material_orders WHERE id=$1", [tinyLedger]);
+    const collapsedValues = await insertOrder({ name: "Collapsed subnormal pair", required: subnormalRequired, legacy: subnormalDelivered, seconds: 1 });
+    await assert.rejects(assertOrdersReadiness({ db: pool, groupId: group }),
+      { code: "VERSEKIT_ORDERS_NOT_READY", reason: "REQUIRED_QUANTITY_PRECISION_UNSUPPORTED" });
+    await pool.query("DELETE FROM material_orders WHERE id=$1", [collapsedValues]);
+    const subnormalDeliveredOnly = await insertOrder({ name: "Subnormal delivered", required: "1", legacy: subnormalDelivered, seconds: 1 });
+    await assert.rejects(assertOrdersReadiness({ db: pool, groupId: group }),
+      { code: "VERSEKIT_ORDERS_NOT_READY", reason: "DELIVERED_QUANTITY_PRECISION_UNSUPPORTED" });
+    await pool.query("DELETE FROM material_orders WHERE id=$1", [subnormalDeliveredOnly]);
+    const roundTripLoss = await insertOrder({ name: "Delivered round-trip loss", required: "1", legacy: "0.10000000000000001", seconds: 1 });
+    await assert.rejects(assertOrdersReadiness({ db: pool, groupId: group }),
+      { code: "VERSEKIT_ORDERS_NOT_READY", reason: "DELIVERED_QUANTITY_PRECISION_UNSUPPORTED" });
+    await pool.query("DELETE FROM material_orders WHERE id=$1", [roundTripLoss]);
+    const subnormalLedger = await insertOrder({ name: "Subnormal ledger sum", required: "1", legacy: "0", seconds: 1 });
+    await pool.query("INSERT INTO material_order_deliveries(order_id,delivered_by,delivered_quantity) VALUES($1,$2,$3)", [subnormalLedger, user, subnormalDelivered]);
+    await assert.rejects(assertOrdersReadiness({ db: pool, groupId: group }),
+      { code: "VERSEKIT_ORDERS_NOT_READY", reason: "DELIVERED_QUANTITY_PRECISION_UNSUPPORTED" });
+    await pool.query("DELETE FROM material_orders WHERE id=$1", [subnormalLedger]);
     await assertOrdersReadiness({ db: pool, groupId: group });
 
     const first = await get("?limit=2&group_id=" + otherGroup);
@@ -226,15 +316,19 @@ test("VerseKit orders read is fixed-group, hidden-safe, precise, and keyset pagi
       const body = await page.json();
       all.push(...body.orders); cursor = body.next_cursor;
     }
-    assert.equal(all.length, 7);
-    assert.equal(new Set(all.map((order) => order.id)).size, 7);
+    assert.equal(all.length, 8);
+    assert.equal(new Set(all.map((order) => order.id)).size, 8);
     assert.ok(!all.some((order) => order.id === hidden));
     const fallback = all.find((order) => order.id === orderIds[0]);
     assert.deepEqual(fallback.items[0], { item: "Fallback legacy", quantity: 10, delivered: 2.25, unit: "scu" });
+    assert.equal(all.find((order) => order.id === orderIds[1]).items[0].delivered, 0, "PostgreSQL NULL fallback preserves exact zero");
     assert.equal(all.find((order) => order.id === orderIds[1]).status, "open");
     assert.equal(all.find((order) => order.id === orderIds[2]).items[0].delivered, 5, "delivery rows supersede, not add to, the legacy total");
     assert.equal(all.find((order) => order.id === orderIds[2]).status, "open");
     assert.equal(all.find((order) => order.id === orderIds[3]).status, "done");
+    assert.equal(all.find((order) => order.id === orderIds[7]).items[0].delivered, 0.3,
+      "PostgreSQL ledger decimals 0.1 and 0.2 sum exactly before safe JSON conversion");
+    assert.equal(all.find((order) => order.id === orderIds[7]).status, "done");
     assert.equal(all.find((order) => order.id === orderIds[4]).status, "cancelled");
     assert.equal(all.find((order) => order.id === orderIds[5]).items[0].unit, "cscu");
     assert.equal(all.find((order) => order.id === orderIds[6]).items[0].unit, "piece");
@@ -295,6 +389,14 @@ test("VerseKit orders read is fixed-group, hidden-safe, precise, and keyset pagi
     assert.ok(!underflowBody.includes("Underflow") && !underflowBody.includes(underflowOrder));
     await pool.query("DELETE FROM material_orders WHERE id=$1", [underflowOrder]);
     assert.equal((await get()).status, 200, "correcting underflowing data restores runtime reads without restart");
+    const subnormalRuntimeOrder = await insertOrder({ name: "Subnormal runtime secret", required: subnormalRequired, legacy: subnormalDelivered, seconds: 1 });
+    const subnormalResponse = await get();
+    assert.equal(subnormalResponse.status, 503, "a newly introduced subnormal precision collision is rejected at runtime");
+    assert.equal(subnormalResponse.headers.get("retry-after"), "30");
+    const subnormalBody = await subnormalResponse.text();
+    assert.ok(!subnormalBody.includes("Subnormal runtime secret") && !subnormalBody.includes(subnormalRuntimeOrder));
+    await pool.query("DELETE FROM material_orders WHERE id=$1", [subnormalRuntimeOrder]);
+    assert.equal((await get()).status, 200, "correcting the incompatible subnormal row restores runtime reads");
 
     await pool.query("DELETE FROM group_members WHERE group_id=$1 AND app_user_id=$2", [group, user]);
     assert.equal((await get()).status, 401, "membership removal invalidates a previously issued bearer token");

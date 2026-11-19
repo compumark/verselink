@@ -9,7 +9,10 @@ const CURSOR_KEY_CONTEXT = `${CURSOR_CONTEXT}:key`;
 const CURSOR_MAC_CONTEXT = `${CURSOR_CONTEXT}\0`;
 const MAX_CURSOR_LENGTH = 2048;
 const MAX_SAFE_SIGNIFICANT_DIGITS = 15;
+const MAX_NUMERIC_TEXT_LENGTH = 150_000;
+const MIN_NORMAL_JSON_NUMBER = 2 ** -1022;
 const ORDER_READINESS_BATCH_SIZE = 250;
+const SUPPORTED_ORDER_STATUSES = new Set(["open", "claimed", "reported", "completed", "cancelled"]);
 const UNIT_MAP = new Map([
   ["scu", "scu"], ["cscu", "cscu"],
   ["piece", "piece"], ["pieces", "piece"], ["pc", "piece"], ["pcs", "piece"],
@@ -43,17 +46,64 @@ export class OrdersReadinessError extends Error {
   }
 }
 
+const parseDecimal = (text, { allowExponent = false } = {}) => {
+  if (typeof text !== "string" || text.length > MAX_NUMERIC_TEXT_LENGTH) return null;
+  const pattern = allowExponent
+    ? /^(0|[1-9]\d*)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/
+    : /^(0|[1-9]\d*)(?:\.(\d+))?$/;
+  const match = pattern.exec(text);
+  if (!match) return null;
+  const fraction = match[2] || "";
+  const exponentPart = allowExponent ? Number(match[3] || 0) : 0;
+  if (!Number.isSafeInteger(exponentPart) || Math.abs(exponentPart) > MAX_NUMERIC_TEXT_LENGTH) return null;
+  let digits = `${match[1]}${fraction}`.replace(/^0+/, "");
+  if (!digits) return { coefficient: 0n, exponent: 0, significantDigits: 0 };
+  let exponent = exponentPart - fraction.length;
+  const trailingZeros = /0+$/.exec(digits)?.[0].length || 0;
+  if (trailingZeros) {
+    digits = digits.slice(0, -trailingZeros);
+    exponent += trailingZeros;
+  }
+  if (Math.abs(exponent) > MAX_NUMERIC_TEXT_LENGTH) return null;
+  return { coefficient: BigInt(digits), exponent, significantDigits: digits.length };
+};
+
+// Compare nonnegative decimals exactly. The coefficient stays integral and
+// powers of ten align only the scales; no binary floating-point arithmetic is
+// involved in order-completion decisions.
+const compareDecimals = (left, right) => {
+  if (left.coefficient === 0n) return right.coefficient === 0n ? 0 : -1;
+  if (right.coefficient === 0n) return 1;
+  const leftDigits = left.coefficient.toString().length;
+  const rightDigits = right.coefficient.toString().length;
+  const leftMagnitude = leftDigits + left.exponent;
+  const rightMagnitude = rightDigits + right.exponent;
+  if (leftMagnitude !== rightMagnitude) return leftMagnitude < rightMagnitude ? -1 : 1;
+  const commonExponent = Math.min(left.exponent, right.exponent);
+  const scaledLeft = left.coefficient * (10n ** BigInt(left.exponent - commonExponent));
+  const scaledRight = right.coefficient * (10n ** BigInt(right.exponent - commonExponent));
+  return scaledLeft < scaledRight ? -1 : scaledLeft > scaledRight ? 1 : 0;
+};
+
 const jsonQuantity = (value, field) => {
   const text = String(value);
-  if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(text)) throw new OrdersCompatibilityError(`${field}_INVALID`);
-  const significant = text.replace(".", "").replace(/^0+/, "").replace(/0+$/, "").length;
+  const decimal = parseDecimal(text);
+  if (!decimal) throw new OrdersCompatibilityError(`${field}_INVALID`);
   const number = Number(text);
   if (!Number.isFinite(number) || number < 0) throw new OrdersCompatibilityError(`${field}_INVALID`);
-  if (number === 0 && /[1-9]/.test(text)) throw new OrdersCompatibilityError(`${field}_PRECISION_UNDERFLOW`);
-  if (significant > MAX_SAFE_SIGNIFICANT_DIGITS || (Number.isInteger(number) && !Number.isSafeInteger(number))) {
+  if (number === 0 && decimal.coefficient !== 0n) throw new OrdersCompatibilityError(`${field}_PRECISION_UNDERFLOW`);
+  if (number > 0 && number < MIN_NORMAL_JSON_NUMBER) throw new OrdersCompatibilityError(`${field}_PRECISION_UNSUPPORTED`);
+  // JSON numbers are binary doubles. Accept ordinary decimals such as 0.1
+  // when Number#toString preserves their source decimal, but reject values
+  // whose shortest round-trip decimal materially differs from PostgreSQL.
+  const roundTrip = parseDecimal(number.toString(), { allowExponent: true });
+  if (!roundTrip || compareDecimals(decimal, roundTrip) !== 0) {
     throw new OrdersCompatibilityError(`${field}_PRECISION_UNSUPPORTED`);
   }
-  return number;
+  if (decimal.significantDigits > MAX_SAFE_SIGNIFICANT_DIGITS || (Number.isInteger(number) && !Number.isSafeInteger(number))) {
+    throw new OrdersCompatibilityError(`${field}_PRECISION_UNSUPPORTED`);
+  }
+  return { number, decimal };
 };
 
 const timestampIsCanonical = (value) => typeof value === "string" &&
@@ -118,13 +168,21 @@ export const createOrdersCursorCodec = (pepper) => {
 
 const v1Status = (status, required, delivered) => {
   if (status === "cancelled") return "cancelled";
-  if (required > 0 && delivered >= required) return "done";
+  if (required.coefficient > 0n && compareDecimals(delivered, required) >= 0) return "done";
   return "open";
 };
 
+const assertSupportedOrderStatus = (status) => {
+  if (typeof status !== "string" || !SUPPORTED_ORDER_STATUSES.has(status)) {
+    throw new OrdersCompatibilityError("ORDER_SOURCE_INVALID");
+  }
+  return status;
+};
+
 export const mapVersekitOrder = (row) => {
+  assertSupportedOrderStatus(row.status);
   if (typeof row.id !== "string" || !UUID.test(row.id) || typeof row.order_number !== "string" || !row.order_number.trim() ||
-      typeof row.material_name !== "string" || !row.material_name.trim() || !["open", "claimed", "reported", "completed", "cancelled"].includes(row.status)) {
+      typeof row.material_name !== "string" || !row.material_name.trim()) {
     throw new OrdersCompatibilityError("ORDER_SOURCE_INVALID");
   }
   const required = jsonQuantity(row.required_quantity, "REQUIRED_QUANTITY");
@@ -136,12 +194,21 @@ export const mapVersekitOrder = (row) => {
   return {
     id: row.id,
     title: `${row.order_number} — ${row.material_name}`,
-    status: v1Status(row.status, required, delivered),
-    items: [{ item: row.material_name, quantity: required, delivered, unit }]
+    status: v1Status(row.status, required.decimal, delivered.decimal),
+    items: [{ item: row.material_name, quantity: required.number, delivered: delivered.number, unit }]
   };
 };
 
-export const normalizeVersekitOrderStatus = (status, required, delivered) => v1Status(status, Number(required), Number(delivered));
+export const normalizeVersekitOrderStatus = (status, required, delivered) => {
+  assertSupportedOrderStatus(status);
+  const sourceDecimal = (value, field) => {
+    if (typeof value !== "string") throw new OrdersCompatibilityError(`${field}_INVALID`);
+    const decimal = parseDecimal(value);
+    if (!decimal) throw new OrdersCompatibilityError(`${field}_INVALID`);
+    return decimal;
+  };
+  return v1Status(status, sourceDecimal(required, "REQUIRED_QUANTITY"), sourceDecimal(delivered, "DELIVERED_QUANTITY"));
+};
 
 export const assertOrdersReadiness = async ({ db, groupId }) => {
   const client = await db.connect();
