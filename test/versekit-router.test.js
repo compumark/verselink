@@ -76,21 +76,25 @@ test("enabled adapter resolves exactly the configured existing group", async () 
     ? { rowCount: 1, rows: [{ capacity: 4096, refill_interval_seconds: 3600, tokens: 4096, updated_at: new Date() }] }
     : { rowCount: 1, rows: [{ id: groupId, name: "Example Org" }] }; }, async connect() { return { async query(sql, params) {
       queries.push({ sql, params });
+      if (/SELECT id FROM blueprint_groups/.test(sql)) return { rowCount: 1, rows: [{ id: groupId }] };
+      if (/FROM material_orders/.test(sql)) return { rowCount: 0, rows: [] };
       return /SELECT group_id FROM versekit_authorization_config/.test(sql) ? { rowCount: 1, rows: [{ group_id: groupId }] } : { rowCount: 1, rows: [] };
     }, release() {} }; } };
-  const router = await createVersekitAdapter({ env: enabled, db, pepper: testPepper, quotaPolicy: testQuotaPolicy });
+  const router = await createVersekitAdapter({ env: enabled, db, pepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
   assert.equal(typeof router, "function");
   assert.deepEqual(queries[0].params, [groupId]);
   assert.match(queries[0].sql, /FROM blueprint_groups WHERE id = \$1/);
-  assert.equal((await call(router, "GET", "/.well-known/versekit-org.json")).res.status, 404);
+  const discovery = (await call(router, "GET", "/.well-known/versekit-org.json")).res;
+  assert.equal(discovery.status, 200);
+  assert.deepEqual(JSON.parse(discovery.body).versions["1"].scopes_supported, ["orders:read"]);
   const consentPage = (await call(router, "GET", "/device")).res;
   assert.equal(consentPage.status, 200);
   assert.match(consentPage.body, /href="\/login"/);
   assert.equal((await call(router, "POST", "/versekit/v1/token")).res.status, 400);
   assert.deepEqual(JSON.parse((await call(router, "POST", "/versekit/v1/token")).res.body), { error: "invalid_request" });
-  assert.equal((await call(router, "GET", "/versekit/v1/orders?group_id=another")).res.status, 404);
-  assert.match(queries[1].sql, /CREATE TABLE IF NOT EXISTS versekit_device_grants/);
-  assert.equal(queries.filter((q) => /FROM blueprint_groups WHERE id/.test(q.sql)).length, 1);
+  assert.equal((await call(router, "GET", "/versekit/v1/orders?group_id=another")).res.status, 401);
+  assert.ok(queries.some((query) => /CREATE TABLE IF NOT EXISTS versekit_device_grants/.test(query.sql)));
+  assert.equal(queries.filter((q) => /SELECT id, name FROM blueprint_groups WHERE id/.test(q.sql)).length, 1);
   await assert.rejects(createVersekitAdapter({ env: enabled, pepper: testPepper, db: { query: async () => ({ rows: [] }) } }), /existing group/);
   await assert.rejects(createVersekitAdapter({ env: enabled, pepper: testPepper, db: { query: async () => ({ rows: [{ name: "x".repeat(81) }] }) } }), /group name/);
 });
@@ -1477,10 +1481,11 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
           await unchanged("wrong method changes no credential state");
           await partialUpload("OAuth query rejection", "/versekit/v1/device/code?unexpected=1", "POST", { "content-type": "application/x-www-form-urlencoded", "transfer-encoding": "chunked" }, 400, { error: "invalid_request" });
           await unchanged("unexpected query changes no credential state");
-          await partialUpload("unavailable discovery response", "/.well-known/versekit-org.json", "GET", { "content-length": "1000" }, 404, { type: "about:blank", status: 404, code: "NOT_FOUND" });
-          await unchanged("unavailable discovery changes no credential state");
-          await partialUpload("unimplemented Orders response", "/versekit/v1/orders", "GET", { "content-length": "1000" }, 404, { type: "about:blank", status: 404, code: "NOT_FOUND" });
-          await unchanged("unimplemented Orders changes no credential state");
+          await partialUpload("discovery rejects unread request body", "/.well-known/versekit-org.json", "GET", { "content-length": "1000" }, 200);
+          await unchanged("discovery changes no credential state");
+          const ordersUnauthorized = await partialUpload("Orders requires a bearer token", "/versekit/v1/orders", "GET", { "content-length": "1000" }, 401, { type: "about:blank", status: 401, code: "UNAUTHORIZED" });
+          assert.equal(ordersUnauthorized.headers["www-authenticate"], 'Bearer error="invalid_token"');
+          await unchanged("unauthorized Orders request changes no credential state");
           await partialUpload("/me wrong method", "/versekit/v1/me", "PUT", { "content-length": "1000" }, 405, { type: "about:blank", status: 405, code: "METHOD_NOT_ALLOWED" });
           await unchanged("/me method rejection changes no credential state");
           await partialUpload("/me query rejection", "/versekit/v1/me?unexpected=1", "GET", { "content-length": "1000" }, 400, { type: "about:blank", status: 400, code: "INVALID_REQUEST" });
@@ -2083,28 +2088,30 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
     }
 
     runtime = await startMissionTestServer({ databaseUrl: startupDatabaseUrl, pepper, extraEnv: actual });
-    const noReadyScope = await fetch(runtime.baseUrl + "/versekit/v1/device/code", {
+    const readyScope = await fetch(runtime.baseUrl + "/versekit/v1/device/code", {
       method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
       body: "client_id=versekit&scope=orders%3Aread", signal: AbortSignal.timeout(5_000)
     });
-    assert.equal(noReadyScope.status, 400);
-    assert.deepEqual(await noReadyScope.json(), { error: "invalid_scope" });
+    assert.equal(readyScope.status, 200);
+    assert.equal(typeof (await readyScope.json()).device_code, "string");
     const unauthDevicePage = await request("/device");
     assert.equal(unauthDevicePage.status, 200);
     assert.match(unauthDevicePage.body, /href="\/login"/);
     assert.doesNotMatch(unauthDevicePage.body, /user_code|device_code|Other Private Org/);
-    for (const [path, method] of [
-      ["/.well-known/versekit-org.json", "GET"], ["/.well-known/versekit-org.json", "POST"],
-      ["/versekit/v1/orders", "GET"],
-      ["/versekit/v1/unknown", "POST"]
-    ]) {
-      const result = await request(path, method);
-      assert.equal(result.status, 404, `${method} ${path}`);
-      assert.equal(result.headers.get("cache-control"), "no-store");
-      assert.deepEqual(JSON.parse(result.body), { type: "about:blank", status: 404, code: "NOT_FOUND" });
-      assert.ok(!result.body.includes(realGroup) && !result.body.includes(anotherGroup));
-      assert.ok(!result.body.includes("Other Private Org") && !result.body.includes("scopes_supported"));
-    }
+    const liveDiscovery = await request("/.well-known/versekit-org.json");
+    assert.equal(liveDiscovery.status, 200);
+    assert.deepEqual(JSON.parse(liveDiscovery.body).versions["1"].scopes_supported, ["orders:read"]);
+    assert.ok(!liveDiscovery.body.includes(realGroup) && !liveDiscovery.body.includes(anotherGroup));
+    assert.ok(!liveDiscovery.body.includes("Other Private Org"));
+    const discoveryMethod = await request("/.well-known/versekit-org.json", "POST");
+    assert.equal(discoveryMethod.status, 405);
+    assert.deepEqual(JSON.parse(discoveryMethod.body), { type: "about:blank", status: 405, code: "METHOD_NOT_ALLOWED" });
+    const ordersUnauthorized = await request("/versekit/v1/orders");
+    assert.equal(ordersUnauthorized.status, 401);
+    assert.equal(ordersUnauthorized.headers.get("www-authenticate"), 'Bearer error="invalid_token"');
+    assert.deepEqual(JSON.parse(ordersUnauthorized.body), { type: "about:blank", status: 401, code: "UNAUTHORIZED" });
+    const unknownVersekit = await request("/versekit/v1/unknown", "POST");
+    assert.equal(unknownVersekit.status, 404);
     assert.equal((await request("/healthz")).status, 200);
     assert.equal((await request("/login")).status, 200);
     assert.notEqual((await request("/api/orders")).headers.get("content-type"), "application/problem+json; charset=utf-8");

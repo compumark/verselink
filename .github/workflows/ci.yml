@@ -43,5 +43,31 @@ jobs:
       - name: Check JavaScript syntax
         run: node --check src/server.js
 
+      - name: Repeat VK-05 PostgreSQL tests five times
+        shell: bash
+        run: |
+          set -euo pipefail
+          for run in 1 2 3 4 5; do
+            output="$RUNNER_TEMP/vk05-orders-$run.tap"
+            if ! node --test --test-reporter=tap test/versekit-orders.test.js >"$output" 2>&1; then cat "$output"; exit 1; fi
+            cat "$output"
+            grep -qx '# skipped 0' "$output"
+          done
+
+      - name: Run VK-04 PostgreSQL lock-order tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/versekit-lock-order.tap"
+          if ! node --test --test-reporter=tap test/versekit-lock-order.test.js >"$output" 2>&1; then cat "$output"; exit 1; fi
+          cat "$output"
+          grep -qx '# skipped 0' "$output"
+
       - name: Run tests
-        run: npm test
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/npm-test.tap"
+          if ! npm test -- --test-reporter=tap >"$output" 2>&1; then cat "$output"; exit 1; fi
+          cat "$output"
+          grep -qx '# skipped 0' "$output"

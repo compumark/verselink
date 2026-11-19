@@ -4,18 +4,18 @@ import { activateVersekitAuthorizationGroup, initializeVersekitSchema } from "./
 import { createTokenCodec } from "./tokens.js";
 import { VersekitTokenStore } from "./store.js";
 import { createRequestRateLimiter } from "../../rate-limit.js";
-import { STANDARD_SCOPES } from "./discovery.js";
+import { STANDARD_SCOPES, buildDiscovery } from "./discovery.js";
 import { createDeviceAuthorizationHandlers, mountDeviceAuthorization } from "./device-http.js";
 import { createConsentHandlers } from "./consent-http.js";
 import { VERSEKIT_FORM_BODY_DEADLINE_MS } from "./request-form.js";
 import { VERSEKIT_MAX_RETAINED_GRANTS } from "./store.js";
+import { assertOrdersReadiness, createOrdersCursorCodec, createOrdersHandler } from "./orders.js";
 
-// No OAuth or data handlers exist in VK-02. Environment variables cannot enable scopes.
-const operationalScopes = Object.freeze([]);
+const implementedScopes = Object.freeze(["orders:read"]);
 
 export const createVersekitAdapter = async ({ env, db, pepper, capabilities = [], deviceCodeLimiter, tokenLimiter,
   getSessionContext = async () => null, getCurrentAppUser = async () => null, getSessionToken = () => null, sameOrigin = () => false,
-  consentLimiter, revokeLimiter, meLimiter, requestBodyDeadlineMs = VERSEKIT_FORM_BODY_DEADLINE_MS,
+  consentLimiter, revokeLimiter, meLimiter, ordersLimiter, requestBodyDeadlineMs = VERSEKIT_FORM_BODY_DEADLINE_MS,
   maxRetainedGrants = VERSEKIT_MAX_RETAINED_GRANTS, quotaPolicy }) => {
   const config = parseVersekitConfig(env);
   if (!config) return null;
@@ -30,16 +30,16 @@ export const createVersekitAdapter = async ({ env, db, pepper, capabilities = []
   // The context is immutable and never derived from a request.
   const context = Object.freeze({ ...config, groupName: group.name.trim() });
   if (!Array.isArray(capabilities) || new Set(capabilities).size !== capabilities.length
-      || capabilities.some((scope) => !STANDARD_SCOPES.includes(scope))) {
+      || capabilities.some((scope) => !STANDARD_SCOPES.includes(scope) || !implementedScopes.includes(scope))) {
     throw new Error("VerseKit capabilities must be a unique subset of the standard scopes");
   }
-  if (operationalScopes.length !== 0) throw new Error("VK-02 cannot advertise operational scopes");
   if (typeof pepper !== "string" || Buffer.byteLength(pepper) < 32) {
     throw new Error("SINK_TOKEN_PEPPER must provide at least 32 bytes when VerseKit is enabled");
   }
+  const activeScopes = Object.freeze([...capabilities]);
+  if (activeScopes.includes("orders:read")) await assertOrdersReadiness({ db, groupId: context.groupId });
   await initializeVersekitSchema(db, quotaPolicy);
   await activateVersekitAuthorizationGroup(db, context.groupId);
-  const activeScopes = Object.freeze([...capabilities]);
   const tokenStore = new VersekitTokenStore({ db, codec: createTokenCodec(pepper), groupId: context.groupId, operationalScopes: activeScopes, maxRetainedGrants });
   let cleanupRunning = false;
   const cleanupTimer = setInterval(async () => {
@@ -55,7 +55,18 @@ export const createVersekitAdapter = async ({ env, db, pepper, capabilities = []
   }, 15 * 60_000);
   cleanupTimer.unref?.();
   const codec = createTokenCodec(pepper);
-  const router = createVersekitRouter({ context, tokenStore });
+  const cursorCodec = createOrdersCursorCodec(pepper);
+  const discovery = buildDiscovery({ publicOrigin: context.publicOrigin, groupName: context.groupName, operationalScopes: activeScopes });
+  const incompatibleDiagnostics = new Map();
+  const onOrdersIncompatible = (reason) => {
+    const now = Date.now();
+    if (now - (incompatibleDiagnostics.get(reason) || 0) < 60_000) return;
+    incompatibleDiagnostics.set(reason, now);
+    console.warn("versekit.orders.read.incompatible", { reason });
+  };
+  const orders = createOrdersHandler({ db, groupId: context.groupId, tokenStore, cursorCodec, onIncompatible: onOrdersIncompatible,
+    limiter: ordersLimiter || createRequestRateLimiter({ limit: 120, windowMs: 60_000 }) });
+  const router = createVersekitRouter({ context, tokenStore, discovery, orders });
   const oauthHandlers = createDeviceAuthorizationHandlers({
     tokenStore,
     publicOrigin: context.publicOrigin,
