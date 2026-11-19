@@ -3534,15 +3534,20 @@ ensureSchema().then(() => isTestRuntime ? undefined : syncReferenceData()).then(
     try {
       const { createVersekitAdapter } = await import("./integrations/versekit/index.js");
       versekitRouter = await createVersekitAdapter({
-        env: process.env, db: pool, pepper,
+        env: process.env, db: pool, pepper, capabilities: ["orders:read"],
         getSessionContext,
         getCurrentAppUser,
         getSessionToken: (req) => { try { return parseCookies(req.headers.cookie).bp_session || null; } catch { return null; } },
         sameOrigin: sameVerseLinkOriginRequired
       });
     } catch (error) {
-      logger.warn("versekit.initialization.failed", { reason: error.message });
-      throw error;
+      if (error.code === "VERSEKIT_ORDERS_NOT_READY") {
+        logger.warn("versekit.orders.readiness.failed", { reason: error.reason || "unsupported_order_data" });
+        versekitRouter = null;
+      } else {
+        logger.warn("versekit.initialization.failed", { reason: error.message });
+        throw error;
+      }
     }
   }
   server.listen(port, "0.0.0.0", () => {
