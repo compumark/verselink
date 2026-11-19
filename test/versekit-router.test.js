@@ -1131,7 +1131,7 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
             };
           }
         };
-        const adapter = await createVersekitAdapter({ env: actual, db: scheduledDb, pepper: testPepper, quotaPolicy: testQuotaPolicy });
+        const adapter = await createVersekitAdapter({ env: actual, db: scheduledDb, pepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
         assert.equal(typeof adapter, "function", "normal enabled adapter startup succeeds");
         assert.equal(intervals.length, 1, "enabled timer is registered after schema and adapter initialization");
         const timer = intervals[0];
