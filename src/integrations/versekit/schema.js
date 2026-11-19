@@ -105,9 +105,9 @@ export const activateVersekitAuthorizationGroup = async (db, groupId) => {
     const current = await client.query("SELECT group_id FROM versekit_authorization_config WHERE id=true FOR UPDATE");
     if (current.rowCount !== 1) throw new Error("VerseKit authorization configuration is unavailable");
     if (current.rows[0].group_id !== groupId) {
-      // Keep the VK-03 token → family → grant lock order used by refresh and revoke.
-      await client.query("SELECT id FROM versekit_tokens ORDER BY id FOR UPDATE");
+      // Match authorization, refresh, and revoke: family rows precede token rows.
       await client.query("SELECT id FROM versekit_token_families ORDER BY id FOR UPDATE");
+      await client.query("SELECT id FROM versekit_tokens ORDER BY id FOR UPDATE");
       await client.query("UPDATE versekit_token_families SET revoked_at=COALESCE(revoked_at,now())");
       await client.query("UPDATE versekit_tokens SET revoked_at=COALESCE(revoked_at,now())");
       await client.query("UPDATE versekit_device_grants SET status='denied',app_user_id=NULL,approved_scopes='{}',consented_at=COALESCE(consented_at,now()) WHERE status IN ('pending','approved')");
