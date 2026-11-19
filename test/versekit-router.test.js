@@ -700,7 +700,7 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
       }
     });
 
-    assert.equal(typeof await createVersekitAdapter({ env: actual, db: pool, pepper: testPepper, quotaPolicy: testQuotaPolicy }), "function");
+    assert.equal(typeof await createVersekitAdapter({ env: actual, db: pool, pepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] }), "function");
     await assert.rejects(createVersekitAdapter({ env: { ...actual, VERSEKIT_GROUP_ID: randomUUID() }, db: pool }), /existing group/);
     assert.throws(() => parseVersekitConfig({ ...actual, VERSEKIT_GROUP_ID: "malformed" }), /VERSEKIT_GROUP_ID/);
 
