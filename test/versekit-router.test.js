@@ -1989,7 +1989,7 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
               return {
                 async query(sql, params) {
                   const result = await client.query(sql, params);
-                  if (!paused && typeof sql === "string" && sql.includes("FROM versekit_tokens t")) {
+                  if (!paused && typeof sql === "string" && sql.includes("FOR SHARE OF t,f,d,u,g,gm")) {
                     paused = true; entered.resolve(); await release.promise;
                   }
                   return result;
@@ -2001,28 +2001,38 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
           const guardedStore = new VersekitTokenStore({ db: coordinatedDb, codec, groupId: targetStore.groupId,
             operationalScopes: targetStore.operationalScopes });
           const result = guardedStore.authorizeAccess(accessToken, { operation: "me" });
-          await entered.promise;
-          return { result, release: release.resolve, close: () => authPool.end() };
+          let closed = false;
+          const close = async () => {
+            if (closed) return;
+            closed = true;
+            release.resolve();
+            await result.catch(() => {});
+            await authPool.end();
+          };
+          try {
+            let timeout;
+            await Promise.race([entered.promise, new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error("authorization did not reach its protected query")), 5000); })]);
+            clearTimeout(timeout);
+          } catch (error) { await close(); throw error; }
+          return { result, release: release.resolve, close };
         };
 
         const memberRace = await issueApprovedPair();
         let paused = await pauseAuthorization(memberRace.tokens.access_token, store);
-        await assert.rejects(pool.query("SELECT app_user_id FROM group_members WHERE group_id=$1 AND app_user_id=$2 FOR UPDATE NOWAIT", [realGroup, userId]),
-          (error) => error.code === "55P03", "authorization holds the membership row while its decision is in flight");
-        paused.release();
+        try { await assert.rejects(pool.query("SELECT app_user_id FROM group_members WHERE group_id=$1 AND app_user_id=$2 FOR UPDATE NOWAIT", [realGroup, userId]),
+          (error) => error.code === "55P03", "authorization holds the membership row while its decision is in flight"); }
+        finally { await paused.close(); }
         assert.equal((await paused.result).allowed, true);
-        await paused.close();
         await pool.query("DELETE FROM group_members WHERE group_id=$1 AND app_user_id=$2", [realGroup, userId]);
         assert.equal(await store.authenticateAccess(memberRace.tokens.access_token), null, "removal committed before the next request is denied");
         await pool.query("INSERT INTO group_members(group_id,app_user_id,role) VALUES($1,$2,'member')", [realGroup, userId]);
 
         const accountRace = await issueApprovedPair();
         paused = await pauseAuthorization(accountRace.tokens.access_token, store);
-        await assert.rejects(pool.query("SELECT id FROM app_users WHERE id=$1 FOR UPDATE NOWAIT", [userId]),
-          (error) => error.code === "55P03", "authorization holds the account row while its decision is in flight");
-        paused.release();
+        try { await assert.rejects(pool.query("SELECT id FROM app_users WHERE id=$1 FOR UPDATE NOWAIT", [userId]),
+          (error) => error.code === "55P03", "authorization holds the account row while its decision is in flight"); }
+        finally { await paused.close(); }
         assert.equal((await paused.result).allowed, true);
-        await paused.close();
         await pool.query("UPDATE app_users SET account_status='blocked' WHERE id=$1", [userId]);
         assert.equal(await store.authenticateAccess(accountRace.tokens.access_token), null, "account deactivation denies the next request");
         assert.deepEqual(await store.refresh({ refreshToken: accountRace.tokens.refresh_token, clientId: "versekit" }), { error: "invalid_grant" });
@@ -2030,11 +2040,10 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
 
         const revokeRace = await issueApprovedPair();
         paused = await pauseAuthorization(revokeRace.tokens.access_token, store);
-        await assert.rejects(pool.query("SELECT id FROM versekit_tokens WHERE token_hash=$1 FOR UPDATE NOWAIT", [codec.hash("access", revokeRace.tokens.access_token)]),
-          (error) => error.code === "55P03", "authorization locks the token while its decision is in flight");
-        paused.release();
+        try { await assert.rejects(pool.query("SELECT id FROM versekit_tokens WHERE token_hash=$1 FOR UPDATE NOWAIT", [codec.hash("access", revokeRace.tokens.access_token)]),
+          (error) => error.code === "55P03", "authorization locks the token while its decision is in flight"); }
+        finally { await paused.close(); }
         assert.equal((await paused.result).allowed, true);
-        await paused.close();
         await store.revoke(revokeRace.tokens.refresh_token);
         assert.equal(await store.authenticateAccess(revokeRace.tokens.access_token), null, "family revocation denies all later requests");
 
@@ -2060,11 +2069,10 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
         assert.equal(await deletingStore.consent({ grantId: deletingGrant.id, userId, scopes: ["orders:read"], approve: true }), true);
         const deletingPair = (await deletingStore.exchangeDeviceCode({ deviceCode: deletingGrant.deviceCode, clientId: "versekit" })).tokens;
         paused = await pauseAuthorization(deletingPair.access_token, deletingStore);
-        await assert.rejects(pool.query("SELECT id FROM blueprint_groups WHERE id=$1 FOR UPDATE NOWAIT", [deletingGroup]),
-          (error) => error.code === "55P03", "authorization holds the group row while its decision is in flight");
-        paused.release();
+        try { await assert.rejects(pool.query("SELECT id FROM blueprint_groups WHERE id=$1 FOR UPDATE NOWAIT", [deletingGroup]),
+          (error) => error.code === "55P03", "authorization holds the group row while its decision is in flight"); }
+        finally { await paused.close(); }
         assert.equal((await paused.result).allowed, true);
-        await paused.close();
         await pool.query("DELETE FROM blueprint_groups WHERE id=$1", [deletingGroup]);
         assert.equal(await deletingStore.authenticateAccess(deletingPair.access_token), null);
         assert.deepEqual(await deletingStore.refresh({ refreshToken: deletingPair.refresh_token, clientId: "versekit" }), { error: "invalid_grant" });

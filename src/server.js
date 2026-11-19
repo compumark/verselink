@@ -2156,8 +2156,13 @@ const server = createServer(async (req, res) => {
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
-        const found = await client.query("SELECT id, group_id FROM group_invites WHERE invite_hash = $1 AND accepted_at IS NULL AND expires_at > now() AND (max_uses IS NULL OR use_count < max_uses) FOR UPDATE", [hashSession(`invite:${invite}`)]);
-        if (!found.rowCount) throw new Error("invite invalid or expired");
+        const inviteHash = hashSession(`invite:${invite}`);
+        const candidate = await client.query("SELECT group_id FROM group_invites WHERE invite_hash = $1 AND accepted_at IS NULL AND expires_at > now() AND (max_uses IS NULL OR use_count < max_uses)", [inviteHash]);
+        if (!candidate.rowCount) throw new Error("invite invalid or expired");
+        const group = await client.query("SELECT id FROM blueprint_groups WHERE id=$1 FOR KEY SHARE", [candidate.rows[0].group_id]);
+        if (!group.rowCount) throw new Error("invite invalid or expired");
+        const found = await client.query("SELECT id, group_id FROM group_invites WHERE invite_hash = $1 AND accepted_at IS NULL AND expires_at > now() AND (max_uses IS NULL OR use_count < max_uses) FOR UPDATE", [inviteHash]);
+        if (!found.rowCount || found.rows[0].group_id !== candidate.rows[0].group_id) throw new Error("invite invalid or expired");
         await client.query("INSERT INTO group_members (group_id, app_user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [found.rows[0].group_id, context.appUserId]);
         await client.query("UPDATE group_invites SET use_count = use_count + 1, accepted_at = CASE WHEN max_uses IS NULL THEN NULL ELSE now() END WHERE id = $1", [found.rows[0].id]);
         await client.query("COMMIT");
@@ -2991,6 +2996,11 @@ const server = createServer(async (req, res) => {
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
+        // VerseKit operations acquire the group parent before grant/family,
+        // account, or membership locks. Take each affected parent first so
+        // account cascades cannot hold a membership row while authorization
+        // holds the account row and waits for that membership.
+        await client.query("SELECT g.id FROM blueprint_groups g JOIN group_members gm ON gm.group_id=g.id WHERE gm.app_user_id=$1 ORDER BY g.id FOR UPDATE OF g", [userId]);
         await client.query("DELETE FROM dashboard_sessions WHERE app_user_id = $1", [userId]);
         await client.query("DELETE FROM blueprint_groups g WHERE EXISTS (SELECT 1 FROM group_members gm WHERE gm.group_id=g.id AND gm.app_user_id=$1 AND gm.role='owner')", [userId]);
         await client.query("UPDATE blueprint_groups SET created_by=NULL WHERE created_by=$1", [userId]);
