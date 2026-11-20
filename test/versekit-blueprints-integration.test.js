@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createTokenCodec } from "../src/integrations/versekit/tokens.js";
+import { VersekitTokenStore } from "../src/integrations/versekit/store.js";
 import { apiRequest, startMissionTestServer, stopMissionTestServer, createTestPool, VERSEKIT_TEST_TOKEN_PEPPER } from "./helpers/mission-integration.js";
 import { resolveC6TestDatabaseUrl } from "./helpers/c6-test-database.js";
 
@@ -246,6 +247,155 @@ test("VerseKit remains disabled by default and does not serve blueprints routes"
     assert.equal((await apiRequest(runtime.baseUrl, "/healthz")).status, 200);
   } finally {
     await stopMissionTestServer(runtime);
+    await dropSchema(adminPool, schema);
+    await adminPool.end();
+  }
+});
+
+test("VK-08 + VK-11 preserves three-scope connection over server restart without another device grant", {
+  skip: !databaseUrl, timeout: 120_000
+}, async () => {
+  const adminPool = await createTestPool(databaseUrl);
+  const schema = "vk08_blueprints_" + randomUUID().replaceAll("-", "");
+  const upgradeGroup = randomUUID();
+  const member = randomUUID();
+  const orderId = randomUUID();
+  const scopes = ["orders:read", "blueprints:read", "orders:write"];
+  const logDirectory = join(tmpdir(), "verselink-vk08-vk11-upgrade-" + process.pid + "-" + randomUUID());
+  let pool, runtime;
+  try {
+    await createSchema(adminPool, schema);
+    const scoped = new URL(databaseUrl);
+    scoped.searchParams.set("options", "-c search_path=" + schema);
+    const scopedUrl = scoped.toString();
+
+    runtime = await startMissionTestServer({
+      databaseUrl: scopedUrl, pepper, logDirectory, extraEnv: { VERSEKIT_ENABLED: "false" }
+    });
+    await stopMissionTestServer(runtime);
+    runtime = null;
+
+    pool = await createTestPool(scopedUrl);
+    await pool.query("INSERT INTO blueprint_groups(id,name) VALUES($1,'Upgrade crew')", [upgradeGroup]);
+    await pool.query(
+      "INSERT INTO app_users(id,email,display_name,account_status) VALUES($1,$2,'Upgrade Member','active')",
+      [member, member + "@vk-upgrade.test"]
+    );
+    await pool.query("INSERT INTO group_members(group_id,app_user_id,role) VALUES($1,$2,'member')", [upgradeGroup, member]);
+    await pool.query(
+      "INSERT INTO material_orders(id,order_number,group_id,created_by,material_name,required_quantity,quantity_unit) VALUES($1,$2,$3,$4,'Taranite',10,'SCU')",
+      [orderId, "UPGRADE-" + orderId, upgradeGroup, member]
+    );
+    const sinkHash = "b".repeat(64);
+    await pool.query(
+      "INSERT INTO scmdb_connections(token_hash,app_user_id,connection_status) VALUES($1,$2,'connected')",
+      [sinkHash, member]
+    );
+    await pool.query("INSERT INTO reference_blueprints(tag,product_name) VALUES('upgrade-tag','Upgrade Blueprint')");
+    await pool.query(
+      "INSERT INTO member_blueprints(token_hash,tag,product_name,owned_at) VALUES($1,'upgrade-tag','Upgrade Blueprint',1)",
+      [sinkHash]
+    );
+
+    const devConfig = {
+      APP_ENVIRONMENT: "DEV",
+      VERSEKIT_ENABLED: "true",
+      VERSEKIT_GROUP_ID: upgradeGroup,
+      VERSEKIT_PUBLIC_URL: "https://verse.example.org",
+      VERSEKIT_TOKEN_PEPPER: VERSEKIT_TEST_TOKEN_PEPPER,
+      VERSEKIT_DEV_BLUEPRINTS_READ: "true",
+      VERSEKIT_DEV_ORDERS_WRITE: "true"
+    };
+    const start = (settings) => startMissionTestServer({
+      databaseUrl: scopedUrl, pepper, logDirectory, extraEnv: settings
+    });
+    runtime = await start(devConfig);
+    let response = await fetch(runtime.baseUrl + "/.well-known/versekit-org.json");
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json()).versions["1"].scopes_supported, scopes);
+
+    const store = new VersekitTokenStore({
+      db: pool, codec: createTokenCodec(VERSEKIT_TEST_TOKEN_PEPPER),
+      groupId: upgradeGroup, operationalScopes: scopes
+    });
+    const grant = await store.createDeviceGrant({ clientId: "versekit", scopes });
+    assert.equal(await store.consent({ grantId: grant.id, userId: member, scopes, approve: true }), true);
+    const exchange = await store.exchangeDeviceCode({ deviceCode: grant.deviceCode, clientId: "versekit" });
+    assert.ok(exchange.tokens);
+    const originalTokens = exchange.tokens;
+    const grantCount = (await pool.query("SELECT count(*)::int AS total FROM versekit_device_grants")).rows[0].total;
+    const get = (path, token) => authRequest(runtime.baseUrl + path, token);
+    assert.equal((await get("/versekit/v1/me", originalTokens.access_token)).status, 200);
+
+    await stopMissionTestServer(runtime);
+    runtime = null;
+    runtime = await start(devConfig);
+
+    const afterRestart = await get("/versekit/v1/me", originalTokens.access_token);
+    assert.equal(afterRestart.status, 200, "existing access token survives a normal image restart");
+    assert.deepEqual(afterRestart.body.scopes, scopes);
+
+    response = await fetch(runtime.baseUrl + "/versekit/v1/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: originalTokens.refresh_token,
+        client_id: "versekit"
+      })
+    });
+    assert.equal(response.status, 200, "existing refresh token remains usable after restart");
+    const refreshed = await response.json();
+    assert.deepEqual(refreshed.scope.split(" "), scopes);
+    assert.ok(refreshed.access_token);
+    assert.ok(refreshed.refresh_token);
+    assert.notEqual(refreshed.refresh_token, originalTokens.refresh_token);
+
+    const orders = await get("/versekit/v1/orders", refreshed.access_token);
+    assert.equal(orders.status, 200);
+    assert.ok(orders.body.orders.some((order) => order.id === orderId));
+    const blueprints = await get("/versekit/v1/blueprints", refreshed.access_token);
+    assert.equal(blueprints.status, 200);
+    assert.deepEqual(blueprints.body.blueprints, [{ name: "Upgrade Blueprint", holders: ["Upgrade Member"] }]);
+
+    response = await fetch(runtime.baseUrl + "/versekit/v1/orders/" + orderId + "/deliveries", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer " + refreshed.access_token,
+        "content-type": "application/json",
+        "idempotency-key": "vk08-vk11-upgrade-1"
+      },
+      body: JSON.stringify({ items: [{ item: "Taranite", quantity: 2 }] })
+    });
+    assert.equal(response.status, 201, "previously granted orders:write can deliver after restart");
+    assert.equal((await response.json()).order.items[0].delivered, 2);
+    assert.equal((await pool.query("SELECT count(*)::int AS total FROM versekit_device_grants")).rows[0].total,
+      grantCount, "restart and refresh must not create a new device authorization");
+
+    await stopMissionTestServer(runtime);
+    runtime = null;
+    runtime = await start({ ...devConfig, APP_ENVIRONMENT: "Production" });
+    assert.equal((await get("/versekit/v1/blueprints", refreshed.access_token)).status, 404,
+      "DEV-only blueprint route remains unavailable in production");
+    response = await fetch(runtime.baseUrl + "/versekit/v1/orders/" + orderId + "/deliveries", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer " + refreshed.access_token,
+        "content-type": "application/json",
+        "idempotency-key": "vk08-vk11-disabled"
+      },
+      body: JSON.stringify({ items: [{ item: "Taranite", quantity: 1 }] })
+    });
+    assert.equal(response.status, 404, "DEV-only delivery route remains unavailable in production");
+
+    await stopMissionTestServer(runtime);
+    runtime = null;
+    runtime = await start(devConfig);
+    assert.equal((await get("/versekit/v1/me", refreshed.access_token)).status, 200,
+      "temporarily disabled capabilities do not delete persisted grants");
+  } finally {
+    await stopMissionTestServer(runtime);
+    await pool?.end();
     await dropSchema(adminPool, schema);
     await adminPool.end();
   }
