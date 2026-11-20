@@ -79,6 +79,65 @@ jobs:
         run: |
           set -euo pipefail
           output="$RUNNER_TEMP/npm-test.tap"
-          if ! npm test -- --test-reporter=tap >"$output" 2>&1; then cat "$output"; exit 1; fi
+          if ! npm test -- --test-reporter=tap --test-concurrency=1 >"$output" 2>&1; then cat "$output"; exit 1; fi
           cat "$output"
           grep -qx '# skipped 0' "$output"
+
+  vk08-dev-smoke-image:
+    name: Build isolated VK-08 DEV smoke image
+    needs: test
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.ref == 'codex/vk-08-versekit-blueprints-read' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out the tested VK-08 commit
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish isolated smoke image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/compumark/verselink:vk08-smoke-${{ github.event.pull_request.head.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/compumark/verselink
+            org.opencontainers.image.revision=${{ github.event.pull_request.head.sha }}
+            org.opencontainers.image.licenses=AGPL-3.0-only
+          build-args: |
+            VERSELINK_COMMIT=${{ github.event.pull_request.head.sha }}
+            VERSELINK_ENVIRONMENT=DEV
+            VERSELINK_VERSION=vk08-smoke
+
+      - name: Record immutable image reference
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_TAG: ghcr.io/compumark/verselink:vk08-smoke-${{ github.event.pull_request.head.sha }}
+        run: |
+          {
+            echo "Published after PostgreSQL 16 CI passed. No deployment was performed."
+            echo
+            echo "Tag: \`$IMAGE_TAG\`"
+            echo "Immutable reference: \`ghcr.io/compumark/verselink@$IMAGE_DIGEST\`"
+            echo
+            echo "Use the digest reference for subsequent DEV approval and testing."
+          } >> "$GITHUB_STEP_SUMMARY"
