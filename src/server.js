@@ -19,7 +19,7 @@ import { authenticateTelemetryDevice } from "./telemetry-device-auth.js";
 import { normalizeScmdbSinkBaseUrl, scmdbSinkUrl } from "./scmdb-sink-config.js";
 import { createDiscordAdminNotifier } from "./discord-admin-dm.js";
 import { createLogger } from "./logger.js";
-import { recordOrderDelivery, OrderDeliveryError } from "./orders/delivery.js";
+import { recordOrderDelivery, OrderDeliveryError, canonicalizeBrowserOrderDeliveryQuantity } from "./orders/delivery.js";
 
 const { Pool } = pg;
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -2866,8 +2866,8 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/api/orders/action") {
       const context=await getSessionContext(req); if(!context?.appUserId)return json(res,401,{error:"login required"});
       const current=await getCurrentAppUser(req); const p=new URLSearchParams(await readBody(req)); const id=p.get("id")||""; const action=p.get("action")||"";
-      const qty=action==="report"?Number(p.get("delivered_quantity")):null;
-      if(action==="report"&&(!Number.isFinite(qty)||qty<=0))return json(res,400,{error:"invalid quantity"});
+      const qty=action==="report"?canonicalizeBrowserOrderDeliveryQuantity(p.get("delivered_quantity")):null;
+      if(action==="report"&&qty===null)return json(res,400,{error:"invalid quantity"});
       const client=await pool.connect();
       try {
         await client.query("BEGIN");
@@ -2880,11 +2880,12 @@ const server = createServer(async (req, res) => {
           if(o.created_by!==current?.id)await client.query("INSERT INTO app_notifications (app_user_id,kind,title,message,order_id) VALUES ($1,'order_claimed',$2,$3,$4)",[o.created_by,"ORDER CLAIMED "+o.order_number,(current?.verselink_name||current?.display_name||"A member")+" · "+o.material_name,id]);
         }
         else if(action==="report"){
-          await recordOrderDelivery(client,{orderId:id,deliveredBy:context.appUserId,quantity:String(qty),quality:p.get("delivered_quality")||null});
+          await recordOrderDelivery(client,{orderId:id,deliveredBy:context.appUserId,quantity:qty,quality:p.get("delivered_quality")||null});
         }
         else if(action==="complete"){
           if(!current?.is_admin&&o.created_by!==current?.id){await client.query("ROLLBACK");return json(res,403,{error:"creator or app admin required"});}
-          if(Number(o.delivered_quantity||0)<Number(o.required_quantity||0)){await client.query("ROLLBACK");return json(res,409,{error:"required quantity not reached"});}
+          const completion=await client.query("SELECT COALESCE($1::numeric,0)>=COALESCE($2::numeric,0) AS reached",[o.delivered_quantity,o.required_quantity]);
+          if(!completion.rows[0].reached){await client.query("ROLLBACK");return json(res,409,{error:"required quantity not reached"});}
           await client.query("UPDATE material_orders SET status='completed',completed_at=now() WHERE id=$1",[id]);
         }
         else if(action==="hide"){
@@ -2903,6 +2904,8 @@ const server = createServer(async (req, res) => {
         if(error instanceof OrderDeliveryError){
           if(error.reason==="closed")return json(res,409,{error:"order is not open for delivery"});
           if(error.reason==="exceeds_remaining")return json(res,400,{error:"delivery exceeds remaining quantity"});
+          // Legacy cached progress has no authoritative ledger row to reconcile.
+          // Preserve it and fail closed with 409; this is intentional browser behavior as well as adapter policy.
           if(error.reason==="legacy_progress")return json(res,409,{error:"order contains historical delivery progress and cannot accept new deliveries"});
           if(error.reason==="invalid_quantity")return json(res,400,{error:"invalid quantity"});
           if(error.reason==="not_found")return json(res,404,{error:"order not found"});

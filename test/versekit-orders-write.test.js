@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { canonicalizeVersekitDeliveryQuantity, sumVersekitDeliveryQuantities } from "../src/integrations/versekit/orders.js";
 import { createOrdersWriteHandler } from "../src/integrations/versekit/orders-write.js";
+import { createVersekitAdapter } from "../src/integrations/versekit/index.js";
 import { createVersekitRouter } from "../src/integrations/versekit/router.js";
 import { createTokenCodec } from "../src/integrations/versekit/tokens.js";
 import { VersekitTokenStore } from "../src/integrations/versekit/store.js";
@@ -189,7 +190,118 @@ test("VerseKit order deliveries are atomic, idempotent across restart, and fixed
     const legacyBrowser = await apiRequest(runtime.baseUrl, "/api/orders/action", { method: "POST", session,
       form: { id: legacy, action: "report", delivered_quantity: "1" } });
     assert.equal(legacyBrowser.status, 409);
+    assert.equal(legacyBrowser.body.error, "order contains historical delivery progress and cannot accept new deliveries",
+      "the standard browser workflow intentionally fails closed rather than replacing unreconciled legacy progress");
     assert.equal((await pool.query("SELECT delivered_quantity::text FROM material_orders WHERE id=$1", [legacy])).rows[0].delivered_quantity, "2");
+
+    const decimalBrowser = await order({ required: "0.3" });
+    const browserReport = (quantity) => apiRequest(runtime.baseUrl, "/api/orders/action", { method: "POST", session,
+      form: { id: decimalBrowser, action: "report", delivered_quantity: quantity } });
+    assert.equal((await browserReport("0.2")).status, 200);
+    assert.equal((await browserReport("0.1")).status, 200,
+      "exact decimal comparison accepts the final 0.1 against a 0.3 order after 0.2 was delivered");
+    assert.equal((await pool.query("SELECT sum(delivered_quantity)::text AS total FROM material_order_deliveries WHERE order_id=$1", [decimalBrowser])).rows[0].total, "0.3");
+    const largeBrowser = await order({ required: "9007199254740993" });
+    assert.equal((await apiRequest(runtime.baseUrl, "/api/orders/action", { method: "POST", session,
+      form: { id: largeBrowser, action: "report", delivered_quantity: "9007199254740993" } })).status, 200);
+    assert.equal((await pool.query("SELECT sum(delivered_quantity)::text AS total FROM material_order_deliveries WHERE order_id=$1", [largeBrowser])).rows[0].total,
+      "9007199254740993", "browser input beyond Number's integer precision is stored from its original decimal text");
+    await pool.query("DELETE FROM material_orders WHERE id=$1", [largeBrowser]);
+    const belowLargeRequired = await order({ required: "9007199254740993", legacy: "9007199254740992" });
+    const prematureComplete = await apiRequest(runtime.baseUrl, "/api/orders/action", { method: "POST", session,
+      form: { id: belowLargeRequired, action: "complete" } });
+    assert.equal(prematureComplete.status, 409,
+      "browser completion compares persisted decimal quantities exactly instead of treating adjacent large integers as equal");
+    assert.equal((await pool.query("SELECT status FROM material_orders WHERE id=$1", [belowLargeRequired])).rows[0].status, "open");
+    await pool.query("DELETE FROM material_orders WHERE id=$1", [belowLargeRequired]);
+
+    // Exercise the actual adapter wiring with write capability explicitly enabled
+    // only in this isolated PostgreSQL test process.
+    const e2eSessionToken = session;
+    let e2eOrigin = "";
+    const sessionFromRequest = (req) => /(?:^|;\s*)bp_session=([^;]+)/.exec(req.headers.cookie || "")?.[1] || null;
+    const e2eSessionContext = async (req) => {
+      const token = sessionFromRequest(req);
+      if (token !== e2eSessionToken) return null;
+      const hash = createHmac("sha256", SINK_PEPPER).update(`session:${token}`).digest("hex");
+      const found = await pool.query("SELECT ds.app_user_id FROM dashboard_sessions ds JOIN app_users u ON u.id=ds.app_user_id WHERE ds.session_hash=$1 AND ds.expires_at>now() AND u.account_status='active'", [hash]);
+      return found.rowCount ? { appUserId: found.rows[0].app_user_id } : null;
+    };
+    const e2eAdapter = await createVersekitAdapter({
+      env: { VERSEKIT_ENABLED: "true", VERSEKIT_GROUP_ID: group, VERSEKIT_PUBLIC_URL: "https://versekit-adapter-e2e.example.org/" },
+      db: pool, tokenPepper: PEPPER, capabilities: ["orders:read", "orders:write"], quotaPolicy: TEST_QUOTA,
+      getSessionToken: sessionFromRequest,
+      getSessionContext: e2eSessionContext,
+      getCurrentAppUser: async (req) => {
+        const identity = await e2eSessionContext(req);
+        if (!identity) return null;
+        const found = await pool.query("SELECT id,display_name,verselink_name,account_status FROM app_users WHERE id=$1", [identity.appUserId]);
+        return found.rows[0] || null;
+      },
+      sameOrigin: (req) => req.headers.origin === e2eOrigin
+    });
+    const e2eServer = createServer((req, res) => {
+      Promise.resolve(e2eAdapter(req, res, new URL(req.url, "http://127.0.0.1"))).catch(() => {
+        if (!res.headersSent && !res.destroyed) { res.writeHead(500); res.end(); }
+      });
+    });
+    e2eServer.listen(0, "127.0.0.1");
+    await once(e2eServer, "listening");
+    e2eOrigin = `http://127.0.0.1:${e2eServer.address().port}`;
+    try {
+      const discoveryResponse = await fetch(`${e2eOrigin}/.well-known/versekit-org.json`);
+      assert.equal(discoveryResponse.status, 200);
+      assert.deepEqual((await discoveryResponse.json()).versions["1"].scopes_supported, ["orders:read", "orders:write"]);
+      const deviceResponse = await fetch(`${e2eOrigin}/versekit/v1/device/code`, { method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: "client_id=versekit&scope=orders%3Awrite" });
+      assert.equal(deviceResponse.status, 200);
+      const device = await deviceResponse.json();
+      const browserHeaders = { cookie: `bp_session=${session}` };
+      const consentPage = await fetch(`${e2eOrigin}/device`, { headers: browserHeaders });
+      assert.equal(consentPage.status, 200);
+      const loginHtml = await consentPage.text();
+      const lookupCsrf = /name="csrf" value="([^"]+)"/.exec(loginHtml)?.[1];
+      assert.ok(lookupCsrf);
+      const lookup = await fetch(`${e2eOrigin}/device`, { method: "POST", headers: { ...browserHeaders, origin: e2eOrigin,
+        "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ action: "lookup", csrf: lookupCsrf, user_code: device.user_code }) });
+      assert.equal(lookup.status, 200);
+      const reviewHtml = await lookup.text();
+      assert.match(reviewHtml, /orders:write/);
+      assert.doesNotMatch(reviewHtml, /name="scope" value="orders:write" checked/);
+      const challenge = /name="challenge" value="([^"]+)"/.exec(reviewHtml)?.[1];
+      const approveCsrf = /name="csrf" value="([^"]+)"/.exec(reviewHtml)?.[1];
+      assert.ok(challenge && approveCsrf);
+      const approval = await fetch(`${e2eOrigin}/device`, { method: "POST", headers: { ...browserHeaders, origin: e2eOrigin,
+        "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ action: "approve", challenge, csrf: approveCsrf, scope: "orders:write" }) });
+      assert.equal(approval.status, 200);
+      assert.match(await approval.text(), /access approved/i);
+      const tokenResponse = await fetch(`${e2eOrigin}/versekit/v1/token`, { method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: device.device_code, client_id: "versekit" }) });
+      assert.equal(tokenResponse.status, 200);
+      const token = await tokenResponse.json();
+      assert.equal(token.scope, "orders:write");
+      const e2eOrder = await order({ required: "2" });
+      const cookieOnly = await fetch(`${e2eOrigin}/versekit/v1/orders/${e2eOrder}/deliveries`, { method: "POST",
+        headers: { ...browserHeaders, "content-type": "application/json", "idempotency-key": "cookie-cannot-authorize" },
+        body: JSON.stringify({ items: [{ item: "Taranite", quantity: 1 }] }) });
+      assert.equal(cookieOnly.status, 401, "browser session cookies do not authorize API delivery");
+      const deliveryResponse = await fetch(`${e2eOrigin}/versekit/v1/orders/${e2eOrder}/deliveries`, { method: "POST",
+        headers: { authorization: `Bearer ${token.access_token}`, "content-type": "application/json", "idempotency-key": "adapter-e2e-delivery" },
+        body: JSON.stringify({ items: [{ item: "Taranite", quantity: 2 }] }) });
+      assert.equal(deliveryResponse.status, 201);
+      const delivery = await deliveryResponse.json();
+      assert.equal(delivery.order.items[0].delivered, 2);
+      assert.equal(delivery.order.status, "done");
+      assert.equal((await ledger(e2eOrder)).rows[0].total, "2");
+    } finally {
+      const closed = once(e2eServer, "close");
+      e2eServer.close();
+      await closed;
+    }
 
     const concurrent = await order();
     const sameKey = await Promise.all([

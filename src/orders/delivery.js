@@ -12,6 +12,26 @@ const expandDecimal = (value) => {
   return `${digits.slice(0, point)}.${digits.slice(point)}`;
 };
 
+// Browser forms submit decimal text. Validate it with the existing JavaScript
+// Number acceptance boundary, then preserve decimal digits for PostgreSQL
+// instead of round-tripping valid input through binary floating point.
+export const canonicalizeBrowserOrderDeliveryQuantity = (value) => {
+  const source = String(value ?? "").trim();
+  const number = Number(source);
+  if (!Number.isFinite(number) || number <= 0) return null;
+  const match = /^\+?(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:[eE]([+-]?\d+))?$/.exec(source);
+  if (!match) return String(number);
+  const integer = match[1] || "0";
+  const fraction = match[1] ? (match[2] || "") : (match[3] || "");
+  const exponent = match[4] || "0";
+  const expanded = expandDecimal(`${integer}${fraction ? `.${fraction}` : ""}e${exponent}`);
+  if (!expanded) return null;
+  const [whole, decimal = ""] = expanded.split(".");
+  const normalizedWhole = whole.replace(/^0+(?=\d)/, "");
+  const normalizedDecimal = decimal.replace(/0+$/, "");
+  return normalizedDecimal ? `${normalizedWhole}.${normalizedDecimal}` : normalizedWhole;
+};
+
 export class OrderDeliveryError extends Error {
   constructor(reason) {
     super(reason);
