@@ -2,8 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-const [server, ui] = await Promise.all([
+const [server, delivery, ui] = await Promise.all([
   readFile(new URL('../src/server.js', import.meta.url), 'utf8'),
+  readFile(new URL('../src/orders/delivery.js', import.meta.url), 'utf8'),
   readFile(new URL('../public/js/notifications-mobiglass.js', import.meta.url), 'utf8')
 ]);
 
@@ -56,7 +57,7 @@ test('mission mutations emit stable kinds transactionally after validation', () 
   assert.match(server, /previousStatus !== 'completed' && mission\?\.status === 'completed'/);
   assert.match(server, /missionActorName = current => current\.verselink_name \|\| current\.display_name \|\| "A member"/);
   assert.match(server, /order_claimed/);
-  assert.match(server, /order_completed/);
+  assert.match(delivery, /order_completed/);
 });
 
 test('notification API adds mission context without removing order context', () => {

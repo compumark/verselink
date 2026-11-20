@@ -10,12 +10,13 @@ import { createConsentHandlers } from "./consent-http.js";
 import { VERSEKIT_FORM_BODY_DEADLINE_MS } from "./request-form.js";
 import { VERSEKIT_MAX_RETAINED_GRANTS } from "./store.js";
 import { assertOrdersReadiness, createOrdersCursorCodec, createOrdersHandler } from "./orders.js";
+import { createOrdersWriteHandler } from "./orders-write.js";
 
-const implementedScopes = Object.freeze(["orders:read"]);
+const implementedScopes = Object.freeze(["orders:read", "orders:write"]);
 
 export const createVersekitAdapter = async ({ env, db, tokenPepper, capabilities = [], deviceCodeLimiter, tokenLimiter,
   getSessionContext = async () => null, getCurrentAppUser = async () => null, getSessionToken = () => null, sameOrigin = () => false,
-  consentLimiter, revokeLimiter, meLimiter, ordersLimiter, requestBodyDeadlineMs = VERSEKIT_FORM_BODY_DEADLINE_MS,
+  consentLimiter, revokeLimiter, meLimiter, ordersLimiter, ordersWriteLimiter, requestBodyDeadlineMs = VERSEKIT_FORM_BODY_DEADLINE_MS,
   maxRetainedGrants = VERSEKIT_MAX_RETAINED_GRANTS, quotaPolicy }) => {
   const config = parseVersekitConfig(env);
   if (!config) return null;
@@ -66,7 +67,9 @@ export const createVersekitAdapter = async ({ env, db, tokenPepper, capabilities
   };
   const orders = createOrdersHandler({ db, groupId: context.groupId, tokenStore, cursorCodec, onIncompatible: onOrdersIncompatible,
     limiter: ordersLimiter || createRequestRateLimiter({ limit: 120, windowMs: 60_000 }) });
-  const router = createVersekitRouter({ context, tokenStore, discovery, orders });
+  const ordersWrite = activeScopes.includes("orders:write") ? createOrdersWriteHandler({ db, groupId: context.groupId, tokenStore,
+    limiter: ordersWriteLimiter || createRequestRateLimiter({ limit: 60, windowMs: 60_000 }) }) : null;
+  const router = createVersekitRouter({ context, tokenStore, discovery, orders, ordersWrite });
   const oauthHandlers = createDeviceAuthorizationHandlers({
     tokenStore,
     publicOrigin: context.publicOrigin,

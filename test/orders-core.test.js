@@ -2,6 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { filterOrders, normalizeStatus, orderSharePath, progressFor, scmdbUrl } from '../public/js/orders-core.js';
+import { canonicalizeBrowserOrderDeliveryQuantity } from '../src/orders/delivery.js';
+
+test('browser delivery quantity keeps decimal form exact within the existing Number acceptance boundary',()=>{
+  assert.equal(canonicalizeBrowserOrderDeliveryQuantity(' 0.1 '),'0.1');
+  assert.equal(canonicalizeBrowserOrderDeliveryQuantity('1e-7'),'0.0000001');
+  assert.equal(canonicalizeBrowserOrderDeliveryQuantity('9007199254740993'),'9007199254740993');
+  assert.equal(canonicalizeBrowserOrderDeliveryQuantity('0x10'),'16','legacy Number-compatible integer input remains equivalent');
+  for(const value of ['', '0', '-1', '1e-400', '1e309', 'nope'])assert.equal(canonicalizeBrowserOrderDeliveryQuantity(value),null);
+});
 
 test('normalizes legacy in_progress status for the shared Orders UI',()=>assert.equal(normalizeStatus({status:'in_progress'}),'reported'));
 test('calculates delivered and remaining quantities safely',()=>assert.deepEqual(progressFor({required_quantity:10,delivered_quantity:4}),{required:10,delivered:4,remaining:6,percentage:40}));

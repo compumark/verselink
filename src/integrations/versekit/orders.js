@@ -106,6 +106,47 @@ const jsonQuantity = (value, field) => {
   return { number, decimal };
 };
 
+const decimalText = ({ coefficient, exponent }) => {
+  if (coefficient === 0n) return "0";
+  const digits = coefficient.toString();
+  if (exponent >= 0) return `${digits}${"0".repeat(exponent)}`;
+  const point = digits.length + exponent;
+  return point <= 0
+    ? `0.${"0".repeat(-point)}${digits}`
+    : `${digits.slice(0, point)}.${digits.slice(point)}`;
+};
+
+const expandNumberText = (text) => {
+  const match = /^(\d+)(?:\.(\d+))?[eE]([+-]?\d+)$/.exec(text);
+  if (!match) return text;
+  const fraction = match[2] || "";
+  const exponent = Number(match[3]);
+  if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 1000) return null;
+  const digits = `${match[1]}${fraction}`;
+  const point = match[1].length + exponent;
+  if (point <= 0) return `0.${"0".repeat(-point)}${digits}`;
+  if (point >= digits.length) return `${digits}${"0".repeat(point - digits.length)}`;
+  return `${digits.slice(0, point)}.${digits.slice(point)}`;
+};
+
+export const canonicalizeVersekitDeliveryQuantity = (value) => {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new OrdersCompatibilityError("DELIVERY_QUANTITY_INVALID");
+  }
+  const expanded = expandNumberText(String(value));
+  if (!expanded) throw new OrdersCompatibilityError("DELIVERY_QUANTITY_INVALID");
+  const parsed = jsonQuantity(expanded, "DELIVERY_QUANTITY");
+  return decimalText(parsed.decimal);
+};
+
+export const sumVersekitDeliveryQuantities = (values) => {
+  const decimals = values.map((value) => parseDecimal(value));
+  if (!decimals.length || decimals.some((value) => !value)) throw new OrdersCompatibilityError("DELIVERY_QUANTITY_INVALID");
+  const exponent = Math.min(...decimals.map((value) => value.exponent));
+  const coefficient = decimals.reduce((sum, value) => sum + value.coefficient * (10n ** BigInt(value.exponent - exponent)), 0n);
+  return decimalText({ coefficient, exponent });
+};
+
 const timestampIsCanonical = (value) => typeof value === "string" &&
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(value) &&
   Number.isFinite(Date.parse(value)) && new Date(Date.parse(value)).toISOString().slice(0, 19) === `${value.slice(0, 19)}`;

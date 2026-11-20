@@ -65,11 +65,15 @@ const writeRejectedResponse = (req, res, mode, status) => {
   if (res.headersSent) { socket?.destroy(); return; }
   res.shouldKeepAlive = false;
   const html = mode === "html";
+  const problem = mode === "problem";
+  const responseStatus = problem ? 400 : status;
   const body = html
     ? `<!doctype html><html lang="en"><meta charset="utf-8"><title>VerseKit connection</title><p>Request rejected. Reload the page and try again.</p></html>`
-    : JSON.stringify({ error: status === 408 ? "temporarily_unavailable" : "invalid_request" });
-  res.writeHead(status, {
-    "content-type": html ? "text/html; charset=utf-8" : "application/json; charset=utf-8",
+    : problem
+      ? JSON.stringify({ type: "about:blank", status: responseStatus, code: "INVALID_BODY" })
+      : JSON.stringify({ error: status === 408 ? "temporarily_unavailable" : "invalid_request" });
+  res.writeHead(responseStatus, {
+    "content-type": html ? "text/html; charset=utf-8" : problem ? "application/problem+json; charset=utf-8" : "application/json; charset=utf-8",
     "cache-control": "no-store",
     connection: "close",
     "content-length": String(Buffer.byteLength(body))
@@ -89,12 +93,7 @@ const writeRejectedResponse = (req, res, mode, status) => {
   res.end(body);
 };
 
-export const readVersekitForm = (req, res, {
-  mode = "oauth",
-  allowRepeatedScope = false,
-  limit = VERSEKIT_FORM_BODY_LIMIT,
-  deadlineMs = VERSEKIT_FORM_BODY_DEADLINE_MS
-} = {}) => new Promise((resolve) => {
+const readVersekitBody = (req, res, { mode, contentType, limit, deadlineMs }) => new Promise((resolve) => {
   let settled = false;
   let bytes = 0;
   const chunks = [];
@@ -167,9 +166,28 @@ export const readVersekitForm = (req, res, {
     rejectAndClose("too_large", 413);
     return;
   }
-  if (!/^application\/x-www-form-urlencoded(?:\s*;|$)/i.test(String(req.headers?.["content-type"] || ""))) {
+  if (!contentType.test(String(req.headers?.["content-type"] || ""))) {
     rejectAndClose("invalid_content_type", 400);
   }
+});
+
+export const readVersekitForm = (req, res, {
+  mode = "oauth",
+  limit = VERSEKIT_FORM_BODY_LIMIT,
+  deadlineMs = VERSEKIT_FORM_BODY_DEADLINE_MS
+} = {}) => {
+  return readVersekitBody(req, res, {
+    mode, limit, deadlineMs,
+    contentType: /^application\/x-www-form-urlencoded(?:\s*;|$)/i
+  });
+};
+
+export const readVersekitJson = (req, res, {
+  limit = VERSEKIT_FORM_BODY_LIMIT,
+  deadlineMs = VERSEKIT_FORM_BODY_DEADLINE_MS
+} = {}) => readVersekitBody(req, res, {
+  mode: "problem", limit, deadlineMs,
+  contentType: /^application\/json(?:\s*;|$)/i
 });
 
 export const parseVersekitForm = (body, { allowRepeatedScope = false } = {}) => {

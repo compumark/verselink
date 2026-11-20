@@ -7,7 +7,7 @@ const LABELS = Object.freeze({
   "blueprints:read": "View organization blueprints.",
   "blueprints:write": "Create or update organization blueprints.",
   "orders:read": "View organization orders.",
-  "orders:write": "Create or update organization orders."
+  "orders:write": "Report deliveries to organization orders."
 });
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 const sendPage = (res, status, content) => {
