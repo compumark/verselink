@@ -1966,7 +1966,7 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
       assert.equal(invalidCodeResponse.status, 400);
       assert.match(await invalidCodeResponse.text(), /code is invalid or no longer available/);
       const expiredBrowserGrant = await httpStore.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] });
-      await pool.query("UPDATE versekit_device_grants SET expires_at=now()-interval '1 second' WHERE id=$1", [expiredBrowserGrant.id]);
+      await pool.query("UPDATE versekit_device_grants SET created_at=now()-interval '11 minutes',expires_at=now()-interval '1 second' WHERE id=$1", [expiredBrowserGrant.id]);
       const expiredCodeResponse = await submitBrowser({ action: "lookup", csrf: csrfLookup, user_code: expiredBrowserGrant.userCode });
       assert.equal(expiredCodeResponse.status, 400);
       assert.match(await expiredCodeResponse.text(), /code is invalid or no longer available/);
