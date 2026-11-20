@@ -9,8 +9,8 @@ export const sendProblem = (res, status, code, extraHeaders = {}) => {
   res.end(JSON.stringify({ type: "about:blank", status, code }));
 };
 
-export const createVersekitRouter = ({ discovery = null, context = null, orders = null, ordersWrite = null } = {}) => {
-  const state = Object.freeze({ discovery, context, orders, ordersWrite });
+export const createVersekitRouter = ({ discovery = null, context = null, orders = null, ordersWrite = null, blueprints = null } = {}) => {
+  const state = Object.freeze({ discovery, context, orders, ordersWrite, blueprints });
   return async (req, res, url) => {
   const path = url.pathname;
   const isDiscovery = path === "/.well-known/versekit-org.json";
@@ -20,6 +20,10 @@ export const createVersekitRouter = ({ discovery = null, context = null, orders 
     if (path === "/versekit/v1/orders" && state.orders) {
       if (req.method !== "GET") rejectUnreadVersekitRequest(req, res, () => sendProblem(res, 405, "METHOD_NOT_ALLOWED", { allow: "GET" }));
       else await state.orders(req, res, url);
+    }
+    else if (path === "/versekit/v1/blueprints" && state.blueprints) {
+      if (req.method !== "GET") rejectUnreadVersekitRequest(req, res, () => sendProblem(res, 405, "METHOD_NOT_ALLOWED", { allow: "GET" }));
+      else await state.blueprints(req, res, url);
     }
     else if (/^\/versekit\/v1\/orders\/[^/]+\/deliveries$/.test(path) && state.ordersWrite) {
       if (req.method !== "POST") rejectUnreadVersekitRequest(req, res, () => sendProblem(res, 405, "METHOD_NOT_ALLOWED", { allow: "POST" }));

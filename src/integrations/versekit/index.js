@@ -11,12 +11,13 @@ import { VERSEKIT_FORM_BODY_DEADLINE_MS } from "./request-form.js";
 import { VERSEKIT_MAX_RETAINED_GRANTS } from "./store.js";
 import { assertOrdersReadiness, createOrdersCursorCodec, createOrdersHandler } from "./orders.js";
 import { createOrdersWriteHandler } from "./orders-write.js";
+import { createBlueprintCursorCodec, createBlueprintsHandler } from "./blueprints.js";
 
-const implementedScopes = Object.freeze(["orders:read", "orders:write"]);
+const implementedScopes = Object.freeze(["orders:read", "orders:write", "blueprints:read"]);
 
 export const createVersekitAdapter = async ({ env, db, tokenPepper, capabilities = [], deviceCodeLimiter, tokenLimiter,
   getSessionContext = async () => null, getCurrentAppUser = async () => null, getSessionToken = () => null, sameOrigin = () => false,
-  consentLimiter, revokeLimiter, meLimiter, ordersLimiter, ordersWriteLimiter, requestBodyDeadlineMs = VERSEKIT_FORM_BODY_DEADLINE_MS,
+  consentLimiter, revokeLimiter, meLimiter, ordersLimiter, ordersWriteLimiter, blueprintsLimiter, requestBodyDeadlineMs = VERSEKIT_FORM_BODY_DEADLINE_MS,
   maxRetainedGrants = VERSEKIT_MAX_RETAINED_GRANTS, quotaPolicy }) => {
   const config = parseVersekitConfig(env);
   if (!config) return null;
@@ -57,6 +58,7 @@ export const createVersekitAdapter = async ({ env, db, tokenPepper, capabilities
   cleanupTimer.unref?.();
   const codec = createTokenCodec(tokenPepper);
   const cursorCodec = createOrdersCursorCodec(tokenPepper);
+  const blueprintCursorCodec = createBlueprintCursorCodec(tokenPepper);
   const discovery = buildDiscovery({ publicOrigin: context.publicOrigin, groupName: context.groupName, operationalScopes: activeScopes });
   const incompatibleDiagnostics = new Map();
   const onOrdersIncompatible = (reason) => {
@@ -67,9 +69,11 @@ export const createVersekitAdapter = async ({ env, db, tokenPepper, capabilities
   };
   const orders = createOrdersHandler({ db, groupId: context.groupId, tokenStore, cursorCodec, onIncompatible: onOrdersIncompatible,
     limiter: ordersLimiter || createRequestRateLimiter({ limit: 120, windowMs: 60_000 }) });
+  const blueprints = activeScopes.includes("blueprints:read") ? createBlueprintsHandler({ db, groupId: context.groupId,
+    tokenStore, cursorCodec: blueprintCursorCodec, limiter: blueprintsLimiter || createRequestRateLimiter({ limit: 120, windowMs: 60_000 }) }) : null;
   const ordersWrite = activeScopes.includes("orders:write") ? createOrdersWriteHandler({ db, groupId: context.groupId, tokenStore,
     limiter: ordersWriteLimiter || createRequestRateLimiter({ limit: 60, windowMs: 60_000 }) }) : null;
-  const router = createVersekitRouter({ context, tokenStore, discovery, orders, ordersWrite });
+  const router = createVersekitRouter({ context, tokenStore, discovery, orders, ordersWrite, blueprints });
   const oauthHandlers = createDeviceAuthorizationHandlers({
     tokenStore,
     publicOrigin: context.publicOrigin,

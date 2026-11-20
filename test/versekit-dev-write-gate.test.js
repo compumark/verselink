@@ -23,3 +23,18 @@ test("VerseKit write permission is opt-in only for an enabled DEV runtime", () =
   assert.deepEqual(versekitBootstrapCapabilities({}), ["orders:read"]);
   assert.deepEqual(versekitBootstrapCapabilities(undefined), ["orders:read"]);
 });
+
+test("blueprints:read has an independent exact DEV-only opt-in", () => {
+  const base = { VERSEKIT_ENABLED: "true", APP_ENVIRONMENT: "DEV", VERSEKIT_DEV_BLUEPRINTS_READ: "true" };
+  assert.deepEqual(versekitBootstrapCapabilities(base), ["orders:read", "blueprints:read"]);
+  for (const changes of [
+    { VERSEKIT_ENABLED: "false" }, { VERSEKIT_ENABLED: "TRUE" }, { APP_ENVIRONMENT: "Production" },
+    { APP_ENVIRONMENT: "dev" }, { VERSEKIT_DEV_BLUEPRINTS_READ: "false" },
+    { VERSEKIT_DEV_BLUEPRINTS_READ: "TRUE" }, { VERSEKIT_DEV_BLUEPRINTS_READ: "1" },
+    { VERSEKIT_DEV_BLUEPRINTS_READ: undefined }
+  ]) assert.deepEqual(versekitBootstrapCapabilities({ ...base, ...changes }), ["orders:read"]);
+  assert.deepEqual(versekitBootstrapCapabilities({ ...base, VERSEKIT_DEV_ORDERS_WRITE: "true" }),
+    ["orders:read", "blueprints:read", "orders:write"]);
+  assert.deepEqual(versekitBootstrapCapabilities({ ...base, VERSEKIT_DEV_ORDERS_WRITE: "true", VERSEKIT_DEV_BLUEPRINTS_READ: "false" }),
+    ["orders:read", "orders:write"]);
+});

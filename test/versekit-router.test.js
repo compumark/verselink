@@ -100,6 +100,8 @@ test("enabled adapter resolves exactly the configured existing group", async () 
   const discovery = (await call(router, "GET", "/.well-known/versekit-org.json")).res;
   assert.equal(discovery.status, 200);
   assert.deepEqual(JSON.parse(discovery.body).versions["1"].scopes_supported, ["orders:read"]);
+  const unadvertisedBlueprints = (await call(router, "GET", "/versekit/v1/blueprints")).res;
+  assert.equal(unadvertisedBlueprints.status, 404, "blueprints:read stays unavailable until its explicit DEV capability is activated");
   const consentPage = (await call(router, "GET", "/device")).res;
   assert.equal(consentPage.status, 200);
   assert.match(consentPage.body, /href="\/login"/);
