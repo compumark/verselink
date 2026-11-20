@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - codex/vk-08-versekit-blueprints-read
   pull_request:
 
 permissions:
