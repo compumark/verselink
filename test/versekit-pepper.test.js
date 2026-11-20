@@ -185,7 +185,7 @@ test("PostgreSQL cleanup preflight blocks active instances and quiesced apply is
       VERSELINK_APP_URL: "http://localhost:3000", SCMDB_SINK_BASE_URL: "https://sink.example.test/v1/scmdb"
     } });
     let consentPage = await fetch(`${runtime.baseUrl}/device`, { headers: { cookie: `bp_session=${sessionToken}` } });
-    assert.match(await consentPage.text(), /Signed in as <strong>Legacy Test Member<\/strong>/, "unchanged Sink pepper preserves the VerseLink browser session");
+    assert.match(await consentPage.text(), /<span>SIGNED IN AS<\/span><strong>Legacy Test Member<\/strong>/, "unchanged Sink pepper preserves the VerseLink browser session");
 
     const rejectedLegacyCsrf = await fetch(`${runtime.baseUrl}/device`, {
       method: "POST",
