@@ -80,6 +80,6 @@ jobs:
         run: |
           set -euo pipefail
           output="$RUNNER_TEMP/npm-test.tap"
-          if ! npm test -- --test-reporter=tap >"$output" 2>&1; then cat "$output"; exit 1; fi
+          if ! npm test -- --test-reporter=tap --test-concurrency=1 >"$output" 2>&1; then cat "$output"; exit 1; fi
           cat "$output"
           grep -qx '# skipped 0' "$output"
