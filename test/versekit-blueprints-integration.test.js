@@ -178,7 +178,7 @@ test("VK-08 reads only active fixed-group SCMDB holdings with authenticated stab
           "a high-water display label longer than the v1 cursor bound fails closed instead of truncating it");
         await pool.query("UPDATE member_blueprints SET product_name=$1 WHERE tag='boundary-200'", [longName]);
 
-        await pool.query("UPDATE app_users SET verselink_name='', display_name=$1 WHERE id=$2", ["H".repeat(201), ids.first]);
+        await pool.query("UPDATE app_users SET verselink_name=NULL, display_name=$1 WHERE id=$2", ["H".repeat(201), ids.first]);
         const overlongHolder = await authRequest(`${runtime.baseUrl}/versekit/v1/blueprints`, readToken);
         assert.deepEqual([overlongHolder.status, overlongHolder.body.code], [503, "MAINTENANCE"],
           "an overlong holder display name fails closed instead of being truncated or omitted");
