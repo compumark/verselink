@@ -6,9 +6,10 @@ import { activateVersekitAuthorizationGroup } from "../src/integrations/versekit
 import { createTokenCodec } from "../src/integrations/versekit/tokens.js";
 import { VersekitTokenStore } from "../src/integrations/versekit/store.js";
 import { resolveC6TestDatabaseUrl } from "./helpers/c6-test-database.js";
-import { apiRequest, createSession, startMissionTestServer, stopMissionTestServer } from "./helpers/mission-integration.js";
+import { apiRequest, createSession, startMissionTestServer, stopMissionTestServer, VERSEKIT_TEST_TOKEN_PEPPER } from "./helpers/mission-integration.js";
 
 const pepper = "vk04-lock-order-test-pepper-with-more-than-thirty-two-bytes";
+const tokenPepper = VERSEKIT_TEST_TOKEN_PEPPER;
 const quotaPolicy = Object.freeze({ capacity: 4096, refillIntervalSeconds: 3600 });
 const boundedPool = async (url, pg, applicationName) => new pg.Pool({
   connectionString: url,
@@ -82,8 +83,8 @@ test("VerseKit authorization and refresh-token revocation follow family-before-t
     await pool.query("INSERT INTO blueprint_groups(id,name) VALUES($1,'Lock Order Group'),($2,'Unrelated Group')", [enabled.VERSEKIT_GROUP_ID, otherGroup]);
     await pool.query("INSERT INTO app_users(id,email,display_name,account_status) VALUES($1,$2,'Lock Order Member','active')", [userId, `vk04-lock-${userId}@example.test`]);
     await pool.query("INSERT INTO group_members(group_id,app_user_id,role) VALUES($1,$2,'member'),($3,$2,'member')", [enabled.VERSEKIT_GROUP_ID, userId, otherGroup]);
-    await createVersekitAdapter({ env: enabled, db: pool, pepper, quotaPolicy, capabilities: ["orders:read"] });
-    const codec = createTokenCodec(pepper);
+    await createVersekitAdapter({ env: enabled, db: pool, tokenPepper, quotaPolicy, capabilities: ["orders:read"] });
+    const codec = createTokenCodec(tokenPepper);
     const store = new VersekitTokenStore({ db: pool, codec, groupId: enabled.VERSEKIT_GROUP_ID, operationalScopes: ["orders:read"] });
     const issuePair = async () => {
       const grant = await store.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] });
@@ -227,7 +228,7 @@ test("VerseKit authorization and refresh-token revocation follow family-before-t
     await pool.query("INSERT INTO group_members(group_id,app_user_id,role) VALUES($1,$2,'member')", [survivingGroup, userId]);
     const runRefreshDeleteOrdering = async ({ groupId, refreshFirst }) => {
       const env = { ...enabled, VERSEKIT_GROUP_ID: groupId };
-      await createVersekitAdapter({ env, db: pool, pepper, quotaPolicy, capabilities: ["orders:read"] });
+      await createVersekitAdapter({ env, db: pool, tokenPepper, quotaPolicy, capabilities: ["orders:read"] });
       const targetStore = new VersekitTokenStore({ db: pool, codec, groupId, operationalScopes: ["orders:read"] });
       const grant = await targetStore.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] });
       assert.equal(await targetStore.consent({ grantId: grant.id, userId, scopes: ["orders:read"], approve: true }), true);
@@ -316,7 +317,7 @@ test("VerseKit authorization and refresh-token revocation follow family-before-t
       await pool.query("INSERT INTO blueprint_groups(id,name) VALUES($1,$2)", [groupId, name]);
       await pool.query("INSERT INTO group_members(group_id,app_user_id,role) VALUES($1,$2,'owner')", [groupId, userId]);
       const env = { ...enabled, VERSEKIT_GROUP_ID: groupId };
-      await createVersekitAdapter({ env, db: pool, pepper, quotaPolicy, capabilities: ["orders:read"] });
+      await createVersekitAdapter({ env, db: pool, tokenPepper, quotaPolicy, capabilities: ["orders:read"] });
       const targetStore = new VersekitTokenStore({ db: pool, codec, groupId, operationalScopes: ["orders:read"] });
       const grant = await targetStore.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] });
       const sessionCookie = await createSession(pool, pepper, userId);

@@ -24,7 +24,7 @@ Stack über das GitHub-Repository anlegen, Branch `main` und Compose-Datei `dock
 
 ## Variablen
 
-Pflicht: `POSTGRES_PASSWORD`, `SINK_TOKEN_PEPPER`. Optional: `APP_ADMIN_USER_IDS`, `DISCORD_WEBHOOK_URL`, `DATABASE_URL` und PostgreSQL-Verbindungswerte. `APP_ADMIN_USER_IDS` ist eine kommagetrennte Liste unveränderlicher `app_users.id`-UUIDs; eine leere oder fehlende Liste vergibt keine Adminrechte.
+Pflicht: `POSTGRES_PASSWORD`, `SINK_TOKEN_PEPPER`. `SINK_TOKEN_PEPPER` bleibt für bestehende VerseLink-/SCMDB-Credentials unverändert. Optional: `VERSEKIT_ENABLED`, `VERSEKIT_TOKEN_PEPPER`, `VERSEKIT_GROUP_ID` und `VERSEKIT_PUBLIC_URL`. Nur bei exakt `VERSEKIT_ENABLED=true` ist ein unabhängiger `VERSEKIT_TOKEN_PEPPER` mit mindestens 32 UTF-8-Bytes erforderlich. DEV und PROD verwenden getrennte Secret-Werte; Werte nach der Aktivierung stabil halten. Nie den Sink-Pepper zur VerseKit-Aktivierung ändern. Weitere optionale Werte: `APP_ADMIN_USER_IDS`, `DISCORD_WEBHOOK_URL`, `DATABASE_URL` und PostgreSQL-Verbindungswerte. `APP_ADMIN_USER_IDS` ist eine kommagetrennte Liste unveränderlicher `app_users.id`-UUIDs; eine leere oder fehlende Liste vergibt keine Adminrechte.
 
 `DISCORD_BOT_TOKEN` und `DISCORD_ADMIN_USER_ID` sind optional und wirken nur zusammen. Sie senden nach dem Commit einer neuen Registrierung eine private Best-Effort-DM an die konfigurierte Discord-User-Snowflake. Der Bot muss dem Empfänger schreiben dürfen. Discord-Fehler blockieren die Registrierung nie; ein zweiter Bot oder Webhook ist nicht erforderlich. Werte pro Deployment geheim konfigurieren; Production und DEV können unterschiedliche Tokens oder Empfänger-IDs verwenden.
 

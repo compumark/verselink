@@ -3534,7 +3534,7 @@ ensureSchema().then(() => isTestRuntime ? undefined : syncReferenceData()).then(
     try {
       const { createVersekitAdapter } = await import("./integrations/versekit/index.js");
       versekitRouter = await createVersekitAdapter({
-        env: process.env, db: pool, pepper, capabilities: ["orders:read"],
+        env: process.env, db: pool, tokenPepper: process.env.VERSEKIT_TOKEN_PEPPER, capabilities: ["orders:read"],
         getSessionContext,
         getCurrentAppUser,
         getSessionToken: (req) => { try { return parseCookies(req.headers.cookie).bp_session || null; } catch { return null; } },

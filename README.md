@@ -153,6 +153,10 @@ services:
       PGUSER: blueprints
       PGPASSWORD: 'CHANGE_ME'
       SINK_TOKEN_PEPPER: 'CHANGE_ME'
+      VERSEKIT_ENABLED: 'false'
+      VERSEKIT_TOKEN_PEPPER: ''
+      VERSEKIT_GROUP_ID: ''
+      VERSEKIT_PUBLIC_URL: ''
       APP_ADMIN_USER_IDS: ''
       SCMDB_SINK_BASE_URL: 'https://verselink.example.org/v1/scmdb'
       DISCORD_WEBHOOK_URL: ''
@@ -193,7 +197,9 @@ volumes:
   verselink-logs:
 ```
 
-`PGPASSWORD` and `POSTGRES_PASSWORD` must contain exactly the same strong random password. `CHANGE_ME` is only a placeholder and must be replaced before deployment. `SINK_TOKEN_PEPPER` must be a long random secret and must remain stable for an existing installation. `APP_ADMIN_USER_IDS` is optional and accepts comma-separated immutable VerseLink `app_users.id` UUIDs. `SCMDB_SINK_BASE_URL` is optional unless SCMDB synchronization is used; there is no automatic fallback. `VERSELINK_APP_URL` is the public URL of this VerseLink instance. Discord webhook variables and `UEX_API_TOKEN` are optional and may remain empty. Never commit real secrets.
+`PGPASSWORD` and `POSTGRES_PASSWORD` must contain exactly the same strong random password. `CHANGE_ME` is only a placeholder and must be replaced before deployment. `SINK_TOKEN_PEPPER` is the existing VerseLink/SCMDB secret; keep it unchanged for existing installations. VerseKit uses a separate `VERSEKIT_TOKEN_PEPPER`, required only when `VERSEKIT_ENABLED` is exactly `true`, with at least 32 UTF-8 bytes. Generate it with `openssl rand -hex 32`; never reuse the Sink pepper. Keep separate values for DEV and PROD, and keep each value stable once used. `APP_ADMIN_USER_IDS` is optional and accepts comma-separated immutable VerseLink `app_users.id` UUIDs. `SCMDB_SINK_BASE_URL` is optional unless SCMDB synchronization is used; there is no automatic fallback. `VERSELINK_APP_URL` is the public URL of this VerseLink instance. Discord webhook variables and `UEX_API_TOKEN` are optional and may remain empty. Never commit real secrets.
+
+If a deployment may contain VerseKit credentials created with the former shared pepper, follow the all-instance quiescence, dry-run, and explicitly confirmed VerseKit-only cleanup procedure in [the VerseKit operations guide](docs/integrations/versekit-org-standard-v1.md) before first activation. Disabling incoming traffic alone does not stop an enabled adapter's cleanup timer.
 
 Required and optional values:
 
@@ -201,6 +207,10 @@ Required and optional values:
 | --- | --- |
 | `POSTGRES_PASSWORD` | Required long random PostgreSQL password. The app's `PGPASSWORD` must match it. |
 | `SINK_TOKEN_PEPPER` | Required long random application secret. Keep it stable for existing installations and never commit it. |
+| `VERSEKIT_ENABLED` | Optional; only the exact value `true` enables the VerseKit adapter. |
+| `VERSEKIT_TOKEN_PEPPER` | Required only when VerseKit is enabled; use an independent random value with at least 32 UTF-8 bytes. Keep it stable and never commit it. |
+| `VERSEKIT_GROUP_ID` | Required only when VerseKit is enabled; UUID of the existing fixed VerseLink group. |
+| `VERSEKIT_PUBLIC_URL` | Required only when VerseKit is enabled; public HTTPS origin used by discovery and consent. |
 | `APP_ADMIN_USER_IDS` | Optional comma-separated immutable VerseLink `app_users.id` UUIDs. Find a user's UUID under **About → System Information → USER ID**. Do not use display names, SCMDB/RSI handles, or `vl_...` login credentials. |
 | `SCMDB_SINK_BASE_URL` | Required only for SCMDB synchronization; for example `https://verselink.example.org/v1/scmdb`. There is no default or fallback. Without it, VerseLink runs but SCMDB Sync Sink creation is disabled. |
 | `VERSELINK_APP_URL` | Public base URL of the VerseLink web application, for example `https://verselink.example.org`. |
@@ -220,7 +230,7 @@ Set both `DISCORD_BOT_TOKEN` and `DISCORD_ADMIN_USER_ID` in the deployment's sec
 ### First startup
 
 1. Create a stack or deployment directory and paste the Compose configuration.
-2. Replace the placeholders, especially `POSTGRES_PASSWORD`, `SINK_TOKEN_PEPPER`, and `VERSELINK_APP_URL`.
+2. Replace the placeholders, especially `POSTGRES_PASSWORD`, the existing `SINK_TOKEN_PEPPER`, and `VERSELINK_APP_URL`. If enabling VerseKit, configure its independent pepper, group ID, HTTPS URL, and exact `VERSEKIT_ENABLED=true` flag.
 3. Start the stack and wait for the PostgreSQL and VerseLink healthchecks.
 4. Open `http://SERVER-IP:3000` or the configured reverse-proxy URL.
 5. Create the first VerseLink account.
@@ -306,6 +316,10 @@ Required: `POSTGRES_PASSWORD`, `SINK_TOKEN_PEPPER`.
 Optional or defaulted: `APP_PORT`, `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `DATABASE_URL`, `APP_ADMIN_USER_IDS`, and `DISCORD_WEBHOOK_URL`. `APP_ADMIN_USER_IDS` accepts only comma-separated immutable `app_users.id` UUIDs.
 
 `SCMDB_SINK_BASE_URL` is required only when SCMDB synchronization is used. Set it explicitly to the publicly reachable ingest base URL, for example `https://verselink.example.org/v1/scmdb`. There is no default or Production fallback: without a valid value VerseLink continues to run, but creating SCMDB Sync Sinks is disabled. Self-hosted installations must use their own public URL. Do not commit secrets; use `.env.example` as the template.
+
+## Security analysis
+
+The dedicated CodeQL workflow analyzes JavaScript/TypeScript pull requests targeting `main`, pushes to `main`, and a weekly scheduled run. It uploads results to GitHub code scanning; review the actual CodeQL check/result for each change rather than inferring a pass from the regular CI suite.
 
 ## Database and backups
 

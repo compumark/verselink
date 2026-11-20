@@ -3,14 +3,14 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 const CODE_ALPHABET = "BCDFGHJKLMNPQRSTVWXYZ";
 const TOKEN_PREFIX = /^[a-z][a-z0-9]{1,15}$/;
 
-export const createTokenCodec = (pepper) => {
-  if (typeof pepper !== "string" || Buffer.byteLength(pepper) < 32) {
+export const createTokenCodec = (tokenPepper) => {
+  if (typeof tokenPepper !== "string" || Buffer.byteLength(tokenPepper, "utf8") < 32) {
     throw new Error("VerseKit token pepper must contain at least 32 bytes");
   }
   const hash = (purpose, value) => {
     if (typeof purpose !== "string" || !/^[a-z_]{1,32}$/.test(purpose)) throw new Error("Invalid token purpose");
     if (typeof value !== "string" || value.length < 1 || value.length > 512) throw new Error("Invalid token value");
-    return createHmac("sha256", pepper).update(`versekit:${purpose}:`).update(value, "utf8").digest("hex");
+    return createHmac("sha256", tokenPepper).update(`versekit:${purpose}:`).update(value, "utf8").digest("hex");
   };
   const issue = (prefix) => {
     if (!TOKEN_PREFIX.test(prefix)) throw new Error("Invalid token prefix");

@@ -8,9 +8,10 @@ import { createVersekitRouter } from "../src/integrations/versekit/router.js";
 import { createTokenCodec } from "../src/integrations/versekit/tokens.js";
 import { VersekitTokenStore } from "../src/integrations/versekit/store.js";
 import { resolveC6TestDatabaseUrl } from "./helpers/c6-test-database.js";
-import { createSession, createTestPool, startMissionTestServer, stopMissionTestServer } from "./helpers/mission-integration.js";
+import { createSession, createTestPool, startMissionTestServer, stopMissionTestServer, VERSEKIT_TEST_TOKEN_PEPPER } from "./helpers/mission-integration.js";
 
-const PEPPER = "vk05-orders-test-pepper-with-at-least-32-bytes";
+const PEPPER = VERSEKIT_TEST_TOKEN_PEPPER;
+const SINK_PEPPER = "short-unchanged-sink-test";
 const CURSOR_GROUP = "11111111-1111-4111-8111-111111111111";
 const CURSOR_PAYLOAD = Object.freeze({ v: 1, g: CURSOR_GROUP, scope: "orders:read",
   s: { created: "2026-11-19T10:00:00.123456Z", id: "ffffffff-ffff-4fff-8fff-ffffffffffff" },
@@ -202,7 +203,7 @@ test("VerseKit orders read is fixed-group, hidden-safe, precise, and keyset pagi
     await admin.query(`CREATE DATABASE "${databaseName}"`);
     databaseCreated = true;
     databaseUrl = new URL(safeUrl); databaseUrl.pathname = `/${databaseName}`;
-    bootstrap = await startMissionTestServer({ databaseUrl: databaseUrl.toString(), pepper: PEPPER, extraEnv: { VERSEKIT_ENABLED: "false" } });
+    bootstrap = await startMissionTestServer({ databaseUrl: databaseUrl.toString(), pepper: SINK_PEPPER, extraEnv: { VERSEKIT_ENABLED: "false", VERSEKIT_TOKEN_PEPPER: "" } });
     await stopMissionTestServer(bootstrap); bootstrap = null;
     pool = await createTestPool(databaseUrl.toString());
 
@@ -222,7 +223,7 @@ test("VerseKit orders read is fixed-group, hidden-safe, precise, and keyset pagi
         ($5,'VK05-SUBNORMAL',$2,$3,'Subnormal fixture',$6,'SCU')`,
     [randomUUID(), underflowGroup, user, tinyUnderflow, randomUUID(), subnormalRequired]);
     await pool.query("UPDATE material_orders SET delivered_quantity=$1 WHERE order_number='VK05-SUBNORMAL'", [subnormalDelivered]);
-    runtime = await startMissionTestServer({ databaseUrl: databaseUrl.toString(), pepper: PEPPER,
+    runtime = await startMissionTestServer({ databaseUrl: databaseUrl.toString(), pepper: SINK_PEPPER,
       extraEnv: { VERSEKIT_ENABLED: "true", VERSEKIT_GROUP_ID: group, VERSEKIT_PUBLIC_URL: "https://verse.example.org/" } });
     const codec = createTokenCodec(PEPPER);
     const store = new VersekitTokenStore({ db: pool, codec, groupId: group, operationalScopes: ["orders:read"] });
@@ -334,10 +335,10 @@ test("VerseKit orders read is fixed-group, hidden-safe, precise, and keyset pagi
     assert.equal(all.find((order) => order.id === orderIds[6]).items[0].unit, "piece");
     assert.ok(all.every((order) => !JSON.stringify(order).includes(otherGroup)));
 
-    const session = await createSession(pool, PEPPER, user);
+    const session = await createSession(pool, SINK_PEPPER, user);
     // This group's visible positive quantity underflows JavaScript Number;
     // readiness must suppress discovery while normal VerseLink remains up.
-    blockedRuntime = await startMissionTestServer({ databaseUrl: databaseUrl.toString(), pepper: PEPPER,
+    blockedRuntime = await startMissionTestServer({ databaseUrl: databaseUrl.toString(), pepper: SINK_PEPPER,
       extraEnv: { VERSEKIT_ENABLED: "true", VERSEKIT_GROUP_ID: underflowGroup, VERSEKIT_PUBLIC_URL: "https://verse.example.org/" } });
     assert.equal((await fetch(`${blockedRuntime.baseUrl}/healthz`)).status, 200);
     assert.equal((await fetch(`${blockedRuntime.baseUrl}/.well-known/versekit-org.json`)).status, 404,
