@@ -1686,6 +1686,8 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
       assert.match(browserHtml, /name="user_code"/);
       assert.doesNotMatch(browserHtml, /checked/);
       assert.equal(browserPage.headers.get("cache-control"), "no-store");
+      assert.equal(browserPage.headers.get("referrer-policy"), "same-origin",
+        "native consent form submissions retain a same-origin referrer policy compatible with Origin validation");
       assert.equal(browserPage.headers.get("content-security-policy")?.includes("frame-ancestors 'none'"), true);
       const csrfLookup = /name="csrf" value="([^"]+)"/.exec(browserHtml)?.[1];
       assert.ok(csrfLookup);
@@ -1712,13 +1714,17 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
       assert.equal(storedGrant.rows[0].device_code_hash, codec.hash("device_code", created.body.device_code));
       assert.equal(storedGrant.rows[0].user_code_hash, codec.hash("user_code", created.body.user_code));
 
-      const submitBrowser = (fields) => fetch(adapterUrl + "/device", {
-        method: "POST", headers: { ...browserHeaders, origin: adapterUrl, "content-type": "application/x-www-form-urlencoded" },
+      const submitBrowser = (fields, origin = adapterUrl) => fetch(adapterUrl + "/device", {
+        method: "POST", headers: { ...browserHeaders, origin, "content-type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams(fields), signal: AbortSignal.timeout(5_000)
       });
       assert.equal((await submitBrowser({ action: "lookup", user_code: "ABCDF-GHJKM" })).status, 403, "missing CSRF is rejected");
       assert.equal((await submitBrowser({ action: "lookup", csrf: "invalid", user_code: "ABCDF-GHJKM" })).status, 403, "invalid CSRF is rejected");
       const browserGrant = (await postForm("/versekit/v1/device/code", "client_id=versekit&scope=orders%3Aread")).body;
+      assert.equal((await submitBrowser({ action: "lookup", csrf: csrfLookup, user_code: browserGrant.user_code }, "null")).status, 403,
+        "a null Origin remains rejected even with a valid CSRF token");
+      assert.equal((await submitBrowser({ action: "lookup", csrf: csrfLookup, user_code: browserGrant.user_code }, "http://attacker.invalid")).status, 403,
+        "a cross-origin POST remains rejected even with a valid CSRF token");
       let lookupResponse = await submitBrowser({ action: "lookup", csrf: csrfLookup, user_code: browserGrant.user_code });
       assert.equal(lookupResponse.status, 200);
       let reviewHtml = await lookupResponse.text();
