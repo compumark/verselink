@@ -292,7 +292,17 @@ test("PostgreSQL cleanup preflight blocks active instances and quiesced apply is
   } finally {
     await stopMissionTestServer(runtime);
     await pool?.end();
-    if (created) await admin.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
+    if (created) {
+      let remainingConnections = 0;
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        const result = await admin.query("SELECT count(*)::int AS count FROM pg_stat_activity WHERE datname=$1 AND pid<>pg_backend_pid()", [databaseName]);
+        remainingConnections = result.rows[0].count;
+        if (remainingConnections === 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      assert.equal(remainingConnections, 0, "all dedicated database connections close before teardown");
+      await admin.query(`DROP DATABASE "${databaseName}"`);
+    }
     await admin.end();
   }
 });
