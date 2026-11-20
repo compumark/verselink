@@ -198,7 +198,7 @@ test("VerseKit consent body rejections return protected fixed HTML and close unr
     lookupLimiter: { consume: () => ({ allowed: true }) },
     requestBodyDeadlineMs: 10
   });
-  const rejectedPost = async ({ contentType = "application/x-www-form-urlencoded", contentLength, chunks = [] } = {}) => {
+  const rejectedPost = async ({ contentType = "application/x-www-form-urlencoded", contentLength, chunks = [], keepEventLoopAlive = false } = {}) => {
     const req = contentLength !== undefined && chunks.length === 0
       ? new Readable({ read() {} })
       : Readable.from(chunks.map((chunk) => Buffer.from(chunk)));
@@ -215,9 +215,14 @@ test("VerseKit consent body rejections return protected fixed HTML and close unr
       ...(contentLength === undefined ? {} : { "content-length": String(contentLength) }) };
     req.socket = socket;
     const res = response();
-    await handler(req, res, new URL("/device", "https://verse.example.org"));
-    await new Promise((resolve) => setImmediate(resolve));
-    return { req, res, socket, get paused() { return paused; } };
+    const keepAlive = keepEventLoopAlive ? setTimeout(() => {}, 100) : null;
+    try {
+      await handler(req, res, new URL("/device", "https://verse.example.org"));
+      await new Promise((resolve) => setImmediate(resolve));
+      return { req, res, socket, get paused() { return paused; } };
+    } finally {
+      if (keepAlive) clearTimeout(keepAlive);
+    }
   };
   const expectedHeaders = {
     "content-type": "text/html; charset=utf-8",
@@ -245,7 +250,7 @@ test("VerseKit consent body rejections return protected fixed HTML and close unr
   });
   assertRejected(invalidType, 400, /The form could not be read\./);
 
-  const timedOut = await rejectedPost({ contentLength: 64 });
+  const timedOut = await rejectedPost({ contentLength: 64, keepEventLoopAlive: true });
   assertRejected(timedOut, 408, /The form took too long to arrive\./);
 
   const oversized = await rejectedPost({
