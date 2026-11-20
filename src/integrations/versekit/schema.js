@@ -81,6 +81,17 @@ export const initializeVersekitSchema = async (db, quotaPolicy = {}) => {
       replaced_by uuid REFERENCES versekit_tokens(id),
       created_at timestamptz NOT NULL DEFAULT now()
     );
+    CREATE TABLE IF NOT EXISTS versekit_order_delivery_idempotency (
+      group_id uuid NOT NULL REFERENCES blueprint_groups(id) ON DELETE CASCADE,
+      app_user_id uuid NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+      key_hash text NOT NULL CHECK (key_hash ~ '^[0-9a-f]{64}$'),
+      request_fingerprint text NOT NULL CHECK (request_fingerprint ~ '^[0-9a-f]{64}$'),
+      response_status integer,
+      response_body jsonb,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY(group_id,app_user_id,key_hash),
+      CHECK ((response_status IS NULL) = (response_body IS NULL))
+    );
     CREATE INDEX IF NOT EXISTS versekit_tokens_family_idx ON versekit_tokens(family_id);
     CREATE INDEX IF NOT EXISTS versekit_tokens_expiry_idx ON versekit_tokens(expires_at);
     CREATE INDEX IF NOT EXISTS versekit_tokens_active_lookup_idx ON versekit_tokens(token_hash, token_type) WHERE revoked_at IS NULL;
