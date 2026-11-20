@@ -31,7 +31,7 @@ test("VK-08 reads only active fixed-group SCMDB holdings with authenticated stab
   const schema = `vk08_blueprints_${randomUUID().replaceAll("-", "")}`;
   let runtime, pool;
   const logDirectory = join(tmpdir(), `verselink-vk08-${process.pid}-${randomUUID()}`);
-  const ids = { first: randomUUID(), second: randomUUID(), outside: randomUUID(), inactive: randomUUID(), removed: randomUUID() };
+  const ids = { first: randomUUID(), second: randomUUID(), third: randomUUID(), fourth: randomUUID(), outside: randomUUID(), inactive: randomUUID(), removed: randomUUID() };
   const otherGroup = randomUUID();
   const seedUser = async (target, id, display, verselink, status = "active") => target.query(
     "INSERT INTO app_users(id,email,display_name,verselink_name,account_status,is_admin) VALUES($1,$2,$3,$4,$5,false)",
@@ -63,21 +63,26 @@ test("VK-08 reads only active fixed-group SCMDB holdings with authenticated stab
     await pool.query("INSERT INTO blueprint_groups(id,name) VALUES($1,'Configured group'),($2,'Unrelated group')", [groupId, otherGroup]);
     await seedUser(pool, ids.first, "Shared Name", "Shared Name");
     await seedUser(pool, ids.second, "Shared Name", "");
+    await seedUser(pool, ids.third, "Third Holder", "Third Holder");
+    await seedUser(pool, ids.fourth, "Fourth Holder", "Fourth Holder");
     await seedUser(pool, ids.outside, "Outside Holder", null);
     await seedUser(pool, ids.inactive, "Inactive Holder", null, "blocked");
     await seedUser(pool, ids.removed, "Removed Holder", null);
-    await pool.query("INSERT INTO group_members(group_id,app_user_id) VALUES($1,$2),($1,$3),($4,$2),($4,$5),($1,$6)",
-      [groupId, ids.first, ids.second, otherGroup, ids.outside, ids.inactive]);
+    await pool.query("INSERT INTO group_members(group_id,app_user_id) VALUES($1,$2),($1,$3),($4,$2),($4,$5),($1,$6),($1,$7),($1,$8)",
+      [groupId, ids.first, ids.second, otherGroup, ids.outside, ids.inactive, ids.third, ids.fourth]);
     const connection = async (hash, user, status = "connected", revoked = false) => pool.query(
       "INSERT INTO scmdb_connections(token_hash,app_user_id,connection_status,revoked_at) VALUES($1,$2,$3,CASE WHEN $4 THEN now() ELSE NULL END)",
       [hash, user, status, revoked]);
     const hashes = {
       first1: "1".repeat(64), first2: "2".repeat(64), second: "3".repeat(64), outside: "4".repeat(64),
-      inactive: "5".repeat(64), removed: "6".repeat(64), revoked: "7".repeat(64), disconnected: "8".repeat(64)
+      inactive: "5".repeat(64), removed: "6".repeat(64), revoked: "7".repeat(64), disconnected: "8".repeat(64),
+      third: "9".repeat(64), fourth: "a".repeat(64)
     };
     await connection(hashes.first1, ids.first);
     await connection(hashes.first2, ids.first);
     await connection(hashes.second, ids.second);
+    await connection(hashes.third, ids.third);
+    await connection(hashes.fourth, ids.fourth);
     await connection(hashes.outside, ids.outside);
     await connection(hashes.inactive, ids.inactive);
     await connection(hashes.removed, ids.removed);
@@ -122,6 +127,65 @@ test("VK-08 reads only active fixed-group SCMDB holdings with authenticated stab
       const serialized = JSON.stringify(result.body);
       for (const value of [ids.first, ids.second, ids.outside, "@vk08.test", hashes.first1, "catalog-only", "private profile"]) {
         assert.equal(serialized.includes(value), false, `response must not expose ${value}`);
+      }
+    });
+
+    await t.test("canonicalizes one name per SCMDB tag before aggregating distinct holders", async () => {
+      const longName = "z".repeat(200);
+      const tagCases = [
+        [hashes.first1, "same-tag-different-name", "Zulu Snapshot"],
+        [hashes.third, "same-tag-different-name", "Alpha Snapshot"],
+        [hashes.second, "same-tag-empty-name", "   "],
+        [hashes.fourth, "same-tag-empty-name", "Nonempty Snapshot"],
+        [hashes.first1, "collision-tag-a", "Duplicate Label"],
+        [hashes.third, "collision-tag-b", "duplicate label"],
+        [hashes.first1, "boundary-200", longName]
+      ];
+      await pool.query("INSERT INTO member_blueprints(token_hash,tag,product_name,owned_at) SELECT * FROM unnest($1::text[],$2::text[],$3::text[],$4::bigint[])", [
+        tagCases.map((row) => row[0]), tagCases.map((row) => row[1]), tagCases.map((row) => row[2]), tagCases.map(() => 10)
+      ]);
+      try {
+        const result = await authRequest(`${runtime.baseUrl}/versekit/v1/blueprints`, readToken);
+        assert.equal(result.status, 200);
+        const byName = new Map(result.body.blueprints.map((item) => [item.name, item.holders]));
+        assert.deepEqual(byName.get("Alpha Snapshot"), ["Shared Name", "Third Holder"],
+          "one tag uses the C-collation-minimum nonempty snapshot name and includes every distinct eligible holder");
+        assert.deepEqual(byName.get("Nonempty Snapshot"), ["Fourth Holder", "Shared Name"],
+          "an empty owner snapshot does not split a tag from its nonempty canonical name");
+        assert.deepEqual(byName.get("Duplicate Label"), ["Shared Name", "Third Holder"],
+          "different tags with case-insensitively equal display names intentionally merge their holder sets");
+        assert.equal(result.body.blueprints.filter((item) => item.name.toLowerCase() === "duplicate label").length, 1);
+
+        const firstPage = await authRequest(`${runtime.baseUrl}/versekit/v1/blueprints?limit=1`, readToken);
+        assert.equal(firstPage.status, 200);
+        assert.equal(typeof firstPage.body.next_cursor, "string",
+          "a 200-character canonical name is valid in the initial high-water cursor");
+        const pagedNames = [];
+        let cursor = null;
+        do {
+          const query = new URLSearchParams({ limit: "2" });
+          if (cursor) query.set("cursor", cursor);
+          const page = await authRequest(`${runtime.baseUrl}/versekit/v1/blueprints?${query}`, readToken);
+          assert.equal(page.status, 200);
+          pagedNames.push(...page.body.blueprints.map((item) => item.name));
+          cursor = page.body.next_cursor;
+        } while (cursor);
+        assert.ok(pagedNames.includes(longName), "pagination reaches the full 200-character display label without truncation");
+
+        await pool.query("UPDATE member_blueprints SET product_name=$1 WHERE tag='boundary-200'", ["z".repeat(201)]);
+        const overlongHighWater = await authRequest(`${runtime.baseUrl}/versekit/v1/blueprints?limit=1`, readToken);
+        assert.deepEqual([overlongHighWater.status, overlongHighWater.body.code], [503, "MAINTENANCE"],
+          "a high-water display label longer than the v1 cursor bound fails closed instead of truncating it");
+        await pool.query("UPDATE member_blueprints SET product_name=$1 WHERE tag='boundary-200'", [longName]);
+
+        await pool.query("UPDATE app_users SET verselink_name='', display_name=$1 WHERE id=$2", ["H".repeat(201), ids.first]);
+        const overlongHolder = await authRequest(`${runtime.baseUrl}/versekit/v1/blueprints`, readToken);
+        assert.deepEqual([overlongHolder.status, overlongHolder.body.code], [503, "MAINTENANCE"],
+          "an overlong holder display name fails closed instead of being truncated or omitted");
+        await pool.query("UPDATE app_users SET verselink_name='Shared Name', display_name='Shared Name' WHERE id=$1", [ids.first]);
+      } finally {
+        await pool.query("UPDATE app_users SET verselink_name='Shared Name', display_name='Shared Name' WHERE id=$1", [ids.first]);
+        await pool.query("DELETE FROM member_blueprints WHERE tag=ANY($1::text[])", [tagCases.map((row) => row[1])]);
       }
     });
 

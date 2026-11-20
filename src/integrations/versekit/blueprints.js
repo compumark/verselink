@@ -58,15 +58,18 @@ const parseLimit = (params) => {
   return Number.isSafeInteger(value) && value >= 1 && value <= 1000 ? { value } : { error: true };
 };
 
-// SCMDB ownership is authoritative. Reference rows supply labels only; the
-// fallback order is member snapshot name, public SCMDB blueprint tag, then a
-// stable generic label. Name normalization and the final grouping intentionally
-// merge labels which collide because the v1 response has no blueprint ID.
+const representableRow = (row) => typeof row.name === "string" && row.name.trim()
+  && row.name.length <= MAX_NAME_LENGTH && typeof row.name_key === "string"
+  && row.name_key.length <= MAX_NAME_LENGTH && Array.isArray(row.holders)
+  && row.holders.every((holder) => typeof holder === "string" && holder.trim() && holder.length <= MAX_NAME_LENGTH);
+
+// SCMDB ownership is authoritative. Canonicalize labels once per SCMDB tag
+// before combining tag rows whose public names collide in the v1 response.
 const BLUEPRINT_ROWS = `
   WITH owned AS (
     SELECT
-      lower(regexp_replace(COALESCE(NULLIF(btrim(r.product_name), ''), NULLIF(btrim(m.product_name), ''), NULLIF(btrim(m.tag), ''), 'Unknown blueprint'), '\\s+', ' ', 'g')) AS name_key,
-      regexp_replace(COALESCE(NULLIF(btrim(r.product_name), ''), NULLIF(btrim(m.product_name), ''), NULLIF(btrim(m.tag), ''), 'Unknown blueprint'), '\\s+', ' ', 'g') AS name,
+      m.tag,
+      NULLIF(regexp_replace(btrim(m.product_name), '\\s+', ' ', 'g'), '') AS snapshot_name,
       COALESCE(NULLIF(regexp_replace(btrim(u.verselink_name), '\\s+', ' ', 'g'), ''),
                NULLIF(regexp_replace(btrim(u.display_name), '\\s+', ' ', 'g'), ''), 'Member') AS holder
     FROM member_blueprints m
@@ -74,11 +77,25 @@ const BLUEPRINT_ROWS = `
       AND c.connection_status='connected' AND c.revoked_at IS NULL
     JOIN app_users u ON u.id=c.app_user_id AND u.account_status='active'
     JOIN group_members gm ON gm.group_id=$1 AND gm.app_user_id=u.id
-    LEFT JOIN reference_blueprints r ON r.tag=m.tag
+  ), tag_groups AS (
+    SELECT o.tag,
+      COALESCE(
+        NULLIF(regexp_replace(btrim(r.product_name), '\\s+', ' ', 'g'), ''),
+        min(o.snapshot_name COLLATE "C"),
+        NULLIF(regexp_replace(btrim(o.tag), '\\s+', ' ', 'g'), ''),
+        'Unknown blueprint'
+      ) AS name,
+      array_agg(DISTINCT o.holder ORDER BY o.holder) AS holders
+    FROM owned o
+    LEFT JOIN reference_blueprints r ON r.tag=o.tag
+    GROUP BY o.tag, r.product_name
+  ), named_tags AS (
+    SELECT lower(name) AS name_key, name, holder
+    FROM tag_groups CROSS JOIN LATERAL unnest(holders) AS holder
   ), grouped AS (
     SELECT name_key, min(name COLLATE "C") AS name,
       array_agg(DISTINCT holder ORDER BY holder) AS holders
-    FROM owned
+    FROM named_tags
     WHERE name_key <> ''
     GROUP BY name_key
   )
@@ -114,6 +131,7 @@ export const createBlueprintsHandler = ({ db, groupId, tokenStore, cursorCodec, 
       let snapshot = cursor?.s;
       if (!snapshot) {
         const top = await client.query(`${BLUEPRINT_ROWS} ORDER BY name_key COLLATE "C" DESC LIMIT 1`, [groupId]);
+        if (top.rows[0] && !representableRow(top.rows[0])) throw new Error("SCMDB blueprint name or holder cannot be represented by VerseKit v1");
         snapshot = top.rows[0]?.name_key || null;
       }
       if (!snapshot) {
@@ -127,12 +145,7 @@ export const createBlueprintsHandler = ({ db, groupId, tokenStore, cursorCodec, 
         ORDER BY name_key COLLATE "C" LIMIT $4`, [groupId, snapshot, cursor?.l || null, parsedLimit.value + 1]);
       const hasMore = page.rows.length > parsedLimit.value;
       const rows = page.rows.slice(0, parsedLimit.value);
-      for (const row of rows) {
-        if (typeof row.name !== "string" || !row.name.trim() || row.name.length > MAX_NAME_LENGTH
-            || !Array.isArray(row.holders) || row.holders.some((holder) => typeof holder !== "string" || !holder.trim() || holder.length > 200)) {
-          throw new Error("SCMDB blueprint name or holder cannot be represented by VerseKit v1");
-        }
-      }
+      for (const row of rows) if (!representableRow(row)) throw new Error("SCMDB blueprint name or holder cannot be represented by VerseKit v1");
       const last = rows.at(-1)?.name_key;
       const nextCursor = hasMore && last ? cursorCodec.encode({ v: 1, scope: "blueprints:read", s: snapshot, l: last }, groupId, userId) : null;
       await client.query("COMMIT");
