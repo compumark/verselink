@@ -243,7 +243,7 @@ test("PostgreSQL cleanup preflight blocks active instances and quiesced apply is
       VERSELINK_APP_URL: "http://localhost:3000", SCMDB_SINK_BASE_URL: "https://sink.example.test/v1/scmdb"
     } });
     consentPage = await fetch(`${runtime.baseUrl}/device`, { headers: { cookie: `bp_session=${sessionToken}` } });
-    assert.match(await consentPage.text(), /Signed in as <strong>[^<]+<\/strong>/, "changing only the VerseKit key leaves the Sink-backed browser login valid");
+    assert.match(await consentPage.text(), /<span>SIGNED IN AS<\/span><strong>Legacy Test Member<\/strong>/, "changing only the VerseKit key preserves the authenticated VerseLink member identity");
     assert.equal(await rotatedStore.authenticateAccess(currentTokens.access_token), null, "VerseKit key rotation rejects old access credentials");
     assert.deepEqual(await rotatedStore.refresh({ refreshToken: currentTokens.refresh_token, clientId: "versekit" }), { error: "invalid_grant" },
       "VerseKit key rotation rejects old refresh credentials");
