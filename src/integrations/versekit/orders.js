@@ -135,11 +135,11 @@ const decodeCanonicalBase64url = (value) => {
   return bytes.toString("base64url") === value ? bytes : null;
 };
 
-export const createOrdersCursorCodec = (pepper) => {
-  if (typeof pepper !== "string" || Buffer.byteLength(pepper) < 32) throw new Error("VerseKit cursor signing requires the configured secret pepper");
+export const createOrdersCursorCodec = (tokenPepper) => {
+  if (typeof tokenPepper !== "string" || Buffer.byteLength(tokenPepper, "utf8") < 32) throw new Error("VerseKit cursor signing requires the configured secret pepper");
   // HMAC with a distinct context derives an orders-cursor-only key. OAuth token
   // hashes and raw credentials are never used as cursor signing material.
-  const signingKey = createHmac("sha256", Buffer.from(pepper, "utf8")).update(CURSOR_KEY_CONTEXT, "utf8").digest();
+  const signingKey = createHmac("sha256", Buffer.from(tokenPepper, "utf8")).update(CURSOR_KEY_CONTEXT, "utf8").digest();
   const signatureFor = (encodedPayload) => createHmac("sha256", signingKey)
     .update(CURSOR_MAC_CONTEXT, "utf8").update(encodedPayload, "ascii").digest();
   const encode = (payload, groupId) => {

@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
+export const VERSEKIT_TEST_TOKEN_PEPPER = 'versekit-vk10-independent-test-pepper-with-at-least-32-bytes';
+
 const reservePort = () => new Promise((resolve, reject) => {
   const socket = createServer();
   socket.once('error', reject);
@@ -69,6 +71,7 @@ export const startMissionTestServer = async ({ databaseUrl, pepper, extraEnv = {
         LOG_LEVEL: 'ERROR',
         NODE_ENV: 'test',
         SINK_TOKEN_PEPPER: pepper,
+        VERSEKIT_TOKEN_PEPPER: VERSEKIT_TEST_TOKEN_PEPPER,
         SCMDB_SINK_BASE_URL: '',
         DISCORD_BOT_TOKEN: '',
         DISCORD_ADMIN_USER_ID: '',

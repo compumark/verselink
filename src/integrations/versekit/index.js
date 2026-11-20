@@ -13,12 +13,15 @@ import { assertOrdersReadiness, createOrdersCursorCodec, createOrdersHandler } f
 
 const implementedScopes = Object.freeze(["orders:read"]);
 
-export const createVersekitAdapter = async ({ env, db, pepper, capabilities = [], deviceCodeLimiter, tokenLimiter,
+export const createVersekitAdapter = async ({ env, db, tokenPepper, capabilities = [], deviceCodeLimiter, tokenLimiter,
   getSessionContext = async () => null, getCurrentAppUser = async () => null, getSessionToken = () => null, sameOrigin = () => false,
   consentLimiter, revokeLimiter, meLimiter, ordersLimiter, requestBodyDeadlineMs = VERSEKIT_FORM_BODY_DEADLINE_MS,
   maxRetainedGrants = VERSEKIT_MAX_RETAINED_GRANTS, quotaPolicy }) => {
   const config = parseVersekitConfig(env);
   if (!config) return null;
+  if (typeof tokenPepper !== "string" || Buffer.byteLength(tokenPepper, "utf8") < 32) {
+    throw new Error("VERSEKIT_TOKEN_PEPPER must provide at least 32 UTF-8 bytes when VerseKit is enabled");
+  }
   let result;
   try { result = await db.query("SELECT id, name FROM blueprint_groups WHERE id = $1", [config.groupId]); }
   catch { throw new Error("VERSEKIT_GROUP_ID lookup failed"); }
@@ -33,14 +36,11 @@ export const createVersekitAdapter = async ({ env, db, pepper, capabilities = []
       || capabilities.some((scope) => !STANDARD_SCOPES.includes(scope) || !implementedScopes.includes(scope))) {
     throw new Error("VerseKit capabilities must be a unique subset of the standard scopes");
   }
-  if (typeof pepper !== "string" || Buffer.byteLength(pepper) < 32) {
-    throw new Error("SINK_TOKEN_PEPPER must provide at least 32 bytes when VerseKit is enabled");
-  }
   const activeScopes = Object.freeze([...capabilities]);
   if (activeScopes.includes("orders:read")) await assertOrdersReadiness({ db, groupId: context.groupId });
   await initializeVersekitSchema(db, quotaPolicy);
   await activateVersekitAuthorizationGroup(db, context.groupId);
-  const tokenStore = new VersekitTokenStore({ db, codec: createTokenCodec(pepper), groupId: context.groupId, operationalScopes: activeScopes, maxRetainedGrants });
+  const tokenStore = new VersekitTokenStore({ db, codec: createTokenCodec(tokenPepper), groupId: context.groupId, operationalScopes: activeScopes, maxRetainedGrants });
   let cleanupRunning = false;
   const cleanupTimer = setInterval(async () => {
     if (cleanupRunning) return;
@@ -54,8 +54,8 @@ export const createVersekitAdapter = async ({ env, db, pepper, capabilities = []
     } finally { cleanupRunning = false; }
   }, 15 * 60_000);
   cleanupTimer.unref?.();
-  const codec = createTokenCodec(pepper);
-  const cursorCodec = createOrdersCursorCodec(pepper);
+  const codec = createTokenCodec(tokenPepper);
+  const cursorCodec = createOrdersCursorCodec(tokenPepper);
   const discovery = buildDiscovery({ publicOrigin: context.publicOrigin, groupName: context.groupName, operationalScopes: activeScopes });
   const incompatibleDiagnostics = new Map();
   const onOrdersIncompatible = (reason) => {

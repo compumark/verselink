@@ -17,11 +17,11 @@ import { VersekitTokenStore } from "../src/integrations/versekit/store.js";
 import { VERSEKIT_FORM_BODY_LIMIT } from "../src/integrations/versekit/request-form.js";
 import { createRequestRateLimiter } from "../src/rate-limit.js";
 import { resolveC6TestDatabaseUrl } from "./helpers/c6-test-database.js";
-import { createSession, createTestPool, startMissionTestServer, stopMissionTestServer } from "./helpers/mission-integration.js";
+import { createSession, createTestPool, startMissionTestServer, stopMissionTestServer, VERSEKIT_TEST_TOKEN_PEPPER } from "./helpers/mission-integration.js";
 
 const groupId = "01234567-89ab-4cde-8fab-0123456789ab";
 const enabled = { VERSEKIT_ENABLED: "true", VERSEKIT_GROUP_ID: groupId, VERSEKIT_PUBLIC_URL: "https://verse.example.org/" };
-const testPepper = "vk03-unit-test-pepper-with-at-least-32-bytes";
+const testPepper = VERSEKIT_TEST_TOKEN_PEPPER;
 const testQuotaPolicy = Object.freeze({ capacity: 4096, refillIntervalSeconds: 3600 });
 const response = () => ({
   headersSent: false, writableEnded: false, destroyed: false, status: null, headers: null, body: "", listeners: new Map(), pendingHeaders: {},
@@ -49,6 +49,19 @@ test("VerseKit is disabled unless the flag is exactly true", async () => {
     assert.equal(adapter, null);
   }
   assert.equal(parseVersekitConfig(enabled).groupId, groupId);
+});
+
+test("enabled VerseKit requires a valid independent UTF-8 pepper before database access", async () => {
+  for (const tokenPepper of [undefined, "", "x".repeat(31), "é".repeat(15)]) {
+    let touched = false;
+    await assert.rejects(createVersekitAdapter({
+      env: enabled,
+      tokenPepper,
+      db: { async query() { touched = true; throw new Error("database should not be queried"); } }
+    }), /VERSEKIT_TOKEN_PEPPER must provide at least 32 UTF-8 bytes/);
+    assert.equal(touched, false);
+  }
+  assert.equal(Buffer.byteLength("é".repeat(16), "utf8"), 32);
 });
 
 test("enabled configuration requires one UUID and a strict HTTPS origin", () => {
@@ -80,7 +93,7 @@ test("enabled adapter resolves exactly the configured existing group", async () 
       if (/FROM material_orders/.test(sql)) return { rowCount: 0, rows: [] };
       return /SELECT group_id FROM versekit_authorization_config/.test(sql) ? { rowCount: 1, rows: [{ group_id: groupId }] } : { rowCount: 1, rows: [] };
     }, release() {} }; } };
-  const router = await createVersekitAdapter({ env: enabled, db, pepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
+  const router = await createVersekitAdapter({ env: enabled, db, tokenPepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
   assert.equal(typeof router, "function");
   assert.deepEqual(queries[0].params, [groupId]);
   assert.match(queries[0].sql, /FROM blueprint_groups WHERE id = \$1/);
@@ -95,8 +108,8 @@ test("enabled adapter resolves exactly the configured existing group", async () 
   assert.equal((await call(router, "GET", "/versekit/v1/orders?group_id=another")).res.status, 401);
   assert.ok(queries.some((query) => /CREATE TABLE IF NOT EXISTS versekit_device_grants/.test(query.sql)));
   assert.equal(queries.filter((q) => /SELECT id, name FROM blueprint_groups WHERE id/.test(q.sql)).length, 1);
-  await assert.rejects(createVersekitAdapter({ env: enabled, pepper: testPepper, db: { query: async () => ({ rows: [] }) } }), /existing group/);
-  await assert.rejects(createVersekitAdapter({ env: enabled, pepper: testPepper, db: { query: async () => ({ rows: [{ name: "x".repeat(81) }] }) } }), /group name/);
+  await assert.rejects(createVersekitAdapter({ env: enabled, tokenPepper: testPepper, db: { query: async () => ({ rows: [] }) } }), /existing group/);
+  await assert.rejects(createVersekitAdapter({ env: enabled, tokenPepper: testPepper, db: { query: async () => ({ rows: [{ name: "x".repeat(81) }] }) } }), /group name/);
 });
 
 test("discovery builder emits the exact root-host v1 shape for tested future scopes", () => {
@@ -213,10 +226,10 @@ test("global token bucket coordinates concurrent grants, refills and transaction
     pool = await createTestPool(databaseUrl);
     await pool.query("INSERT INTO blueprint_groups(id,name) VALUES($1,'VK03 quota test org')", [group]);
     const adapter = await createVersekitAdapter({ env: { ...enabled, VERSEKIT_GROUP_ID: group }, db: pool,
-      pepper, capabilities: ["orders:read"], quotaPolicy });
+      tokenPepper: testPepper, capabilities: ["orders:read"], quotaPolicy });
     assert.equal(typeof adapter, "function");
 
-    const codec = createTokenCodec(pepper);
+    const codec = createTokenCodec(testPepper);
     const store = new VersekitTokenStore({ db: pool, codec, groupId: group, operationalScopes: ["orders:read"] });
     const state = async () => {
       const [quota, grants] = await Promise.all([
@@ -245,7 +258,7 @@ test("global token bucket coordinates concurrent grants, refills and transaction
     // Repeated adapter initialization must validate the same test policy without resetting state.
     const beforeMatchingInit = current;
     await createVersekitAdapter({ env: { ...enabled, VERSEKIT_GROUP_ID: group }, db: pool,
-      pepper, capabilities: ["orders:read"], quotaPolicy });
+      tokenPepper: testPepper, capabilities: ["orders:read"], quotaPolicy });
     current = await state();
     assert.equal(current.tokens, beforeMatchingInit.tokens, "matching initialization preserves the current balance");
     assert.equal(current.updatedAt.getTime(), beforeMatchingInit.updatedAt.getTime(), "matching initialization preserves the refill timestamp");
@@ -319,7 +332,7 @@ test("global token bucket coordinates concurrent grants, refills and transaction
     assert.equal(current.grants, 7, "only successful quota admissions have grant rows");
 
     const httpAdapter = await createVersekitAdapter({ env: { ...enabled, VERSEKIT_GROUP_ID: group }, db: pool,
-      pepper, capabilities: ["orders:read"], quotaPolicy });
+      tokenPepper: testPepper, capabilities: ["orders:read"], quotaPolicy });
     httpServer = createServer((req, res) => httpAdapter(req, res, new URL(req.url, "http://127.0.0.1")));
     await new Promise((resolve, reject) => { httpServer.once("error", reject); httpServer.listen(0, "127.0.0.1", resolve); });
     const port = httpServer.address().port;
@@ -338,7 +351,7 @@ test("global token bucket coordinates concurrent grants, refills and transaction
 
     // Keep unread-body connection closure covered through the real endpoint on the same isolated adapter.
     const limitedAdapter = await createVersekitAdapter({ env: { ...enabled, VERSEKIT_GROUP_ID: group }, db: pool,
-      pepper, capabilities: ["orders:read"], quotaPolicy,
+      tokenPepper: testPepper, capabilities: ["orders:read"], quotaPolicy,
       deviceCodeLimiter: { consume: () => ({ allowed: false, retryAfter: 17 }) } });
     const limitedServer = createServer((req, res) => limitedAdapter(req, res, new URL(req.url, "http://127.0.0.1")));
     await new Promise((resolve, reject) => { limitedServer.once("error", reject); limitedServer.listen(0, "127.0.0.1", resolve); });
@@ -417,9 +430,9 @@ test("global token bucket and grant storage ceiling recover safely after cleanup
     await pool.query("INSERT INTO group_members(group_id,app_user_id,role) VALUES($1,$2,'member')", [group, userId]);
 
     const env = { ...enabled, VERSEKIT_GROUP_ID: group };
-    const adapter = await createVersekitAdapter({ env, db: pool, pepper, capabilities: ["orders:read"], quotaPolicy, maxRetainedGrants });
+    const adapter = await createVersekitAdapter({ env, db: pool, tokenPepper: testPepper, capabilities: ["orders:read"], quotaPolicy, maxRetainedGrants });
     assert.equal(typeof adapter, "function");
-    const codec = createTokenCodec(pepper);
+    const codec = createTokenCodec(testPepper);
     const store = new VersekitTokenStore({ db: pool, codec, groupId: group, operationalScopes: ["orders:read"], maxRetainedGrants });
     const createGrant = () => store.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] });
     const quotaState = async () => {
@@ -493,7 +506,7 @@ test("global token bucket and grant storage ceiling recover safely after cleanup
     assert.equal(quotaAfterStorageReject.updatedAt.getTime(), quotaBeforeStorageReject.updatedAt.getTime(), "storage failure rolls back refill timestamp changes");
 
     // The second adapter requests the exact same persisted policy and reports storage capacity through HTTP.
-    const storageAdapter = await createVersekitAdapter({ env, db: pool, pepper, capabilities: ["orders:read"], quotaPolicy, maxRetainedGrants });
+    const storageAdapter = await createVersekitAdapter({ env, db: pool, tokenPepper: testPepper, capabilities: ["orders:read"], quotaPolicy, maxRetainedGrants });
     quotaAfterStorageReject = await quotaState();
     assert.equal(quotaAfterStorageReject.tokens, quotaBeforeStorageReject.tokens, "matching adapter initialization does not reset quota balance");
     assert.equal(quotaAfterStorageReject.updatedAt.getTime(), quotaBeforeStorageReject.updatedAt.getTime(), "matching adapter initialization does not reset refill timestamp");
@@ -583,7 +596,7 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
   const scoped = new URL(safeUrl);
   scoped.searchParams.set("options", `-c search_path=${schema},public`);
   const databaseUrl = scoped.toString();
-  const pepper = "vk03-integration-test-pepper-with-more-than-thirty-two-bytes";
+  const pepper = "short-unchanged-sink-test";
   const realGroup = randomUUID();
   const anotherGroup = randomUUID();
   const startupDatabase = `vk03_start_${randomUUID().replaceAll("-", "")}`;
@@ -598,7 +611,7 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
   try {
     assert.match(schema, /^vk02_[a-f0-9]{32}$/);
     await admin.query(`CREATE SCHEMA "${schema}"`);
-    runtime = await startMissionTestServer({ databaseUrl, pepper, extraEnv: { VERSEKIT_ENABLED: "false", VERSEKIT_GROUP_ID: "malformed", VERSEKIT_PUBLIC_URL: "not an origin" } });
+    runtime = await startMissionTestServer({ databaseUrl, pepper, extraEnv: { VERSEKIT_ENABLED: "false", VERSEKIT_TOKEN_PEPPER: "", VERSEKIT_GROUP_ID: "malformed", VERSEKIT_PUBLIC_URL: "not an origin" } });
     assert.equal((await request("/healthz")).status, 200);
     assert.equal((await request("/login")).status, 200);
     assert.equal((await fetch(runtime.baseUrl + "/versekit/v1/device/code", { method: "POST", signal: AbortSignal.timeout(5_000) })).status, 404);
@@ -619,7 +632,7 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
     const otherOnlyMemberships = await pool.query("SELECT group_id FROM group_members WHERE app_user_id=$1", [otherOnlyId]);
     assert.deepEqual(otherOnlyMemberships.rows.map((row) => row.group_id), [anotherGroup]);
     await initializeVersekitSchema(pool, testQuotaPolicy);
-    const actual = { ...enabled, VERSEKIT_GROUP_ID: realGroup, VERSEKIT_PUBLIC_URL: "https://example.org" };
+    const actual = { ...enabled, VERSEKIT_GROUP_ID: realGroup, VERSEKIT_PUBLIC_URL: "https://example.org", VERSEKIT_TOKEN_PEPPER: testPepper };
 
     // The real server has no test quota injection: bootstrap and run it in its own database.
     if (!/^vk03_start_[a-f0-9]{32}$/.test(startupDatabase)) throw new Error("Invalid temporary startup database name");
@@ -631,8 +644,15 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
       const isolatedUrl = new URL(safeUrl); isolatedUrl.pathname = "/" + startupDatabase;
       startupDatabaseUrl = isolatedUrl.toString();
     } finally { await databaseAdmin.end(); }
-    let bootstrap = await startMissionTestServer({ databaseUrl: startupDatabaseUrl, pepper, extraEnv: { VERSEKIT_ENABLED: "false" } });
+    let bootstrap = await startMissionTestServer({ databaseUrl: startupDatabaseUrl, pepper, extraEnv: { VERSEKIT_ENABLED: "false", VERSEKIT_TOKEN_PEPPER: "" } });
     await stopMissionTestServer(bootstrap); bootstrap = null;
+    for (const tokenPepper of [undefined, "", "x".repeat(31)]) {
+      await assert.rejects(startMissionTestServer({
+        databaseUrl: startupDatabaseUrl,
+        pepper,
+        extraEnv: { ...enabled, VERSEKIT_TOKEN_PEPPER: tokenPepper }
+      }));
+    }
     const startupPool = await createTestPool(startupDatabaseUrl);
     try { await startupPool.query("INSERT INTO blueprint_groups(id,name) VALUES($1,'VK02 Test Org')", [realGroup]); }
     finally { await startupPool.end(); }
@@ -652,7 +672,7 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
         await stopMissionTestServer(runtime);
         runtime = null;
 
-        const store = new VersekitTokenStore({ db: restartPool, codec: createTokenCodec(pepper), groupId: realGroup, operationalScopes: ["orders:read"] });
+        const store = new VersekitTokenStore({ db: restartPool, codec: createTokenCodec(testPepper), groupId: realGroup, operationalScopes: ["orders:read"] });
         const issuePair = async () => {
           const grant = await store.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] });
           assert.equal(await store.consent({ grantId: grant.id, userId, scopes: ["orders:read"], approve: true }), true);
@@ -700,8 +720,8 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
       }
     });
 
-    assert.equal(typeof await createVersekitAdapter({ env: actual, db: pool, pepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] }), "function");
-    await assert.rejects(createVersekitAdapter({ env: { ...actual, VERSEKIT_GROUP_ID: randomUUID() }, db: pool }), /existing group/);
+    assert.equal(typeof await createVersekitAdapter({ env: actual, db: pool, tokenPepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] }), "function");
+    await assert.rejects(createVersekitAdapter({ env: { ...actual, VERSEKIT_GROUP_ID: randomUUID() }, db: pool, tokenPepper: testPepper }), /existing group/);
     assert.throws(() => parseVersekitConfig({ ...actual, VERSEKIT_GROUP_ID: "malformed" }), /VERSEKIT_GROUP_ID/);
 
     const store = new VersekitTokenStore({ db: pool, codec: createTokenCodec(testPepper), groupId: realGroup, operationalScopes: ["orders:read"] });
@@ -909,7 +929,7 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
       const third = await limited.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] });
       await assert.rejects(limited.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] }), (error) => error.code === "VERSEKIT_GRANT_CAPACITY");
       assert.equal(await count(), limit, "the final available slot is usable and rejection inserts no grant");
-      const httpAdapter = await createVersekitAdapter({ env: actual, db: pool, pepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"], maxRetainedGrants: limit });
+      const httpAdapter = await createVersekitAdapter({ env: actual, db: pool, tokenPepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"], maxRetainedGrants: limit });
       const httpServer = createServer((req, res) => httpAdapter(req, res, new URL(req.url, "http://127.0.0.1")));
       await new Promise((resolve, reject) => { httpServer.once("error", reject); httpServer.listen(0, "127.0.0.1", resolve); });
       try {
@@ -1087,15 +1107,15 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
           const env = { ...enabled };
           if (value === undefined) delete env.VERSEKIT_ENABLED;
           else env.VERSEKIT_ENABLED = value;
-          assert.equal(await createVersekitAdapter({ env, db: disabledDb, pepper: testPepper }), null);
+          assert.equal(await createVersekitAdapter({ env, db: disabledDb, tokenPepper: testPepper }), null);
         }
         assert.equal(intervals.length, 0, "disabled and invalid flag values register no cleanup timer");
-        await assert.rejects(createVersekitAdapter({ env: { ...enabled, VERSEKIT_GROUP_ID: "bad" }, db: pool, pepper: testPepper }), /VERSEKIT_GROUP_ID/);
+        await assert.rejects(createVersekitAdapter({ env: { ...enabled, VERSEKIT_GROUP_ID: "bad" }, db: pool, tokenPepper: testPepper }), /VERSEKIT_GROUP_ID/);
         const failedInitializationDb = { query: async (sql, params) => {
           if (typeof sql === "string" && sql.includes("CREATE TABLE IF NOT EXISTS versekit_device_grants")) throw new Error("injected schema initialization failure");
           return pool.query(sql, params);
         } };
-        await assert.rejects(createVersekitAdapter({ env: actual, db: failedInitializationDb, pepper: testPepper }), /injected schema initialization failure/);
+        await assert.rejects(createVersekitAdapter({ env: actual, db: failedInitializationDb, tokenPepper: testPepper }), /injected schema initialization failure/);
         assert.equal(intervals.length, 0, "invalid configuration and failed initialization leave no timer");
 
         let failCleanup = false;
@@ -1131,7 +1151,7 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
             };
           }
         };
-        const adapter = await createVersekitAdapter({ env: actual, db: scheduledDb, pepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
+        const adapter = await createVersekitAdapter({ env: actual, db: scheduledDb, tokenPepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
         assert.equal(typeof adapter, "function", "normal enabled adapter startup succeeds");
         assert.equal(intervals.length, 1, "enabled timer is registered after schema and adapter initialization");
         const timer = intervals[0];
@@ -1189,7 +1209,7 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
       };
       const sessionToken = "s".repeat(40);
       const adapter = await createVersekitAdapter({
-        env: actual, db: pool, pepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"], requestBodyDeadlineMs: 250,
+        env: actual, db: pool, tokenPepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"], requestBodyDeadlineMs: 250,
         deviceCodeLimiter: testLimiter("device", { limit: 10, windowMs: 10 * 60_000 }),
         tokenLimiter: testLimiter("token", { limit: 60, windowMs: 60_000 }),
         revokeLimiter: testLimiter("revoke", { limit: 30, windowMs: 60_000 }),
@@ -1628,7 +1648,7 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
       return found.rowCount ? { appUserId: found.rows[0].app_user_id } : null;
     };
     const adapter = await createVersekitAdapter({
-      env: actual, db: pool, pepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"],
+      env: actual, db: pool, tokenPepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"],
       deviceCodeLimiter: createRequestRateLimiter({ limit: 12, windowMs: 60_000 }),
       revokeLimiter: createRequestRateLimiter({ limit: 6, windowMs: 60_000 }),
       meLimiter: createRequestRateLimiter({ limit: 30, windowMs: 60_000 }),
@@ -1812,7 +1832,7 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
       const temporaryGroup = randomUUID();
       await pool.query("INSERT INTO blueprint_groups (id,name) VALUES ($1,'Temporary VerseKit Org')", [temporaryGroup]);
       await pool.query("INSERT INTO group_members (group_id,app_user_id,role) VALUES ($1,$2,'member')", [temporaryGroup, userId]);
-      await createVersekitAdapter({ env: { ...actual, VERSEKIT_GROUP_ID: temporaryGroup }, db: pool, pepper: testPepper,
+      await createVersekitAdapter({ env: { ...actual, VERSEKIT_GROUP_ID: temporaryGroup }, db: pool, tokenPepper: testPepper,
         quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
       const temporaryStore = new VersekitTokenStore({ db: pool, codec, groupId: temporaryGroup, operationalScopes: ["orders:read"] });
       const temporaryGrant = await temporaryStore.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] });
@@ -1822,7 +1842,7 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
       assert.equal(await temporaryStore.authenticateAccess(temporaryPair.access_token), null, "deleted group immediately invalidates access");
       assert.deepEqual(await temporaryStore.refresh({ refreshToken: temporaryPair.refresh_token, clientId: "versekit" }), { error: "invalid_grant" });
       assert.deepEqual((await postForm(tokenPath, tokenForm(created.body.device_code))).body, { error: "invalid_grant" });
-      await createVersekitAdapter({ env: actual, db: pool, pepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
+      await createVersekitAdapter({ env: actual, db: pool, tokenPepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
 
       const deniedCode = (await postForm("/versekit/v1/device/code", "client_id=versekit&scope=orders%3Aread")).body;
       const deniedRecord = await httpStore.findGrantByUserCode(deniedCode.user_code);
@@ -1882,19 +1902,19 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
         assert.deepEqual(markerAfterDisabled, markerBefore, "unobserved disabled settings do not change the persistent marker");
         assert.deepEqual(credentialAfterDisabled, credentialBefore, "unobserved disabled settings do not mutate credentials");
 
-        await createVersekitAdapter({ env: actual, db: pool, pepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
+        await createVersekitAdapter({ env: actual, db: pool, tokenPepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
         assert.deepEqual((await pool.query("SELECT group_id,updated_at FROM versekit_authorization_config WHERE id=true")).rows[0], markerBefore,
           "same-group reactivation preserves the marker generation");
         assert.equal((await store.authorizeAccess(pair.tokens.access_token, { operation: "orders:read" })).allowed, true,
           "valid Group A credentials survive a disabled pause and same-group reactivation");
 
-        await createVersekitAdapter({ env: { ...actual, VERSEKIT_GROUP_ID: anotherGroup }, db: pool, pepper: testPepper,
+        await createVersekitAdapter({ env: { ...actual, VERSEKIT_GROUP_ID: anotherGroup }, db: pool, tokenPepper: testPepper,
           quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
         assert.equal((await pool.query("SELECT status FROM versekit_device_grants WHERE id=$1", [pending.id])).rows[0].status, "denied",
           "an enabled A-to-B transition denies outstanding grants");
         assert.equal((await pool.query("SELECT revoked_at FROM versekit_token_families WHERE grant_id=$1", [pair.grant.id])).rows[0].revoked_at !== null, true,
           "an enabled A-to-B transition revokes the existing family");
-        await createVersekitAdapter({ env: actual, db: pool, pepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
+        await createVersekitAdapter({ env: actual, db: pool, tokenPepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
         assert.equal(await store.authenticateAccess(pair.tokens.access_token), null,
           "returning to A cannot reactivate credentials invalidated by an observed B activation");
       });
@@ -1962,7 +1982,7 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
 
       const historicalA = await issueApprovedPair();
       const pendingA = await store.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] });
-      await createVersekitAdapter({ env: { ...actual, VERSEKIT_GROUP_ID: anotherGroup }, db: pool, pepper: testPepper,
+      await createVersekitAdapter({ env: { ...actual, VERSEKIT_GROUP_ID: anotherGroup }, db: pool, tokenPepper: testPepper,
         quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
       assert.equal((await pool.query("SELECT status FROM versekit_device_grants WHERE id=$1", [pendingA.id])).rows[0].status, "denied",
         "group reconfiguration invalidates outstanding grants");
@@ -1975,7 +1995,7 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
       assert.equal(await store.authenticateAccess(historicalA.tokens.access_token), null, "switching A → B revokes A credentials");
       assert.deepEqual(await store.refresh({ refreshToken: historicalA.tokens.refresh_token, clientId: "versekit" }), { error: "invalid_grant" });
       assert.equal((await groupBStore.authorizeAccess(historicalB.access_token, { operation: "orders:read" })).allowed, true);
-      await createVersekitAdapter({ env: actual, db: pool, pepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
+      await createVersekitAdapter({ env: actual, db: pool, tokenPepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
       assert.equal(await store.authenticateAccess(historicalA.tokens.access_token), null, "switching back to A cannot reactivate its old token");
       assert.equal(await groupBStore.authenticateAccess(historicalB.access_token), null, "switching back to A revokes B credentials too");
       await assert.rejects(groupBStore.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] }), /configuration is no longer active/,
@@ -2067,7 +2087,7 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
         const deletingGroup = randomUUID();
         await pool.query("INSERT INTO blueprint_groups(id,name) VALUES($1,'Concurrent Delete Org')", [deletingGroup]);
         await pool.query("INSERT INTO group_members(group_id,app_user_id,role) VALUES($1,$2,'member')", [deletingGroup, userId]);
-        await createVersekitAdapter({ env: { ...actual, VERSEKIT_GROUP_ID: deletingGroup }, db: pool, pepper: testPepper,
+        await createVersekitAdapter({ env: { ...actual, VERSEKIT_GROUP_ID: deletingGroup }, db: pool, tokenPepper: testPepper,
           quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
         const deletingStore = new VersekitTokenStore({ db: pool, codec, groupId: deletingGroup, operationalScopes: ["orders:read"] });
         const deletingGrant = await deletingStore.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] });
@@ -2081,7 +2101,7 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
         await pool.query("DELETE FROM blueprint_groups WHERE id=$1", [deletingGroup]);
         assert.equal(await deletingStore.authenticateAccess(deletingPair.access_token), null);
         assert.deepEqual(await deletingStore.refresh({ refreshToken: deletingPair.refresh_token, clientId: "versekit" }), { error: "invalid_grant" });
-        await createVersekitAdapter({ env: actual, db: pool, pepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
+        await createVersekitAdapter({ env: actual, db: pool, tokenPepper: testPepper, quotaPolicy: testQuotaPolicy, capabilities: ["orders:read"] });
       });
     } finally {
       await new Promise((resolve) => adapterServer.close(resolve));
@@ -2137,7 +2157,7 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
       }
     }
     // A rejected lookup follows the same fail-closed adapter path without a listener.
-    await assert.rejects(createVersekitAdapter({ env: actual, db: { query: async () => { throw new Error("connection lost"); } } }), /VERSEKIT_GROUP_ID lookup failed/);
+    await assert.rejects(createVersekitAdapter({ env: actual, db: { query: async () => { throw new Error("connection lost"); } }, tokenPepper: testPepper }), /VERSEKIT_GROUP_ID lookup failed/);
   } finally {
     await stopMissionTestServer(runtime);
     await pool?.end();

@@ -10,7 +10,7 @@ The public default stack is portable and uses the Named Volumes `verselink-postg
 4. Repository URL: `https://github.com/compumark/verselink.git`
 5. Reference: `main`.
 6. Compose path: `docker-compose.yml`.
-7. Add `POSTGRES_PASSWORD` and `SINK_TOKEN_PEPPER` as Environment variables. If SCMDB synchronization is needed, also add `SCMDB_SINK_BASE_URL` with this deployment's public ingest base URL, for example `https://verselink.example.org/v1/scmdb`. To enable optional private registration DMs, add both `DISCORD_BOT_TOKEN` and `DISCORD_ADMIN_USER_ID` (the recipient's Discord user snowflake). The bot must be able to DM that user; delivery is best-effort and never blocks registration. Use separate values for Production and DEV when desired.
+7. Add `POSTGRES_PASSWORD` and the installation's existing `SINK_TOKEN_PEPPER` as Environment variables. Do not rotate or strengthen the Sink pepper to enable VerseKit. If enabling VerseKit, also set `VERSEKIT_ENABLED=true`, `VERSEKIT_GROUP_ID`, the public HTTPS `VERSEKIT_PUBLIC_URL`, and an independent `VERSEKIT_TOKEN_PEPPER` with at least 32 UTF-8 bytes (for example, generate a 64-character value using `openssl rand -hex 32`). Use different VerseKit peppers for DEV and PROD and keep each stable after use. If SCMDB synchronization is needed, also add `SCMDB_SINK_BASE_URL` with this deployment's public ingest base URL, for example `https://verselink.example.org/v1/scmdb`. To enable optional private registration DMs, add both `DISCORD_BOT_TOKEN` and `DISCORD_ADMIN_USER_ID` (the recipient's Discord user snowflake). The bot must be able to DM that user; delivery is best-effort and never blocks registration.
 8. Deploy the stack.
 9. Check container health and open VerseLink on port `3000` or through the reverse proxy.
 
@@ -73,7 +73,13 @@ No data copy, move, export/import migration, or volume migration is required. Co
 
 The repository also publishes Docker images through GitHub Container Registry. This is an additional distribution option; the existing Git/build deployment remains supported.
 
-For a Portainer **Web editor** deployment, use the self-contained GHCR example in the README. It uses direct quoted placeholders such as `'CHANGE_ME'`, `''`, and `https://verselink.example.org`, so it can be pasted and edited directly in Portainer. `PGPASSWORD` and `POSTGRES_PASSWORD` must be the same strong random password, and `SINK_TOKEN_PEPPER` must be a long random value that remains stable for an existing installation. Never commit real secrets.
+For a Portainer **Web editor** deployment, use the self-contained GHCR example in the README. It uses direct quoted placeholders such as `'CHANGE_ME'`, `''`, and `https://verselink.example.org`, so it can be pasted and edited directly in Portainer. `PGPASSWORD` and `POSTGRES_PASSWORD` must be the same strong random password. Keep the existing `SINK_TOKEN_PEPPER` unchanged; configure the separate `VERSEKIT_TOKEN_PEPPER` only when enabling VerseKit. Never commit real secrets.
+
+### Enabling VerseKit on an existing installation
+
+Keep the existing `SINK_TOKEN_PEPPER` exactly as configured. For first activation, use a separate DEV or PROD `VERSEKIT_TOKEN_PEPPER`, set the existing fixed `VERSEKIT_GROUP_ID` and public HTTPS origin, and set `VERSEKIT_ENABLED=true`. Missing or short VerseKit peppers fail startup closed. If VerseKit credentials may have been issued with the former shared pepper, first set `VERSEKIT_ENABLED=false` on every app replica and redeploy/restart all instances (or stop all app containers). Check every host/node and ensure no old enabled container remains. Merely blocking incoming VerseKit traffic does not stop the enabled adapter's scheduled cleanup timer. Then follow the read-only assessment and separately confirmed apply procedure in [the VerseKit integration guide](integrations/versekit-org-standard-v1.md). Apply requires `VERSEKIT_ENABLED=false` in the cleanup process and an explicit all-instances-quiesced confirmation. The cleanup affects only VerseKit grants, token families, token rows, and consent challenges; it is never run by application startup.
+
+Changing `VERSEKIT_TOKEN_PEPPER` invalidates VerseKit clients' existing grants, access/refresh tokens, consent challenges, and Orders cursors. Clients must reconnect. Keep the previous image and environment for rollback, but restore with VerseKit disabled; never change the Sink pepper as part of rotation or rollback.
 
 The Web editor example is intentionally different from Docker Compose or `.env`-based deployment. Compose deployments may continue using `${VARIABLE}` interpolation with `.env.example` as their template; the environment variable names and meanings are unchanged.
 

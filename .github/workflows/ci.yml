@@ -41,7 +41,18 @@ jobs:
         run: npm install
 
       - name: Check JavaScript syntax
-        run: node --check src/server.js
+        run: |
+          npm run check
+          find src test scripts -type f -name '*.js' -print0 | xargs -0 -n1 node --check
+
+      - name: Run VK-10 PostgreSQL key and cleanup tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/versekit-pepper.tap"
+          if ! node --test --test-reporter=tap test/versekit-pepper.test.js >"$output" 2>&1; then cat "$output"; exit 1; fi
+          cat "$output"
+          grep -qx '# skipped 0' "$output"
 
       - name: Repeat VK-05 PostgreSQL tests five times
         shell: bash

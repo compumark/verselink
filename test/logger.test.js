@@ -29,7 +29,7 @@ test("runtime logging override resets safely and is never persistent state", () 
 });
 
 test("redaction protects tokens, credentials and authorization values", () => {
-  const value = redact({ password: "secret", authorization: "Bearer abcdefghijklmnopqrstuvwxyz0123456789", cookie: "session=secret", session_token: "session-secret", recovery_token: "recovery-secret", DATABASE_URL: "postgresql://user:password@host/db", SINK_TOKEN_PEPPER: "pepper", DISCORD_BOT_TOKEN: "bot", DISCORD_WEBHOOK_URL: "webhook", UEX_API_TOKEN: "uex", token: "vl_abcdefghijklmnopqrstuvwxyz012345678901234567", nested: { cookie: "private" } });
+  const value = redact({ password: "secret", authorization: "Bearer abcdefghijklmnopqrstuvwxyz0123456789", cookie: "session=secret", session_token: "session-secret", recovery_token: "recovery-secret", DATABASE_URL: "postgresql://user:password@host/db", SINK_TOKEN_PEPPER: "pepper", VERSEKIT_TOKEN_PEPPER: "versekit-pepper", DISCORD_BOT_TOKEN: "bot", DISCORD_WEBHOOK_URL: "webhook", UEX_API_TOKEN: "uex", token: "vl_abcdefghijklmnopqrstuvwxyz012345678901234567", nested: { cookie: "private" } });
   assert.deepEqual(value.password, "[redacted]");
   assert.deepEqual(value.authorization, "[redacted]");
   assert.deepEqual(value.token, "[redacted]");
@@ -37,6 +37,7 @@ test("redaction protects tokens, credentials and authorization values", () => {
   assert.equal(value.recovery_token, "[redacted]");
   assert.equal(value.nested.cookie, "[redacted]");
   assert.equal(value.DATABASE_URL, "[redacted]");
+  assert.equal(value.VERSEKIT_TOKEN_PEPPER, "[redacted]");
 });
 
 test("redaction protects telemetry pairing codes and device credentials in fields and messages", () => {
