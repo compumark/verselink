@@ -9,7 +9,18 @@ const materialInventorySource = await readFile(new URL("../public/js/material-in
 const changelogSource = await readFile(new URL("../public/changelog.html", import.meta.url), "utf8");
 const changelogMobiglassSource = await readFile(new URL("../public/js/changelog-mobiglass.js", import.meta.url), "utf8");
 const mobiglassSource = await readFile(new URL("../public/mobiglass.html", import.meta.url), "utf8");
+const consentCssSource = await readFile(new URL("../public/device-consent.css", import.meta.url), "utf8");
 const aliasMobiglassSource = await readFile(new URL("../public/js/alias-mobiglass.js", import.meta.url), "utf8");
+
+test("VerseKit consent CSS uses one exact, enabled-only local route and the Mobiglass cyan palette", () => {
+  assert.match(serverSource, /versekitRouter && req\.method === "GET" && url\.pathname === "\/device-consent\.css"/);
+  assert.match(serverSource, /readFile\(join\(publicDir, "device-consent\.css"\)\)/);
+  assert.match(serverSource, /"content-type": "text\/css; charset=utf-8"/);
+  assert.match(consentCssSource, /--accent:\s*#21cfff/);
+  assert.match(consentCssSource, /@media \(max-width: 600px\)/);
+  assert.match(consentCssSource, /@media \(max-width: 360px\)/);
+  assert.match(consentCssSource, /:focus-visible/);
+});
 
 test("Mobiglass is the productive default UI", () => {
   assert.match(serverSource, /location: "\/mobiglass"/);

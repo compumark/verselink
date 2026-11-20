@@ -185,7 +185,7 @@ test("PostgreSQL cleanup preflight blocks active instances and quiesced apply is
       VERSELINK_APP_URL: "http://localhost:3000", SCMDB_SINK_BASE_URL: "https://sink.example.test/v1/scmdb"
     } });
     let consentPage = await fetch(`${runtime.baseUrl}/device`, { headers: { cookie: `bp_session=${sessionToken}` } });
-    assert.match(await consentPage.text(), /Signed in as <strong>Legacy Test Member<\/strong>/, "unchanged Sink pepper preserves the VerseLink browser session");
+    assert.match(await consentPage.text(), /<span>SIGNED IN AS<\/span><strong>Legacy Test Member<\/strong>/, "unchanged Sink pepper preserves the VerseLink browser session");
 
     const rejectedLegacyCsrf = await fetch(`${runtime.baseUrl}/device`, {
       method: "POST",
@@ -234,6 +234,12 @@ test("PostgreSQL cleanup preflight blocks active instances and quiesced apply is
     assert.equal((await fetch(`${runtime.baseUrl}/api/public/groups/${publicLinkToken}/blueprints`)).status, 200,
       "public-link hash lookup still works with the unchanged Sink pepper");
 
+    const beforeRotationConsent = await fetch(`${runtime.baseUrl}/device`, { headers: { cookie: `bp_session=${sessionToken}` } });
+    assert.equal(beforeRotationConsent.status, 200);
+    const beforeRotationHtml = await beforeRotationConsent.text();
+    const beforeRotationMember = /<span>SIGNED IN AS<\/span><strong>([^<]+)<\/strong>/.exec(beforeRotationHtml)?.[1];
+    assert.equal(beforeRotationMember, "vk10", "the authenticated member identity reflects the linked VerseLink account before VerseKit pepper rotation");
+
     await stopMissionTestServer(runtime); runtime = null;
 
     const rotatedVersekitPepper = `${VERSEKIT_PEPPER}-rotated`;
@@ -243,7 +249,9 @@ test("PostgreSQL cleanup preflight blocks active instances and quiesced apply is
       VERSELINK_APP_URL: "http://localhost:3000", SCMDB_SINK_BASE_URL: "https://sink.example.test/v1/scmdb"
     } });
     consentPage = await fetch(`${runtime.baseUrl}/device`, { headers: { cookie: `bp_session=${sessionToken}` } });
-    assert.match(await consentPage.text(), /Signed in as <strong>[^<]+<\/strong>/, "changing only the VerseKit key leaves the Sink-backed browser login valid");
+    const afterRotationHtml = await consentPage.text();
+    const afterRotationMember = /<span>SIGNED IN AS<\/span><strong>([^<]+)<\/strong>/.exec(afterRotationHtml)?.[1];
+    assert.equal(afterRotationMember, beforeRotationMember, "changing only the VerseKit key preserves the authenticated VerseLink member identity");
     assert.equal(await rotatedStore.authenticateAccess(currentTokens.access_token), null, "VerseKit key rotation rejects old access credentials");
     assert.deepEqual(await rotatedStore.refresh({ refreshToken: currentTokens.refresh_token, clientId: "versekit" }), { error: "invalid_grant" },
       "VerseKit key rotation rejects old refresh credentials");
@@ -284,7 +292,17 @@ test("PostgreSQL cleanup preflight blocks active instances and quiesced apply is
   } finally {
     await stopMissionTestServer(runtime);
     await pool?.end();
-    if (created) await admin.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
+    if (created) {
+      let remainingConnections = 0;
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        const result = await admin.query("SELECT count(*)::int AS count FROM pg_stat_activity WHERE datname=$1 AND pid<>pg_backend_pid()", [databaseName]);
+        remainingConnections = result.rows[0].count;
+        if (remainingConnections === 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      assert.equal(remainingConnections, 0, "all dedicated database connections close before teardown");
+      await admin.query(`DROP DATABASE "${databaseName}"`);
+    }
     await admin.end();
   }
 });

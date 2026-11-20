@@ -404,7 +404,14 @@ test("VerseKit order deliveries are atomic, idempotent across restart, and fixed
     await stopMissionTestServer(bootstrap);
     await pool?.end();
     if (databaseCreated) {
-      await admin.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1 AND pid<>pg_backend_pid()", [databaseName]);
+      let remainingConnections = 0;
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        const result = await admin.query("SELECT count(*)::int AS count FROM pg_stat_activity WHERE datname=$1 AND pid<>pg_backend_pid()", [databaseName]);
+        remainingConnections = result.rows[0].count;
+        if (remainingConnections === 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      assert.equal(remainingConnections, 0, "all dedicated database connections close before teardown");
       await admin.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
     }
     await admin.end();

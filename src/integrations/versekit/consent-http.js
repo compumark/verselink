@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { normalizeUserCode, safeEqualHex } from "./tokens.js";
 import { parseVersekitForm, readVersekitForm, rejectUnreadVersekitRequest } from "./request-form.js";
+
 const LABELS = Object.freeze({
   "stock:read": "View organization stock.",
   "stock:write": "Create or update organization stock.",
@@ -9,18 +10,38 @@ const LABELS = Object.freeze({
   "orders:read": "View organization orders.",
   "orders:write": "Report deliveries to organization orders."
 });
-const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
-const sendPage = (res, status, content) => {
-  res.writeHead(status, {
-    "content-type": "text/html; charset=utf-8", "cache-control": "no-store", pragma: "no-cache",
-    "x-content-type-options": "nosniff", "x-frame-options": "DENY", "referrer-policy": "same-origin",
-    "content-security-policy": "default-src 'none'; style-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
-  });
-  res.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VerseKit connection · VerseLink</title><style>body{font:16px system-ui,sans-serif;background:#101722;color:#edf2f7;margin:0;padding:2rem}.card{max-width:38rem;margin:5vh auto;background:#1b2735;border:1px solid #34465b;border-radius:12px;padding:2rem}h1{font-size:1.5rem}p,li{line-height:1.55}.muted{color:#bdc9d8}label{display:block;margin:.8rem 0}input[type=text]{box-sizing:border-box;width:100%;padding:.8rem;font:inherit;letter-spacing:.12em}button,.button{display:inline-block;border:0;border-radius:6px;padding:.75rem 1rem;margin:.5rem .4rem .2rem 0;font:inherit;cursor:pointer;background:#72d1a2;color:#10231a}.deny{background:#d49a9a;color:#261111}code{font-size:1rem}</style></head><body><main class="card">${content}</main></body></html>`);
+
+const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+})[char]);
+
+const pageFrame = (content) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>VerseKit authorization · VerseLink</title><link rel="stylesheet" href="/device-consent.css"></head><body><div class="authorization-shell"><header class="brand-header"><a class="brand" href="/mobiglass" aria-label="VerseLink home"><span class="brand-mark" aria-hidden="true"></span><span class="brand-copy"><strong>VERSE<span>LINK</span></strong><small>MOBIGLASS AUTHORIZATION</small></span></a><div class="header-status"><span class="status-dot" aria-hidden="true"></span><span>SECURE DEVICE LINK</span></div></header><main class="authorization-main">${content}</main><footer class="page-footer"><span>VERSELINK</span><span>DEVICE AUTHORIZATION</span></footer></div></body></html>`;
+
+const PAGE_HEADERS = Object.freeze({
+  "content-type": "text/html; charset=utf-8", "cache-control": "no-store", pragma: "no-cache",
+  "x-content-type-options": "nosniff", "x-frame-options": "DENY", "referrer-policy": "same-origin",
+  "content-security-policy": "default-src 'none'; style-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+});
+
+const sendPage = (res, status, content, extraHeaders = {}) => {
+  res.writeHead(status, { ...PAGE_HEADERS, ...extraHeaders });
+  res.end(pageFrame(content));
 };
-const errorPage = (res, message, status = 400) => sendPage(res, status, `<h1>VerseKit connection</h1><p>${escapeHtml(message)}</p><p class="muted">Return to VerseKit and try again, or close this page.</p>`);
+
+const stateHeading = (eyebrow, title, description = "") => `<header class="state-heading"><p class="eyebrow">${eyebrow}</p><h1>${title}</h1>${description ? `<p class="state-description">${description}</p>` : ""}</header>`;
+const detail = (label, value) => `<div class="identity-detail"><span>${label}</span><strong>${value}</strong></div>`;
+
+const identityPanel = (groupName, memberName = null) => `<section class="identity-panel" aria-label="Authorization identity">${detail("AUTHORIZATION PROVIDER", "VerseLink")}${detail("ORGANIZATION", escapeHtml(groupName))}${memberName ? detail("SIGNED IN AS", escapeHtml(memberName)) : ""}</section>`;
+
+const errorPage = (res, message, status = 400) => sendPage(res, status, `<section class="state-card state-error" role="alert">${stateHeading("AUTHORIZATION INTERRUPTED", "Request could not be completed", "VerseLink could not complete this device authorization request.")}<p class="error-copy">${escapeHtml(message)}</p><p class="support-copy">Return to VerseKit and try again, or close this page.</p></section>`);
+
+const parserErrorPage = (status) => {
+  const message = status === 413 ? "This form is larger than expected." : status === 408 ? "The form took too long to arrive." : "The form could not be read.";
+  return pageFrame(`<section class="state-card state-error" role="alert">${stateHeading("AUTHORIZATION INTERRUPTED", "Request could not be completed", "VerseLink could not read this device authorization form.")}<p class="error-copy">${message}</p><p class="support-copy">Reload the authorization page and try again.</p></section>`);
+};
+
 const readForm = async (req, res, deadlineMs) => {
-  const result = await readVersekitForm(req, res, { mode: "html", allowRepeatedScope: true, deadlineMs });
+  const result = await readVersekitForm(req, res, { mode: "html", allowRepeatedScope: true, deadlineMs, htmlResponse: parserErrorPage, htmlHeaders: PAGE_HEADERS });
   if (result.responded || result.error) return result;
   const values = parseVersekitForm(result.body, { allowRepeatedScope: true });
   if (!values) return null;
@@ -62,11 +83,11 @@ export const createConsentHandlers = ({ context, tokenStore, codec, getSessionCo
     if (req.method === "GET") {
       let identity;
       try { identity = await getIdentity(req); } catch { return rejectUnreadVersekitRequest(req, res, () => errorPage(res, "VerseLink could not verify your account. Please try again.", 503)); }
-      if (!identity) return sendPage(res, 200, `<h1>Connect VerseKit to VerseLink</h1><p>A current VerseLink login is required to approve access.</p><a class="button" href="/login">Log in to VerseLink</a>`);
+      if (!identity) return sendPage(res, 200, `<section class="state-card state-login">${stateHeading("SIGN-IN REQUIRED", "Sign in to continue", "An active VerseLink member session is required to authorize VerseKit for this organization.")}${identityPanel(context.groupName)}<div class="provider-panel"><span class="panel-label">REQUESTING APPLICATION</span><strong>VerseKit</strong><p>VerseLink will ask you to review each requested permission before access is granted.</p></div><a class="button button-primary" href="/login">Log in to VerseLink</a></section>`);
       const target = "lookup";
-      return sendPage(res, 200, `<h1>Connect VerseKit</h1><p>Organization: <strong>${escapeHtml(context.groupName)}</strong></p><p>Signed in as <strong>${escapeHtml(identity.name)}</strong>.</p><p>Enter the user code shown in your VerseKit desktop client. You will review the requested permissions before deciding.</p><form method="post" action="/device"><input type="hidden" name="action" value="lookup"><input type="hidden" name="csrf" value="${csrfFor(identity, target)}"><label for="user_code">VerseKit user code</label><input id="user_code" name="user_code" type="text" maxlength="11" autocomplete="off" required><button type="submit">Review request</button></form>`);
+      return sendPage(res, 200, `<section class="state-card state-code">${stateHeading("DEVICE AUTHORIZATION", "Connect VerseKit", "Enter the one-time user code shown in your VerseKit desktop client. You will review its requested permissions before deciding.")}${identityPanel(context.groupName, identity.name)}<div class="provider-panel"><span class="panel-label">REQUESTING APPLICATION</span><strong>VerseKit</strong><p>Access is limited to the permissions you choose for this organization.</p></div><form method="post" action="/device" class="code-form"><input type="hidden" name="action" value="lookup"><input type="hidden" name="csrf" value="${csrfFor(identity, target)}"><label for="user_code">VerseKit user code</label><input id="user_code" name="user_code" type="text" maxlength="11" autocomplete="off" autocapitalize="characters" spellcheck="false" required><button class="button button-primary" type="submit">Review request</button></form></section>`);
     }
-    if (req.method !== "POST") { rejectUnreadVersekitRequest(req, res, () => { res.writeHead(405, { allow: "GET, POST", "cache-control": "no-store" }); res.end(); }); return true; }
+    if (req.method !== "POST") { rejectUnreadVersekitRequest(req, res, () => sendPage(res, 405, `<section class="state-card state-error" role="alert">${stateHeading("UNSUPPORTED REQUEST", "Method not allowed", "Use the device authorization page in your browser.")}</section>`, { allow: "GET, POST" })); return true; }
     if (!sameOrigin(req)) return rejectUnreadVersekitRequest(req, res, () => errorPage(res, "This request could not be verified. Reload the page and try again.", 403));
     const rate = lookupLimiter.consume(req.socket?.remoteAddress || "unknown");
     if (!rate.allowed) return rejectUnreadVersekitRequest(req, res, () => errorPage(res, "Too many attempts. Please wait before trying again.", 429));
@@ -86,8 +107,8 @@ export const createConsentHandlers = ({ context, tokenStore, codec, getSessionCo
       catch { return errorPage(res, "VerseKit could not verify this request. Please try again.", 503); }
       if (!approval) return errorPage(res, "That code is invalid or no longer available.");
       const target = codec.hash("csrf_target", approval.challenge);
-      const scopeHtml = approval.scopes.map((scope) => `<li><code>${escapeHtml(scope)}</code> — ${escapeHtml(LABELS[scope] || "Access to the requested capability.")}<br><label><input type="checkbox" name="scope" value="${escapeHtml(scope)}"> Allow this permission</label></li>`).join("");
-      return sendPage(res, 200, `<h1>Review VerseKit access</h1><p>Organization: <strong>${escapeHtml(context.groupName)}</strong></p><p>VerseLink member: <strong>${escapeHtml(identity.name)}</strong></p><p>Requesting application: <strong>VerseKit</strong></p><p>Select only the permissions you approve. No permission is selected automatically.</p><form method="post" action="/device"><input type="hidden" name="action" value="approve"><input type="hidden" name="challenge" value="${escapeHtml(approval.challenge)}"><input type="hidden" name="csrf" value="${csrfFor(identity, target)}"><ul>${scopeHtml}</ul><button type="submit">Approve selected permissions</button></form><form method="post" action="/device"><input type="hidden" name="action" value="deny"><input type="hidden" name="challenge" value="${escapeHtml(approval.challenge)}"><input type="hidden" name="csrf" value="${csrfFor(identity, target)}"><button class="deny" type="submit">Deny</button></form>`);
+      const scopeHtml = approval.scopes.map((scope) => `<li class="permission-card"><div class="permission-copy"><code>${escapeHtml(scope)}</code><p>${escapeHtml(LABELS[scope] || "Access to the requested capability.")}</p></div><label class="permission-choice"><input type="checkbox" name="scope" value="${escapeHtml(scope)}"><span>Allow ${escapeHtml(scope)}</span></label></li>`).join("");
+      return sendPage(res, 200, `<section class="state-card state-review">${stateHeading("PERMISSION REVIEW", "Review VerseKit access", "VerseLink is the authorization provider. VerseKit is requesting access to specific data in this organization.")}${identityPanel(context.groupName, identity.name)}<section class="provider-panel" aria-label="Request details"><span class="panel-label">REQUESTING APPLICATION</span><strong>VerseKit</strong><p>Requesting application: <strong>VerseKit</strong>. Only the permissions selected below will be approved for this organization.</p></section><form method="post" action="/device" class="review-form"><input type="hidden" name="action" value="approve"><input type="hidden" name="challenge" value="${escapeHtml(approval.challenge)}"><input type="hidden" name="csrf" value="${csrfFor(identity, target)}"><fieldset class="permission-fieldset"><legend>Requested permissions</legend><p id="permissions-note" class="support-copy">Select each permission you want VerseKit to receive. None are selected automatically.</p><ul class="permission-list" aria-describedby="permissions-note">${scopeHtml}</ul></fieldset><button class="button button-primary" type="submit">Approve selected permissions</button></form><form method="post" action="/device" class="deny-form"><input type="hidden" name="action" value="deny"><input type="hidden" name="challenge" value="${escapeHtml(approval.challenge)}"><input type="hidden" name="csrf" value="${csrfFor(identity, target)}"><button class="button button-deny" type="submit">Deny request</button></form></section>`);
     }
     if (action === "approve" || action === "deny") {
       const challenge = form.get("challenge") || "";
@@ -99,7 +120,8 @@ export const createConsentHandlers = ({ context, tokenStore, codec, getSessionCo
       try { decided = await tokenStore.decideConsent({ challenge, userId: identity.userId, sessionHash: identity.sessionHash, scopes: action === "approve" ? scopes : [], approve: action === "approve" }); }
       catch { return errorPage(res, "VerseKit could not save your decision. Please try again.", 503); }
       if (!decided) return errorPage(res, "This request is no longer available or your authorization changed. Return to VerseKit and try again.", 400);
-      return sendPage(res, 200, `<h1>${action === "approve" ? "VerseKit access approved" : "VerseKit access denied"}</h1><p>${action === "approve" ? "Your decision was saved. Return to the VerseKit desktop client to continue." : "The request was denied. No tokens were issued."}</p>`);
+      const approved = action === "approve";
+      return sendPage(res, 200, `<section class="state-card state-result ${approved ? "state-success" : "state-denied"}" role="status">${stateHeading(approved ? "AUTHORIZATION SAVED" : "REQUEST DECLINED", approved ? "VerseKit access approved" : "VerseKit access denied", approved ? "Your decision was saved for this VerseLink organization." : "Your decision was saved. No tokens were issued.")}<div class="result-indicator"><span aria-hidden="true">${approved ? "✓" : "×"}</span><strong>${approved ? "APPROVED" : "DENIED"}</strong></div><p>${approved ? "Return to the VerseKit desktop client to continue." : "VerseKit will not receive access to this request."}</p></section>`);
     }
     return errorPage(res, "This request could not be processed.");
   };

@@ -58,7 +58,7 @@ export const rejectUnreadVersekitRequest = (req, res, writeResponse) => {
   }
 };
 
-const writeRejectedResponse = (req, res, mode, status) => {
+const writeRejectedResponse = (req, res, mode, status, htmlResponse, htmlHeaders) => {
   req.pause();
   const socket = req.socket;
   if (res.destroyed || res.writableEnded || socket?.destroyed) return;
@@ -68,12 +68,13 @@ const writeRejectedResponse = (req, res, mode, status) => {
   const problem = mode === "problem";
   const responseStatus = problem ? 400 : status;
   const body = html
-    ? `<!doctype html><html lang="en"><meta charset="utf-8"><title>VerseKit connection</title><p>Request rejected. Reload the page and try again.</p></html>`
+    ? (typeof htmlResponse === "function" ? htmlResponse(status) : `<!doctype html><html lang="en"><meta charset="utf-8"><title>VerseKit connection</title><p>Request rejected. Reload the page and try again.</p></html>`)
     : problem
       ? JSON.stringify({ type: "about:blank", status: responseStatus, code: "INVALID_BODY" })
       : JSON.stringify({ error: status === 408 ? "temporarily_unavailable" : "invalid_request" });
   res.writeHead(responseStatus, {
     "content-type": html ? "text/html; charset=utf-8" : problem ? "application/problem+json; charset=utf-8" : "application/json; charset=utf-8",
+    ...(html ? htmlHeaders : {}),
     "cache-control": "no-store",
     connection: "close",
     "content-length": String(Buffer.byteLength(body))
@@ -93,7 +94,7 @@ const writeRejectedResponse = (req, res, mode, status) => {
   res.end(body);
 };
 
-const readVersekitBody = (req, res, { mode, contentType, limit, deadlineMs }) => new Promise((resolve) => {
+const readVersekitBody = (req, res, { mode, contentType, limit, deadlineMs, htmlResponse, htmlHeaders }) => new Promise((resolve) => {
   let settled = false;
   let bytes = 0;
   const chunks = [];
@@ -127,7 +128,7 @@ const readVersekitBody = (req, res, { mode, contentType, limit, deadlineMs }) =>
     if (settled) return;
     settled = true;
     clearReaders(true);
-    writeRejectedResponse(req, res, mode, status);
+    writeRejectedResponse(req, res, mode, status, htmlResponse, htmlHeaders);
     resolve({ error: reason, responded: true });
   };
   const onData = (chunk) => {
@@ -174,10 +175,12 @@ const readVersekitBody = (req, res, { mode, contentType, limit, deadlineMs }) =>
 export const readVersekitForm = (req, res, {
   mode = "oauth",
   limit = VERSEKIT_FORM_BODY_LIMIT,
-  deadlineMs = VERSEKIT_FORM_BODY_DEADLINE_MS
+  deadlineMs = VERSEKIT_FORM_BODY_DEADLINE_MS,
+  htmlResponse,
+  htmlHeaders
 } = {}) => {
   return readVersekitBody(req, res, {
-    mode, limit, deadlineMs,
+    mode, limit, deadlineMs, htmlResponse, htmlHeaders,
     contentType: /^application\/x-www-form-urlencoded(?:\s*;|$)/i
   });
 };
