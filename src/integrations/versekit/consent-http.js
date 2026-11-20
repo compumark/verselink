@@ -13,7 +13,7 @@ const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => 
 const sendPage = (res, status, content) => {
   res.writeHead(status, {
     "content-type": "text/html; charset=utf-8", "cache-control": "no-store", pragma: "no-cache",
-    "x-content-type-options": "nosniff", "x-frame-options": "DENY", "referrer-policy": "no-referrer",
+    "x-content-type-options": "nosniff", "x-frame-options": "DENY", "referrer-policy": "same-origin",
     "content-security-policy": "default-src 'none'; style-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
   });
   res.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VerseKit connection · VerseLink</title><style>body{font:16px system-ui,sans-serif;background:#101722;color:#edf2f7;margin:0;padding:2rem}.card{max-width:38rem;margin:5vh auto;background:#1b2735;border:1px solid #34465b;border-radius:12px;padding:2rem}h1{font-size:1.5rem}p,li{line-height:1.55}.muted{color:#bdc9d8}label{display:block;margin:.8rem 0}input[type=text]{box-sizing:border-box;width:100%;padding:.8rem;font:inherit;letter-spacing:.12em}button,.button{display:inline-block;border:0;border-radius:6px;padding:.75rem 1rem;margin:.5rem .4rem .2rem 0;font:inherit;cursor:pointer;background:#72d1a2;color:#10231a}.deny{background:#d49a9a;color:#261111}code{font-size:1rem}</style></head><body><main class="card">${content}</main></body></html>`);
