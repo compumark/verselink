@@ -10,6 +10,7 @@ import { parseVersekitConfig } from "../src/integrations/versekit/config.js";
 import { buildDiscovery } from "../src/integrations/versekit/discovery.js";
 import { createVersekitAdapter } from "../src/integrations/versekit/index.js";
 import { sendAuthorizationFailure } from "../src/integrations/versekit/device-http.js";
+import { createConsentHandlers } from "../src/integrations/versekit/consent-http.js";
 import { createVersekitRouter } from "../src/integrations/versekit/router.js";
 import { activateVersekitAuthorizationGroup, initializeVersekitSchema } from "../src/integrations/versekit/schema.js";
 import { createTokenCodec, newUserCode, normalizeUserCode } from "../src/integrations/versekit/tokens.js";
@@ -40,6 +41,218 @@ const call = async (router, method, path) => {
   const handled = await router(req, res, new URL(path, "http://internal.invalid"));
   return { handled, res };
 };
+
+const callForm = async (router, fields) => {
+  const body = new URLSearchParams();
+  for (const [key, value] of Object.entries(fields)) {
+    for (const item of Array.isArray(value) ? value : [value]) body.append(key, item);
+  }
+  const req = Readable.from([Buffer.from(body.toString())]);
+  req.method = "POST";
+  req.headers = { "content-type": "application/x-www-form-urlencoded" };
+  req.socket = { remoteAddress: "127.0.0.1", destroyed: false, end() { this.destroyed = true; }, destroy() { this.destroyed = true; }, destroySoon() { this.destroyed = true; } };
+  const res = response();
+  const handled = await router(req, res, new URL("/device", "http://internal.invalid"));
+  return { handled, res };
+};
+
+test("VerseKit consent UI renders escaped standalone states and preserves native dynamic permission forms", async () => {
+  const codec = createTokenCodec(testPepper);
+  const sessionToken = "consent-ui-test-session-token-123456";
+  const requestedScopes = ["orders:read", "blueprints:read"];
+  let sameOrigin = true;
+  let allowLookups = true;
+  let challengeAvailable = true;
+  let lastDecision;
+  const tokenStore = {
+    db: { async query() { return { rowCount: 1 }; } },
+    operationalScopes: requestedScopes,
+    async createConsentChallenge() {
+      return challengeAvailable ? { challenge: "challenge-ui-test", scopes: requestedScopes } : null;
+    },
+    async decideConsent(decision) { lastDecision = decision; return true; }
+  };
+  const handler = createConsentHandlers({
+    context: { groupId, groupName: '<img src=x onerror="alert(1)">' },
+    tokenStore,
+    codec,
+    getSessionContext: async () => ({ appUserId: "ui-member" }),
+    getCurrentAppUser: async () => ({ id: "ui-member", display_name: "</strong><svg onload=alert(2)>", account_status: "active" }),
+    getSessionToken: async () => sessionToken,
+    sameOrigin: () => sameOrigin,
+    lookupLimiter: { consume: () => ({ allowed: allowLookups }) }
+  });
+
+  const codePage = (await call(handler, "GET", "/device")).res;
+  assert.equal(codePage.status, 200);
+  assert.match(codePage.body, /href="\/device-consent\.css"/);
+  assert.equal(codePage.headers["cache-control"], "no-store");
+  assert.equal(codePage.headers["x-frame-options"], "DENY");
+  assert.equal(codePage.headers["x-content-type-options"], "nosniff");
+  assert.equal(codePage.headers["referrer-policy"], "same-origin");
+  assert.equal(codePage.headers["content-security-policy"], "default-src 'none'; style-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
+  assert.doesNotMatch(codePage.body, /<script\b|https?:\/\//i);
+  assert.match(codePage.body, /VerseLink/);
+  assert.match(codePage.body, /REQUESTING APPLICATION/);
+  assert.match(codePage.body, /&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt;/);
+  assert.match(codePage.body, /&lt;\/strong&gt;&lt;svg onload=alert\(2\)&gt;/);
+  assert.doesNotMatch(codePage.body, /<img src=x|<svg onload/);
+  assert.match(codePage.body, /name="action" value="lookup"/);
+  assert.match(codePage.body, /name="csrf" value="[^"]+"/);
+  assert.match(codePage.body, /name="user_code"/);
+
+  const csrf = /name="csrf" value="([^"]+)"/.exec(codePage.body)?.[1];
+  const userCode = newUserCode();
+  const lookup = (await callForm(handler, { action: "lookup", csrf, user_code: userCode })).res;
+  assert.equal(lookup.status, 200);
+  assert.match(lookup.body, /Review VerseKit access/);
+  assert.match(lookup.body, /Requesting application: <strong>VerseKit<\/strong>/);
+  assert.match(lookup.body, /<code>orders:read<\/code>/);
+  assert.match(lookup.body, /<code>blueprints:read<\/code>/);
+  assert.equal((lookup.body.match(/name="scope"/g) || []).length, requestedScopes.length);
+  assert.doesNotMatch(lookup.body, /\bchecked(?:\s|=|>)/i);
+  assert.match(lookup.body, /name="action" value="approve"/);
+  assert.match(lookup.body, /name="action" value="deny"/);
+  assert.equal((lookup.body.match(/name="challenge"/g) || []).length, 2);
+  assert.equal((lookup.body.match(/name="csrf"/g) || []).length, 2);
+  assert.match(lookup.body, /<fieldset class="permission-fieldset">/);
+  assert.match(lookup.body, /<label class="permission-choice"><input type="checkbox" name="scope"/);
+
+  const challenge = /name="challenge" value="([^"]+)"/.exec(lookup.body)?.[1];
+  const reviewCsrf = /name="csrf" value="([^"]+)"/.exec(lookup.body)?.[1];
+  const approved = (await callForm(handler, { action: "approve", challenge, csrf: reviewCsrf, scope: "orders:read" })).res;
+  assert.equal(approved.status, 200);
+  assert.match(approved.body, /VerseKit access approved/);
+  assert.match(approved.body, /Return to the VerseKit desktop client/);
+  assert.deepEqual(lastDecision.scopes, ["orders:read"]);
+  assert.equal(lastDecision.approve, true);
+
+  const secondCsrf = /name="csrf" value="([^"]+)"/.exec(codePage.body)?.[1];
+  const secondReview = (await callForm(handler, { action: "lookup", csrf: secondCsrf, user_code: newUserCode() })).res;
+  const denied = (await callForm(handler, {
+    action: "deny",
+    challenge: /name="challenge" value="([^"]+)"/.exec(secondReview.body)?.[1],
+    csrf: /name="csrf" value="([^"]+)"/.exec(secondReview.body)?.[1]
+  })).res;
+  assert.equal(denied.status, 200);
+  assert.match(denied.body, /VerseKit access denied/);
+  assert.match(denied.body, /No tokens were issued/);
+  assert.deepEqual(lastDecision.scopes, []);
+  assert.equal(lastDecision.approve, false);
+
+  sameOrigin = false;
+  const rejectedOrigin = (await callForm(handler, { action: "lookup", csrf, user_code: userCode })).res;
+  assert.equal(rejectedOrigin.status, 403);
+  assert.match(rejectedOrigin.body, /could not be verified/);
+  assert.equal(rejectedOrigin.headers["referrer-policy"], "same-origin");
+  sameOrigin = true;
+
+  const invalidCode = (await callForm(handler, { action: "lookup", csrf, user_code: "not-a-code" })).res;
+  assert.equal(invalidCode.status, 400);
+  assert.match(invalidCode.body, /code is invalid or no longer available/);
+  challengeAvailable = false;
+  const expiredCode = (await callForm(handler, { action: "lookup", csrf, user_code: newUserCode() })).res;
+  assert.equal(expiredCode.status, 400);
+  assert.match(expiredCode.body, /code is invalid or no longer available/);
+  challengeAvailable = true;
+
+  allowLookups = false;
+  const limited = (await callForm(handler, { action: "lookup", csrf, user_code: userCode })).res;
+  assert.equal(limited.status, 429);
+  assert.match(limited.body, /Too many attempts/);
+  allowLookups = true;
+
+  const missingCsrf = (await callForm(handler, { action: "lookup", user_code: userCode })).res;
+  assert.equal(missingCsrf.status, 403);
+  const claims = JSON.parse(Buffer.from(csrf.split(".")[0], "base64url").toString("utf8"));
+  const expiredPayload = Buffer.from(JSON.stringify({ ...claims, exp: Date.now() - 1 })).toString("base64url");
+  const expiredCsrf = `${expiredPayload}.${codec.hash("csrf", expiredPayload)}`;
+  const expiredForm = (await callForm(handler, { action: "lookup", csrf: expiredCsrf, user_code: userCode })).res;
+  assert.equal(expiredForm.status, 403);
+  const tamperedCsrf = `${csrf.slice(0, -1)}${csrf.endsWith("A") ? "B" : "A"}`;
+  assert.equal((await callForm(handler, { action: "lookup", csrf: tamperedCsrf, user_code: userCode })).res.status, 403);
+
+  const noIdentity = createConsentHandlers({
+    context: { groupId, groupName: "Example Org" }, tokenStore, codec,
+    getSessionContext: async () => null, getCurrentAppUser: async () => null,
+    getSessionToken: async () => null, sameOrigin: () => true,
+    lookupLimiter: { consume: () => ({ allowed: true }) }
+  });
+  const loginPage = (await call(noIdentity, "GET", "/device")).res;
+  assert.equal(loginPage.status, 200);
+  assert.match(loginPage.body, /href="\/login"/);
+  assert.match(loginPage.body, /active VerseLink member session/);
+  const unauthPost = (await callForm(noIdentity, { action: "lookup", csrf: "x", user_code: userCode })).res;
+  assert.equal(unauthPost.status, 401);
+});
+
+test("VerseKit consent body rejections return protected fixed HTML and close unread connections", async () => {
+  const handler = createConsentHandlers({
+    context: { groupId, groupName: "Example Org" },
+    tokenStore: { db: { async query() { return { rowCount: 1 }; } }, operationalScopes: [] },
+    codec: createTokenCodec(testPepper),
+    getSessionContext: async () => null,
+    getCurrentAppUser: async () => null,
+    getSessionToken: async () => null,
+    sameOrigin: () => true,
+    lookupLimiter: { consume: () => ({ allowed: true }) },
+    requestBodyDeadlineMs: 10
+  });
+  const rejectedPost = async ({ contentType = "application/x-www-form-urlencoded", contentLength, chunks = [] } = {}) => {
+    const req = contentLength !== undefined && chunks.length === 0
+      ? new Readable({ read() {} })
+      : Readable.from(chunks.map((chunk) => Buffer.from(chunk)));
+    let paused = false;
+    const socket = {
+      remoteAddress: "127.0.0.1", destroyed: false, ended: false,
+      end() { this.ended = true; },
+      destroy() { this.destroyed = true; },
+      destroySoon() { this.destroyed = true; }
+    };
+    req.pause = () => { paused = true; return req; };
+    req.method = "POST";
+    req.headers = { origin: "https://verse.example.org", "content-type": contentType,
+      ...(contentLength === undefined ? {} : { "content-length": String(contentLength) }) };
+    req.socket = socket;
+    const res = response();
+    await handler(req, res, new URL("/device", "https://verse.example.org"));
+    await new Promise((resolve) => setImmediate(resolve));
+    return { req, res, socket, get paused() { return paused; } };
+  };
+  const expectedHeaders = {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+    pragma: "no-cache",
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY",
+    "referrer-policy": "same-origin",
+    "content-security-policy": "default-src 'none'; style-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    connection: "close"
+  };
+  const assertRejected = (result, status, safeMessage) => {
+    assert.equal(result.res.status, status);
+    for (const [name, value] of Object.entries(expectedHeaders)) assert.equal(result.res.headers[name], value, `${name} header`);
+    assert.match(result.res.body, new RegExp(safeMessage));
+    assert.match(result.res.body, /Request could not be completed/);
+    assert.doesNotMatch(result.res.body, /sensitive-form-secret|private-user-code/i);
+    assert.equal(result.paused, true, "unread request body is paused");
+    assert.equal(result.socket.destroyed, true, "connection is closed after the response flushes");
+  };
+
+  const invalidType = await rejectedPost({
+    contentType: "text/plain",
+    chunks: ["sensitive-form-secret private-user-code"]
+  });
+  assertRejected(invalidType, 400, /The form could not be read\./);
+
+  const timedOut = await rejectedPost({ contentLength: 64 });
+  assertRejected(timedOut, 408, /The form took too long to arrive\./);
+
+  const oversized = await rejectedPost({
+    chunks: [`action=lookup&user_code=private-user-code&pad=${"x".repeat(VERSEKIT_FORM_BODY_LIMIT)}`]
+  });
+  assertRejected(oversized, 413, /This form is larger than expected\./);
+});
 
 test("VerseKit is disabled unless the flag is exactly true", async () => {
   for (const value of [undefined, "", "false", "TRUE", "1", " true ", "malformed"]) {
@@ -614,6 +827,8 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
     runtime = await startMissionTestServer({ databaseUrl, pepper, extraEnv: { VERSEKIT_ENABLED: "false", VERSEKIT_TOKEN_PEPPER: "", VERSEKIT_GROUP_ID: "malformed", VERSEKIT_PUBLIC_URL: "not an origin" } });
     assert.equal((await request("/healthz")).status, 200);
     assert.equal((await request("/login")).status, 200);
+    assert.equal((await request("/device-consent.css")).status, 404, "the consent stylesheet is unavailable when VerseKit is disabled");
+    assert.equal((await request("/device-consent.css/../server.js")).status, 404, "the consent stylesheet route does not expose arbitrary files");
     assert.equal((await fetch(runtime.baseUrl + "/versekit/v1/device/code", { method: "POST", signal: AbortSignal.timeout(5_000) })).status, 404);
     assert.equal((await request("/.well-known/versekit-org.json")).status, 404);
     const absentVersekitTable = await admin.query("SELECT to_regclass($1) AS table_name", [schema + ".versekit_device_grants"]);
@@ -1683,12 +1898,25 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
       assert.equal(browserPage.status, 200);
       assert.match(browserHtml, /VK02 Test Org/);
       assert.match(browserHtml, /VK03 Test Member/);
+      assert.match(browserHtml, /href="\/device-consent\.css"/);
+      assert.match(browserHtml, /AUTHORIZATION PROVIDER/);
+      assert.match(browserHtml, /REQUESTING APPLICATION/);
       assert.match(browserHtml, /name="user_code"/);
       assert.doesNotMatch(browserHtml, /checked/);
       assert.equal(browserPage.headers.get("cache-control"), "no-store");
       assert.equal(browserPage.headers.get("referrer-policy"), "same-origin",
         "native consent form submissions retain a same-origin referrer policy compatible with Origin validation");
+      assert.equal(browserPage.headers.get("x-frame-options"), "DENY");
+      assert.equal(browserPage.headers.get("x-content-type-options"), "nosniff");
+      assert.equal(browserPage.headers.get("content-security-policy"), "default-src 'none'; style-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
       assert.equal(browserPage.headers.get("content-security-policy")?.includes("frame-ancestors 'none'"), true);
+      const nonmemberSession = await createSession(pool, pepper, otherOnlyId);
+      const nonmemberPage = await fetch(adapterUrl + "/device", { headers: { cookie: `bp_session=${nonmemberSession}` }, signal: AbortSignal.timeout(5_000) });
+      const nonmemberHtml = await nonmemberPage.text();
+      assert.equal(nonmemberPage.status, 200);
+      assert.match(nonmemberHtml, /href="\/login"/);
+      assert.match(nonmemberHtml, /VK02 Test Org/);
+      assert.doesNotMatch(nonmemberHtml, /Other Group Member|Other Private Org|name="user_code"/);
       const csrfLookup = /name="csrf" value="([^"]+)"/.exec(browserHtml)?.[1];
       assert.ok(csrfLookup);
       assert.deepEqual((await postForm("/versekit/v1/device/code", "scope=orders%3Aread")).body, { error: "invalid_request" });
@@ -1715,11 +1943,28 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
       assert.equal(storedGrant.rows[0].user_code_hash, codec.hash("user_code", created.body.user_code));
 
       const submitBrowser = (fields, origin = adapterUrl) => fetch(adapterUrl + "/device", {
-        method: "POST", headers: { ...browserHeaders, origin, "content-type": "application/x-www-form-urlencoded" },
+        method: "POST", headers: { ...browserHeaders, ...(origin === null ? {} : { origin }), "content-type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams(fields), signal: AbortSignal.timeout(5_000)
       });
+      assert.equal((await submitBrowser({ action: "lookup", csrf: csrfLookup, user_code: "ABCDF-GHJKM" }, null)).status, 403,
+        "a missing Origin remains rejected even with a valid CSRF token");
       assert.equal((await submitBrowser({ action: "lookup", user_code: "ABCDF-GHJKM" })).status, 403, "missing CSRF is rejected");
       assert.equal((await submitBrowser({ action: "lookup", csrf: "invalid", user_code: "ABCDF-GHJKM" })).status, 403, "invalid CSRF is rejected");
+      const csrfParts = csrfLookup.split(".");
+      const csrfClaims = JSON.parse(Buffer.from(csrfParts[0], "base64url").toString("utf8"));
+      const expiredCsrfPayload = Buffer.from(JSON.stringify({ ...csrfClaims, exp: Date.now() - 1 })).toString("base64url");
+      const expiredCsrf = `${expiredCsrfPayload}.${codec.hash("csrf", expiredCsrfPayload)}`;
+      assert.equal((await submitBrowser({ action: "lookup", csrf: expiredCsrf, user_code: "ABCDF-GHJKM" })).status, 403, "expired CSRF is rejected");
+      const tamperedCsrf = `${csrfLookup.slice(0, -1)}${csrfLookup.endsWith("A") ? "B" : "A"}`;
+      assert.equal((await submitBrowser({ action: "lookup", csrf: tamperedCsrf, user_code: "ABCDF-GHJKM" })).status, 403, "tampered CSRF is rejected");
+      const invalidCodeResponse = await submitBrowser({ action: "lookup", csrf: csrfLookup, user_code: "not-a-code" });
+      assert.equal(invalidCodeResponse.status, 400);
+      assert.match(await invalidCodeResponse.text(), /code is invalid or no longer available/);
+      const expiredBrowserGrant = await httpStore.createDeviceGrant({ clientId: "versekit", scopes: ["orders:read"] });
+      await pool.query("UPDATE versekit_device_grants SET expires_at=now()-interval '1 second' WHERE id=$1", [expiredBrowserGrant.id]);
+      const expiredCodeResponse = await submitBrowser({ action: "lookup", csrf: csrfLookup, user_code: expiredBrowserGrant.userCode });
+      assert.equal(expiredCodeResponse.status, 400);
+      assert.match(await expiredCodeResponse.text(), /code is invalid or no longer available/);
       const browserGrant = (await postForm("/versekit/v1/device/code", "client_id=versekit&scope=orders%3Aread")).body;
       assert.equal((await submitBrowser({ action: "lookup", csrf: csrfLookup, user_code: browserGrant.user_code }, "null")).status, 403,
         "a null Origin remains rejected even with a valid CSRF token");
@@ -1730,6 +1975,8 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
       let reviewHtml = await lookupResponse.text();
       assert.match(reviewHtml, /Requesting application: <strong>VerseKit/);
       assert.match(reviewHtml, /orders:read/);
+      assert.match(reviewHtml, /<fieldset class="permission-fieldset">/);
+      assert.match(reviewHtml, /<form method="post" action="\/device" class="deny-form">/);
       assert.doesNotMatch(reviewHtml, /checked/);
       const challenge = /name="challenge" value="([^"]+)"/.exec(reviewHtml)?.[1];
       const reviewCsrf = /name="csrf" value="([^"]+)"/.exec(reviewHtml)?.[1];
@@ -1773,7 +2020,10 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
       const deniedCsrf = /name="csrf" value="([^"]+)"/.exec(deniedReview)?.[1];
       assert.ok(deniedChallenge && deniedCsrf, deniedReview);
       const deniedResponse = await submitBrowser({ action: "deny", challenge: deniedChallenge, csrf: deniedCsrf });
-      assert.match(await deniedResponse.text(), /No tokens were issued/);
+      const deniedHtml = await deniedResponse.text();
+      assert.equal(deniedResponse.status, 200);
+      assert.match(deniedHtml, /No tokens were issued/);
+      assert.match(deniedHtml, /class="state-card state-result state-denied"/);
       assert.deepEqual((await postForm(tokenPath, tokenForm(deniedBrowserGrant.device_code))).body, { error: "access_denied" });
 
       assert.deepEqual((await postForm(tokenPath, "grant_type=refresh_token&client_id=versekit")).body, { error: "invalid_request" });
@@ -2114,6 +2364,12 @@ test("enabled VerseKit uses the real HTTP server and isolated blueprint_groups t
     }
 
     runtime = await startMissionTestServer({ databaseUrl: startupDatabaseUrl, pepper, extraEnv: actual });
+    const consentCss = await fetch(runtime.baseUrl + "/device-consent.css", { signal: AbortSignal.timeout(5_000) });
+    assert.equal(consentCss.status, 200);
+    assert.match(consentCss.headers.get("content-type") || "", /^text\/css(?:;|$)/);
+    assert.equal(consentCss.headers.get("x-content-type-options"), "nosniff");
+    assert.match(await consentCss.text(), /--accent:\s*#21cfff/);
+    assert.equal((await fetch(runtime.baseUrl + "/device-consent.css/../server.js", { signal: AbortSignal.timeout(5_000) })).status, 404);
     const readyScope = await fetch(runtime.baseUrl + "/versekit/v1/device/code", {
       method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
       body: "client_id=versekit&scope=orders%3Aread", signal: AbortSignal.timeout(5_000)

@@ -1721,6 +1721,12 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { ok: true, service: "blueprint-inventory", database: "ok" });
     }
 
+    if (versekitRouter && req.method === "GET" && url.pathname === "/device-consent.css") {
+      const content = await readFile(join(publicDir, "device-consent.css"));
+      res.writeHead(200, { "content-type": "text/css; charset=utf-8", "cache-control": "no-cache", "x-content-type-options": "nosniff" });
+      return res.end(content);
+    }
+
     if (versekitRouter && await versekitRouter(req, res, url)) return;
 
     if (req.method === "GET" && url.pathname === "/api/trading/routes") {
