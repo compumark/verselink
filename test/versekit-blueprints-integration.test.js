@@ -166,7 +166,7 @@ test("VK-08 reads only active fixed-group SCMDB holdings with authenticated stab
   }
 });
 
-test("VerseKit remains disabled by default and does not serve blueprints routes", { skip: !databaseUrl }, async (t) => {
+test("VerseKit remains disabled by default and does not serve blueprints routes", { skip: !databaseUrl }, async () => {
   const adminPool = await createTestPool(databaseUrl);
   const schema = `vk08_blueprints_${randomUUID().replaceAll("-", "")}`;
   let runtime;
@@ -178,7 +178,7 @@ test("VerseKit remains disabled by default and does not serve blueprints routes"
     runtime = await startMissionTestServer({ databaseUrl: scoped.toString(), pepper, logDirectory,
       extraEnv: { VERSEKIT_ENABLED: "false", VERSEKIT_DEV_BLUEPRINTS_READ: "true" } });
     const response = await apiRequest(runtime.baseUrl, "/versekit/v1/blueprints");
-    assert.deepEqual([response.status, response.body.code], [404, "NOT_FOUND"]);
+    assert.deepEqual([response.status, response.body.error], [404, "not found"]);
     assert.equal((await apiRequest(runtime.baseUrl, "/healthz")).status, 200);
   } finally {
     await stopMissionTestServer(runtime);
