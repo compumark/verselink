@@ -160,6 +160,12 @@ test("VerseKit order deliveries are atomic, idempotent across restart, and fixed
     const excess = await deliver(writeBase, excessOrder, { key: "excess", items: [{ item: "Taranite", quantity: 11 }] });
     assert.equal(excess.status, 400);
     assert.equal((await excess.json()).code, "INVALID_REQUEST");
+    await pool.query("UPDATE material_orders SET required_quantity=20 WHERE id=$1", [excessOrder]);
+    const excessReplay = await deliver(writeBase, excessOrder, { key: "excess", items: [{ item: "Taranite", quantity: 11 }] });
+    assert.equal(excessReplay.status, 400);
+    assert.equal(excessReplay.headers.get("content-type"), "application/problem+json; charset=utf-8");
+    assert.equal((await excessReplay.json()).code, "INVALID_REQUEST", "deterministic business errors replay after state changes");
+    assert.equal((await ledger(excessOrder)).rows[0].count, 0);
     const closedOrder = await order({ required: "1", legacy: "1" });
     await pool.query("UPDATE material_orders SET status='completed' WHERE id=$1", [closedOrder]);
     const closed = await deliver(writeBase, closedOrder, { key: "closed" });

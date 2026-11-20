@@ -95,13 +95,31 @@ export const createOrdersWriteHandler = ({ db, groupId, tokenStore, limiter }) =
       }
       if (!existing.rows[0].response_status || !existing.rows[0].response_body) throw new Error("incomplete VerseKit idempotency record");
       await client.query("COMMIT");
+      if (existing.rows[0].response_status >= 400) {
+        return sendProblem(res, existing.rows[0].response_status, existing.rows[0].response_body.code);
+      }
       return sendJson(res, existing.rows[0].response_status, existing.rows[0].response_body);
     }
 
-    const result = await recordOrderDelivery(client, {
-      orderId: canonicalOrderId, deliveredBy: auth.member.app_user_id || auth.member.id,
-      quantity: parsed.quantity, items: parsed.items.map((item) => item.item), groupId, visibleOnly: true
-    });
+    let result;
+    try {
+      result = await recordOrderDelivery(client, {
+        orderId: canonicalOrderId, deliveredBy: auth.member.app_user_id || auth.member.id,
+        quantity: parsed.quantity, items: parsed.items.map((item) => item.item), groupId, visibleOnly: true
+      });
+    } catch (error) {
+      if (!(error instanceof OrderDeliveryError)) throw error;
+      const problem = problemForDeliveryError(error);
+      if (!problem) throw error;
+      const response = { type: "about:blank", status: problem[0], code: problem[1] };
+      await client.query(`
+        UPDATE versekit_order_delivery_idempotency
+        SET response_status=$4,response_body=$5::jsonb
+        WHERE group_id=$1 AND app_user_id=$2 AND key_hash=$3`,
+      [groupId, auth.member.app_user_id || auth.member.id, keyHash, problem[0], JSON.stringify(response)]);
+      await client.query("COMMIT");
+      return rejectUnreadVersekitRequest(req, res, () => sendProblem(res, problem[0], problem[1]));
+    }
     const response = { delivery_id: result.deliveryId, order: mapVersekitOrder(result.order) };
     await client.query(`
       UPDATE versekit_order_delivery_idempotency
