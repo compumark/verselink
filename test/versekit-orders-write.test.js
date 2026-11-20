@@ -175,6 +175,33 @@ test("VerseKit order deliveries are atomic, idempotent across restart, and fixed
     const wrongScopeRuntime = await apiRequest(runtime.baseUrl, `/versekit/v1/orders/${basic}/deliveries`, { method: "POST", session, json: { items: [{ item: "Taranite", quantity: 1 }] } });
     assert.equal(wrongScopeRuntime.status, 404, "the real server bootstrap does not mount the unapproved write capability");
 
+    // DEV-only opt-in must work through the *real* application bootstrap, not
+    // only through a manually constructed adapter test router.
+    let devRuntime;
+    try {
+      devRuntime = await startMissionTestServer({ databaseUrl: databaseUrl.toString(), pepper: SINK_PEPPER,
+        extraEnv: { APP_ENVIRONMENT: "DEV", VERSEKIT_DEV_ORDERS_WRITE: "true",
+          VERSEKIT_ENABLED: "true", VERSEKIT_GROUP_ID: group,
+          VERSEKIT_PUBLIC_URL: "https://versekit-test.example.org/" } });
+      const devDiscovery = await fetch(`${devRuntime.baseUrl}/.well-known/versekit-org.json`);
+      assert.equal(devDiscovery.status, 200);
+      assert.deepEqual((await devDiscovery.json()).versions["1"].scopes_supported,
+        ["orders:read", "orders:write"], "only explicit DEV opt-in advertises write");
+      const devOrder = await order({ required: "2" });
+      const devDelivery = await deliver(devRuntime.baseUrl, devOrder,
+        { key: "real-bootstrap-dev-write", items: [{ item: "Taranite", quantity: 2 }] });
+      assert.equal(devDelivery.status, 201);
+      const firstDevResponse = await devDelivery.json();
+      assert.equal(firstDevResponse.order.status, "done");
+      const repeated = await deliver(devRuntime.baseUrl, devOrder,
+        { key: "real-bootstrap-dev-write", items: [{ item: "Taranite", quantity: 2 }] });
+      assert.equal(repeated.status, 201);
+      assert.deepEqual(await repeated.json(), firstDevResponse);
+      assert.equal((await ledger(devOrder)).rows[0].count, 1);
+    } finally {
+      await stopMissionTestServer(devRuntime);
+    }
+
     const foreign = await order({ orderGroup: otherGroup });
     const hidden = await order({ hidden: true });
     for (const id of [foreign, hidden]) {

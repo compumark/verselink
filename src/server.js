@@ -3574,8 +3574,10 @@ ensureSchema().then(() => isTestRuntime ? undefined : syncReferenceData()).then(
   if (process.env.VERSEKIT_ENABLED === "true") {
     try {
       const { createVersekitAdapter } = await import("./integrations/versekit/index.js");
+      const { versekitBootstrapCapabilities } = await import("./integrations/versekit/dev-write-gate.js");
       versekitRouter = await createVersekitAdapter({
-        env: process.env, db: pool, tokenPepper: process.env.VERSEKIT_TOKEN_PEPPER, capabilities: ["orders:read"],
+        env: process.env, db: pool, tokenPepper: process.env.VERSEKIT_TOKEN_PEPPER,
+        capabilities: versekitBootstrapCapabilities(process.env),
         getSessionContext,
         getCurrentAppUser,
         getSessionToken: (req) => { try { return parseCookies(req.headers.cookie).bp_session || null; } catch { return null; } },
