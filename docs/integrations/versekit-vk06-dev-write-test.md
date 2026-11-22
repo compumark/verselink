@@ -65,7 +65,7 @@ After a separately approved DEV image replacement, verify `/healthz`, login, C10
 VERSEKIT_ORDERS_WRITE=true
 ```
 
-Redeploy/restart **only the DEV app** with the same image and other settings. Verify discovery lists `["orders:read","orders:write"]` and the delivery route no longer returns 404. A token with only `orders:read` must still receive `403 SCOPE_MISSING` when attempting a delivery. Do not set the flag on PROD.
+Redeploy/restart **only the DEV app** with the same image and other settings. Verify discovery lists `["orders:read","orders:write"]` and the delivery route no longer returns 404. A token with only `orders:read` must still receive `403 SCOPE_MISSING` when attempting a delivery. This runbook covers DEV only; Production supports the same opt-in but requires a separate deployment review and is outside this procedure.
 
 ## 5. Real VerseKit client functional test
 
