@@ -201,16 +201,18 @@ jobs:
           grep -Fxq 'APP_ENVIRONMENT=DEV' <<<"$image_env"
           grep -Fxq 'APP_VERSION=vk164-smoke' <<<"$image_env"
           manifest="$(docker buildx imagetools inspect "$IMAGE_TAG")"
-          grep -Fq 'linux/amd64' <<<"$manifest"
+          grep -Fq "$IMAGE_DIGEST" <<<"$manifest"
+          image_platform="$(docker image inspect "$IMAGE_TAG" --format '{{.Os}}/{{.Architecture}}')"
+          test "$image_platform" = 'linux/amd64'
           container_id="$(docker create "$IMAGE_TAG")"
           trap 'docker rm -f "$container_id" >/dev/null 2>&1 || true' EXIT
           docker cp "$container_id:/app/public/device-consent.css" "$RUNNER_TEMP/device-consent.css"
           test -s "$RUNNER_TEMP/device-consent.css"
           {
-            echo "Image tag: `$IMAGE_TAG`"
-            echo "Manifest digest: `$IMAGE_DIGEST`"
-            echo "Source commit: `$SOURCE_SHA`"
-            echo "Platform: `linux/amd64`"
+            echo "Image tag: $IMAGE_TAG"
+            echo "Manifest digest: $IMAGE_DIGEST"
+            echo "Source commit: $SOURCE_SHA"
+            echo "Platform: linux/amd64"
             echo 'Verified APP_COMMIT, APP_ENVIRONMENT=DEV, APP_VERSION, and public/device-consent.css.'
             echo 'No deployment was performed.'
           } >> "$GITHUB_STEP_SUMMARY"
