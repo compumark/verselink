@@ -9,10 +9,10 @@ The normal application starts with `orders:read` only. A write scope is mounted 
 ```text
 VERSEKIT_ENABLED=true
 APP_ENVIRONMENT=DEV
-VERSEKIT_DEV_ORDERS_WRITE=true
+VERSEKIT_ORDERS_WRITE=true
 ```
 
-`APP_ENVIRONMENT` is injected into the candidate GHCR image at build time using `VERSELINK_ENVIRONMENT=DEV`. The release/Production image is not eligible by default. An unset, false or malformed flag leaves `orders:read` only; `VERSEKIT_ENABLED=false` leaves the entire adapter disabled. Do not override `APP_ENVIRONMENT` on PROD. This is a controlled operations opt-in, not a security boundary against someone who can change all container environment variables and run code.
+`APP_ENVIRONMENT` is injected into the candidate GHCR image at build time using `VERSELINK_ENVIRONMENT=DEV`. The general `VERSEKIT_ORDERS_WRITE` flag is supported in DEV and Production; this VK-06 runbook remains scoped to DEV validation. An unset, false or malformed flag leaves `orders:read` only; `VERSEKIT_ENABLED=false` leaves the entire adapter disabled. The deprecated `VERSEKIT_DEV_ORDERS_WRITE` alias remains a fallback only in DEV when `VERSEKIT_ORDERS_WRITE` is unset. An explicit new value, including `false`, takes precedence. This is a controlled operations opt-in, not a security boundary against someone who can change all container environment variables and run code.
 
 Keep the existing independent DEV `VERSEKIT_TOKEN_PEPPER`, fixed DEV `VERSEKIT_GROUP_ID`, and HTTPS `VERSEKIT_PUBLIC_URL`. Do not touch `SINK_TOKEN_PEPPER`.
 
@@ -45,13 +45,13 @@ If the publish workflow was not run or failed, do **not** guess a tag. Resolve C
 
 ## 4. Safe staged Portainer configuration
 
-Use the isolated **existing DEV** deployment, with its own PostgreSQL data, logs and hostname. When using a Compose environment mapping, pass `VERSEKIT_DEV_ORDERS_WRITE` into the app container; the repository's Compose templates do this with a default of `false`. When using a Portainer Web Editor stack, add the app container environment key explicitly.
+Use the isolated **existing DEV** deployment, with its own PostgreSQL data, logs and hostname. When using a Compose environment mapping, pass `VERSEKIT_ORDERS_WRITE` into the app container. For legacy stacks, `VERSEKIT_DEV_ORDERS_WRITE` remains accepted only when the new flag is unset. When using a Portainer Web Editor stack, add the app container environment key explicitly.
 
 **Stage A — new candidate image, still read-only**:
 
 ```text
 VERSEKIT_ENABLED=true
-VERSEKIT_DEV_ORDERS_WRITE=false
+VERSEKIT_ORDERS_WRITE=false
 VERSEKIT_GROUP_ID=<EXISTING_DEV_GROUP_UUID>
 VERSEKIT_PUBLIC_URL=https://<EXISTING_DEV_HOSTNAME>
 VERSEKIT_TOKEN_PEPPER=<EXISTING_INDEPENDENT_DEV_VERSEKIT_PEPPER>
@@ -62,10 +62,10 @@ After a separately approved DEV image replacement, verify `/healthz`, login, C10
 **Stage B — explicit DEV write opt-in**, only after Stage A passes:
 
 ```text
-VERSEKIT_DEV_ORDERS_WRITE=true
+VERSEKIT_ORDERS_WRITE=true
 ```
 
-Redeploy/restart **only the DEV app** with the same image and other settings. Verify discovery lists `["orders:read","orders:write"]` and the delivery route no longer returns 404. A token with only `orders:read` must still receive `403 SCOPE_MISSING` when attempting a delivery. Do not set the flag on PROD.
+Redeploy/restart **only the DEV app** with the same image and other settings. Verify discovery lists `["orders:read","orders:write"]` and the delivery route no longer returns 404. A token with only `orders:read` must still receive `403 SCOPE_MISSING` when attempting a delivery. This runbook covers DEV only; Production supports the same opt-in but requires a separate deployment review and is outside this procedure.
 
 ## 5. Real VerseKit client functional test
 
@@ -89,10 +89,10 @@ SELECT COUNT(*) AS keys_total, MIN(created_at) AS oldest, MAX(created_at) AS new
 FROM versekit_order_delivery_idempotency;
 ```
 
-If an issue occurs, first set `VERSEKIT_DEV_ORDERS_WRITE=false` and restart the DEV app; verify discovery reverts to `orders:read` only and delivery endpoint returns 404. Revert to the **recorded previous DEV image/digest** and original flags if necessary; preserve DEV database and volumes. Restore the DEV DB backup only as a separate, explicitly reviewed recovery operation. Do not rotate peppers, revoke grants, or run legacy-cleanup scripts just to switch the flag off.
+If an issue occurs, first set `VERSEKIT_ORDERS_WRITE=false` and restart the DEV app; verify discovery reverts to `orders:read` only and delivery endpoint returns 404. Revert to the **recorded previous DEV image/digest** and original flags if necessary; preserve DEV database and volumes. Restore the DEV DB backup only as a separate, explicitly reviewed recovery operation. Do not rotate peppers, revoke grants, or run legacy-cleanup scripts just to switch the flag off.
 
 ## 7. Completion record / hold points
 
 Record verified former DEV image/digest/commit, candidate image tag/digest/commit, Node version, backup check, default-off smoke results, write-on real VerseKit client results, consent/group isolation, idempotency, browser parity, regressions, rollback check and all limitations.
 
-**Stop after preparation** until the owner approves deployment. **Stop after DEV validation** until separately approved PROD rollout; do not merge this DEV-only activation gate or activate it on PROD by implication.
+**Stop after preparation** until the owner approves deployment. **Stop after DEV validation** until separately approved Production rollout; Production activation requires its own explicit change review and opt-in configuration.

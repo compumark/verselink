@@ -100,7 +100,7 @@ test("VK-08 reads only active fixed-group SCMDB holdings with authenticated stab
     runtime = await startMissionTestServer({ databaseUrl: schemaUrl, pepper, logDirectory,
       extraEnv: { APP_ENVIRONMENT: "DEV", VERSEKIT_ENABLED: "true", VERSEKIT_GROUP_ID: groupId,
         VERSEKIT_PUBLIC_URL: "https://verse.example.test", VERSEKIT_TOKEN_PEPPER: VERSEKIT_TEST_TOKEN_PEPPER,
-        VERSEKIT_DEV_BLUEPRINTS_READ: "true" } });
+        VERSEKIT_BLUEPRINTS_READ: "true" } });
     const discover = await apiRequest(runtime.baseUrl, "/.well-known/versekit-org.json");
     assert.deepEqual(discover.body.versions["1"].scopes_supported, ["orders:read", "blueprints:read"]);
     const readToken = await tokenFor(ids.first, ["blueprints:read"]);
@@ -303,8 +303,8 @@ test("VK-08 + VK-11 preserves three-scope connection over server restart without
       VERSEKIT_GROUP_ID: upgradeGroup,
       VERSEKIT_PUBLIC_URL: "https://verse.example.org",
       VERSEKIT_TOKEN_PEPPER: VERSEKIT_TEST_TOKEN_PEPPER,
-      VERSEKIT_DEV_BLUEPRINTS_READ: "true",
-      VERSEKIT_DEV_ORDERS_WRITE: "true"
+      VERSEKIT_BLUEPRINTS_READ: "true",
+      VERSEKIT_ORDERS_WRITE: "true"
     };
     const start = (settings) => startMissionTestServer({
       databaseUrl: scopedUrl, pepper, logDirectory, extraEnv: settings
@@ -375,8 +375,12 @@ test("VK-08 + VK-11 preserves three-scope connection over server restart without
     await stopMissionTestServer(runtime);
     runtime = null;
     runtime = await start({ ...devConfig, APP_ENVIRONMENT: "Production" });
-    assert.equal((await get("/versekit/v1/blueprints", refreshed.access_token)).status, 404,
-      "DEV-only blueprint route remains unavailable in production");
+    assert.equal((await get("/versekit/v1/me", refreshed.access_token)).status, 200,
+      "existing credentials remain usable with the new Production opt-ins");
+    assert.equal((await get("/versekit/v1/blueprints", refreshed.access_token)).status, 200,
+      "explicit blueprints:read opt-in mounts the route in Production");
+    assert.equal((await get("/versekit/v1/orders", refreshed.access_token)).status, 200,
+      "orders:read remains available in Production");
     response = await fetch(runtime.baseUrl + "/versekit/v1/orders/" + orderId + "/deliveries", {
       method: "POST",
       headers: {
@@ -386,7 +390,23 @@ test("VK-08 + VK-11 preserves three-scope connection over server restart without
       },
       body: JSON.stringify({ items: [{ item: "Taranite", quantity: 1 }] })
     });
-    assert.equal(response.status, 404, "DEV-only delivery route remains unavailable in production");
+    assert.equal(response.status, 201, "explicit orders:write opt-in mounts the route in Production");
+
+    await stopMissionTestServer(runtime);
+    runtime = null;
+    runtime = await start({ ...devConfig, APP_ENVIRONMENT: "Production", VERSEKIT_ORDERS_WRITE: "false", VERSEKIT_BLUEPRINTS_READ: "false" });
+    assert.equal((await get("/versekit/v1/blueprints", refreshed.access_token)).status, 404,
+      "blueprints route is unavailable when the Production capability is disabled");
+    response = await fetch(runtime.baseUrl + "/versekit/v1/orders/" + orderId + "/deliveries", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer " + refreshed.access_token,
+        "content-type": "application/json",
+        "idempotency-key": "vk08-vk11-disabled"
+      },
+      body: JSON.stringify({ items: [{ item: "Taranite", quantity: 1 }] })
+    });
+    assert.equal(response.status, 404, "delivery route is unavailable when the Production capability is disabled");
 
     await stopMissionTestServer(runtime);
     runtime = null;
