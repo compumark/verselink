@@ -141,3 +141,76 @@ jobs:
             echo
             echo "Use the digest reference for subsequent DEV approval and testing."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  vk164-dev-smoke-image:
+    name: Build isolated VK-164 DEV smoke image
+    needs: test
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.ref == 'codex/versekit-general-capabilities' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out the tested VK-164 commit
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish immutable VK-164 DEV smoke image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/compumark/verselink:vk164-smoke-${{ github.event.pull_request.head.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/compumark/verselink
+            org.opencontainers.image.revision=${{ github.event.pull_request.head.sha }}
+            org.opencontainers.image.licenses=AGPL-3.0-only
+          build-args: |
+            VERSELINK_COMMIT=${{ github.event.pull_request.head.sha }}
+            VERSELINK_ENVIRONMENT=DEV
+            VERSELINK_VERSION=vk164-smoke
+
+      - name: Verify the published image metadata, platform, and consent CSS
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_TAG: ghcr.io/compumark/verselink:vk164-smoke-${{ github.event.pull_request.head.sha }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull "$IMAGE_TAG"
+          image_env="$(docker image inspect "$IMAGE_TAG" --format '{{range .Config.Env}}{{println .}}{{end}}')"
+          grep -Fxq "APP_COMMIT=$SOURCE_SHA" <<<"$image_env"
+          grep -Fxq 'APP_ENVIRONMENT=DEV' <<<"$image_env"
+          grep -Fxq 'APP_VERSION=vk164-smoke' <<<"$image_env"
+          manifest="$(docker buildx imagetools inspect "$IMAGE_TAG")"
+          grep -Fq 'linux/amd64' <<<"$manifest"
+          container_id="$(docker create "$IMAGE_TAG")"
+          trap 'docker rm -f "$container_id" >/dev/null 2>&1 || true' EXIT
+          docker cp "$container_id:/app/public/device-consent.css" "$RUNNER_TEMP/device-consent.css"
+          test -s "$RUNNER_TEMP/device-consent.css"
+          {
+            echo "Image tag: `$IMAGE_TAG`"
+            echo "Manifest digest: `$IMAGE_DIGEST`"
+            echo "Source commit: `$SOURCE_SHA`"
+            echo "Platform: `linux/amd64`"
+            echo 'Verified APP_COMMIT, APP_ENVIRONMENT=DEV, APP_VERSION, and public/device-consent.css.'
+            echo 'No deployment was performed.'
+          } >> "$GITHUB_STEP_SUMMARY"
