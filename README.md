@@ -211,7 +211,9 @@ Required and optional values:
 | `VERSEKIT_TOKEN_PEPPER` | Required only when VerseKit is enabled; use an independent random value with at least 32 UTF-8 bytes. Keep it stable and never commit it. |
 | `VERSEKIT_GROUP_ID` | Required only when VerseKit is enabled; UUID of the existing fixed VerseLink group. |
 | `VERSEKIT_PUBLIC_URL` | Required only when VerseKit is enabled; public HTTPS origin used by discovery and consent. |
-| `VERSEKIT_DEV_ORDERS_WRITE` | Optional; exact `true` enables VerseKit delivery writes **only** if VerseKit is enabled and the candidate image reports `APP_ENVIRONMENT=DEV`. Defaults to `false`. Do not set in PROD. See [VK-06 DEV write test runbook](docs/integrations/versekit-vk06-dev-write-test.md). |
+| `VERSEKIT_ORDERS_WRITE` | Optional; exact `true` enables the implemented VerseKit delivery write capability when VerseKit is enabled. Defaults to disabled in DEV and Production. |
+| `VERSEKIT_BLUEPRINTS_READ` | Optional; exact `true` enables the implemented VerseKit blueprints read capability when VerseKit is enabled. Defaults to disabled in DEV and Production. |
+| `VERSEKIT_DEV_ORDERS_WRITE`, `VERSEKIT_DEV_BLUEPRINTS_READ` | Deprecated compatibility fallbacks honored only when `APP_ENVIRONMENT=DEV` and the corresponding new variable is unset. A new variable, including `false` or a malformed value, takes precedence. Do not use for new deployments. See [VK-06 DEV write test runbook](docs/integrations/versekit-vk06-dev-write-test.md). |
 | `APP_ADMIN_USER_IDS` | Optional comma-separated immutable VerseLink `app_users.id` UUIDs. Find a user's UUID under **About → System Information → USER ID**. Do not use display names, SCMDB/RSI handles, or `vl_...` login credentials. |
 | `SCMDB_SINK_BASE_URL` | Required only for SCMDB synchronization; for example `https://verselink.example.org/v1/scmdb`. There is no default or fallback. Without it, VerseLink runs but SCMDB Sync Sink creation is disabled. |
 | `VERSELINK_APP_URL` | Public base URL of the VerseLink web application, for example `https://verselink.example.org`. |
