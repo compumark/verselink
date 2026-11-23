@@ -73,6 +73,17 @@ test("Mobiglass exposes the internal VerseLink About view", () => {
   assert.doesNotMatch(aboutSource, /fetch\s*\(/);
 });
 
+test("Mobiglass About lists VerseKit as an optional connected service without implying a live status", () => {
+  const connectedServices = aboutSource.match(/<ul class="about-service-list">([\s\S]*?)<\/ul>/)?.[1];
+  assert.ok(connectedServices, "Connected Services list must exist");
+  assert.match(connectedServices, /<li>SCMDB<small>Blueprint synchronization<\/small><\/li>/);
+  assert.match(connectedServices, /<li>UEX<small>Trading reference data<\/small><\/li>/);
+  assert.match(connectedServices, /<li>Discord<small>Optional notifications<\/small><\/li>/);
+  assert.match(connectedServices, /<li>VerseKit<small>Optional connection<\/small><\/li>/);
+  assert.equal((connectedServices.match(/<li>/g) || []).length, 4);
+  assert.ok(connectedServices.indexOf("Discord") < connectedServices.indexOf("VerseKit"));
+});
+
 test("Mobiglass admin navigation and view are server-gated", async () => {
   const adminSource = await readFile(new URL("../public/js/admin-mobiglass.js", import.meta.url), "utf8");
   assert.match(serverSource, /APP_ADMIN_USER_IDS/);
