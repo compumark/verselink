@@ -7,6 +7,25 @@
 </head>
 <body><main>
   <a href="/">← Inventory</a><h1>Changelog</h1><p>The latest VerseLink changes, explained briefly and clearly.</p>
+  <section class="entry" data-release-kind="stable" data-version="1.5.0"><div class="version"><span class="release-version">VERSION 1.5.0</span> · <time datetime="2026-11-23">23.11.2026</time></div><ul>
+    <li>Added an optional <strong>VerseKit Org Standard v1 integration</strong> so an unmodified VerseKit desktop client can securely connect to one configured VerseLink group.</li>
+    <li>Added OAuth device-code pairing, rotating credentials and an explicit, VerseLink-branded <strong>MobiGlass consent page</strong> with individual permission selection.</li>
+    <li>Added group-scoped <strong>VerseKit Orders read</strong> support, including required quantities, delivered amounts and current order status.</li>
+    <li>Added opt-in <strong>VerseKit order delivery writes</strong>, with server-side authorization, idempotent retries and concurrency-safe updates to VerseLink&#39;s existing delivery records.</li>
+    <li>Added opt-in <strong>VerseKit Blueprint read</strong> support, providing blueprint names and authorized holders from existing SCMDB ownership data.</li>
+    <li>Added server-side <strong>VerseLink Telemetry integration</strong> for the separately distributed Windows client: device pairing, authentication, revocation, heartbeats and private presence snapshots.</li>
+    <li>Added MobiGlass <strong>Telemetry device management</strong> and private presence history, including collapsible daily entries, a 90-day retention policy and owner-controlled deletion.</li>
+    <li>Preserved the <strong>v1.4.1 mining-material additions</strong> in Orders: Riccite, Borase, Torite, Tin, Silicon and Quartz, with their respective order-number codes.</li>
+    <li>Expanded PostgreSQL integration, authorization, isolation and regression testing.</li>
+    <li>VerseKit integration remains <strong>disabled by default</strong> and is limited to a single deployment-configured VerseLink group.</li>
+    <li><code>VERSEKIT_ORDERS_WRITE=true</code> and <code>VERSEKIT_BLUEPRINTS_READ=true</code> opt in to their respective capabilities in DEV or Production; neither is enabled by default.</li>
+    <li>VerseKit requires its own stable <code>VERSEKIT_TOKEN_PEPPER</code>, <code>VERSEKIT_GROUP_ID</code> and public HTTPS <code>VERSEKIT_PUBLIC_URL</code> when enabled. Do not reuse the SCMDB sink pepper.</li>
+    <li>Existing VerseLink groups, Orders, Material Inventory, Missions and SCMDB connections remain available.</li>
+    <li>The VerseLink Telemetry <strong>Windows executable is released separately</strong> (<code>telemetry-v*</code>); it is not packaged into the VerseLink server Docker image.</li>
+    <li><strong>TradeMax #129:</strong> A discrepancy in UEX route-profit pricing has been reported, but the root cause is not confirmed. Projected profits may be overstated. The issue remains open and is <strong>not being investigated or changed</strong> for 1.5.0.</li>
+    <li><strong>VerseKit Blueprints:</strong> Automated coverage is present, but final manual verification of blueprint holders in the unmodified VerseKit client remains outstanding. Keep <code>VERSEKIT_BLUEPRINTS_READ=false</code> in Production until explicitly accepted.</li>
+    <li>VerseKit <code>stock:read</code>, <code>stock:write</code> and <code>blueprints:write</code> are not included. Snapshot replacement and synchronization remain future work.</li>
+  </ul></section>
   <section class="entry" data-release-kind="stable" data-version="1.4.1"><div class="version"><span class="release-version">VERSION 1.4.1</span> · <time datetime="2026-10-21">21.10.2026</time></div><ul>
     <li>Added currently available mining materials to Orders, including Riccite, Borase, Torite, Tin, Silicon, and Quartz.</li>
   </ul></section>
